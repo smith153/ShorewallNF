@@ -17,11 +17,11 @@ family consistency). The concrete builders live in the feature epics.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from typing import TypeVar
+from dataclasses import dataclass, replace
+from typing import NamedTuple, TypeVar
 
 from .errors import ConfigError
-from .ir import Zone
+from .ir import Family, Interface, Zone, ZoneMember
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -135,3 +135,49 @@ def _build_zone(record: Record) -> Zone:
             f"unknown zone type {zone_type!r}", path=record.path, line=record.line
         )
     return Zone(name=name, is_firewall=zone_type == "firewall")
+
+
+class ParsedInterfaces(NamedTuple):
+    """The `interfaces` parse result: the devices, plus the zones with their membership."""
+
+    interfaces: tuple[Interface, ...]
+    zones: tuple[Zone, ...]
+
+
+def parse_interfaces(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedInterfaces:
+    """Parse ``interfaces``-file records into :class:`~shorewallnf.ir.Interface` IR and attach
+    dual-stack :class:`~shorewallnf.ir.ZoneMember`\\ s to the named zones (ADR-0002).
+
+    Each row is ``ZONE INTERFACE [BROADCAST] [OPTIONS]``; the broadcast column is ignored and
+    options are comma-split. A ``-`` zone means the device belongs to no zone. A reference to an
+    unknown zone, or a missing interface, fails fast with :class:`ConfigError`. Directive rows
+    (``?FORMAT``/``?SECTION``, preserved by the preprocessor) are skipped — interfaces don't use
+    them; the rules parser will interpret ``?SECTION`` itself.
+    """
+    zone_names = {zone.name for zone in zones}
+    new_members: dict[str, list[ZoneMember]] = {}
+
+    def attach_membership(interface: Interface, record: Record) -> None:
+        zone = record.fields[0]
+        if zone == "-":
+            return
+        if zone not in zone_names:
+            raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
+        member = ZoneMember(interface=interface.name, family=Family.BOTH)
+        new_members.setdefault(zone, []).append(member)
+
+    data = [record for record in records if not record.fields[0].startswith("?")]
+    interfaces = tuple(build_records(data, _build_interface, attach_membership))
+    populated = tuple(
+        replace(zone, members=zone.members + tuple(new_members[zone.name]))
+        if zone.name in new_members
+        else zone
+        for zone in zones
+    )
+    return ParsedInterfaces(interfaces=interfaces, zones=populated)
+
+
+def _build_interface(record: Record) -> Interface:
+    device = require_field(record, 1, "interface")
+    options = tuple(record.fields[3].split(",")) if len(record.fields) > 3 else ()
+    return Interface(name=device, options=options)
