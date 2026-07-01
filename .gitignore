@@ -19,3 +19,6 @@ htmlcov/
 # Editors / OS
 .DS_Store
 *.swp
+
+# Local git worktrees (native worktree tooling)
+.claude/worktrees/
