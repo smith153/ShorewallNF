@@ -16,12 +16,12 @@ family consistency). The concrete builders live in the feature epics.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import NamedTuple, TypeVar
 
 from .errors import ConfigError
-from .ir import Family, Interface, Policy, Zone, ZoneMember
+from .ir import Family, Interface, Policy, Ruleset, Zone, ZoneMember
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -247,3 +247,21 @@ def _build_policy(record: Record) -> Policy:
         )
     log_level = record.fields[3] if len(record.fields) > 3 else None
     return Policy(source=source, dest=dest, action=action, log_level=log_level)
+
+
+def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
+    """Assemble a :class:`~shorewallnf.ir.Ruleset` from the preprocessed per-file streams.
+
+    Dispatches each known config file to its per-file parser and combines the results. Zones
+    are parsed first so ``interfaces`` can validate references and attach membership (the
+    ``interfaces`` result carries the zones with their members populated). Files absent from
+    ``streams`` are simply skipped.
+    """
+    zones: tuple[Zone, ...] = ()
+    interfaces: tuple[Interface, ...] = ()
+    if "zones" in streams:
+        zones = parse_zones(parse(streams["zones"]))
+    if "interfaces" in streams:
+        parsed = parse_interfaces(parse(streams["interfaces"]), zones)
+        zones, interfaces = parsed.zones, parsed.interfaces
+    return Ruleset(zones=zones, interfaces=interfaces)
