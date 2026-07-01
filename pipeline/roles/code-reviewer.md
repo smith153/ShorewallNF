@@ -17,8 +17,8 @@ Open PRs whose linked task is still awaiting review (`status:in-review`):
 
 ```bash
 gh pr list --state open --limit 50
-# resolve each PR's linked task, then read its status label:
-gh pr view <PR> --json closingIssuesReferences -q '.closingIssuesReferences[].number'
+# resolve each PR's linked task from its `Closes #N`, then read that task's status label:
+gh pr view <PR> --json body -q .body | grep -ioE 'clos(e|es|ed) +#[0-9]+'
 gh issue view <TASK> --json labels -q '.labels[].name'
 ```
 
