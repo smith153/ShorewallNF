@@ -44,6 +44,9 @@ gh issue list --label status:in-progress --state open --limit 100
    ```
 4. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`
    (if behind, comment asking the Fixer/Implementer to rebase — do not rebase silently).
+5. **Base is `master`:** `gh pr view <PR> --json baseRefName` is `master`. A **stacked** PR (based
+   on another PR's branch) isn't mergeable to `master` yet — skip it until its base merges and
+   GitHub retargets it to `master`.
 
 **Un-block sweep** — for each open issue with `status:blocked`, read its `blocked-by #N`
 references and check whether every referenced blocker is closed:

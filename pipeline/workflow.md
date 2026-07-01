@@ -70,6 +70,9 @@ Volunteers run agents concurrently (often overnight), so claiming must be atomic
   `status:blocked`.
 - The **Epic Decomposer** claims an epic with `status:decomposing` before decomposing it (and
   skips epics that already carry it), so two decomposers can't duplicate the same epic.
+- If two in-flight PRs would conflict (overlapping changes), the later one may be **stacked** —
+  opened against the other's branch instead of `master` — rather than serialized or hand-merged.
+  Merge-readiness holds a stacked PR until its base merges and GitHub retargets it to `master`.
 - One task per PR; one PR per branch. **All code work happens in a per-task git worktree —
   never in the primary checkout or on `master`** (that isolation is what lets agents run
   concurrently).
