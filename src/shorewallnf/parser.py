@@ -236,5 +236,14 @@ def _build_policy(record: Record) -> Policy:
         raise ConfigError(
             f"unknown policy action {action!r}", path=record.path, line=record.line
         )
+    if len(record.fields) > 4:
+        # Shorewall's LIMIT:BURST / CONNLIMIT columns aren't supported yet — reject rather
+        # than silently drop them (#94, fail-fast).
+        raise ConfigError(
+            f"unsupported trailing policy columns {record.fields[4:]!r} "
+            "(only source, dest, action, log level are supported)",
+            path=record.path,
+            line=record.line,
+        )
     log_level = record.fields[3] if len(record.fields) > 3 else None
     return Policy(source=source, dest=dest, action=action, log_level=log_level)
