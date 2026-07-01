@@ -50,8 +50,10 @@ core ([ADR-0003](docs/adr/0003-design-approach.md)), and error handling
 
 ## Working agreement
 
-- **All work happens on a branch → pull request. Never commit to `master`.** Use a worktree
-  for isolation.
+- **All code work happens in its own git worktree — never in the primary checkout, and never
+  on `master`.** Multiple agents share this repo concurrently, so each task is isolated in a
+  worktree (branch → PR). The primary checkout stays on `master` and is only ever pulled, never
+  committed to.
 - One task per PR; reference the issue with `Closes #NN`.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `test:`), kept brief. Do
   **not** add AI or `Co-Authored-By:` trailers — the human running the session is the sole author.

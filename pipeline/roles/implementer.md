@@ -34,7 +34,11 @@ A `type:bug` is fixed TDD-first: write a failing test that reproduces the defect
    ```bash
    gh issue edit <TASK> --add-assignee @me --add-label status:in-progress --remove-label status:implementation-ready
    ```
-2. Create an isolated branch/worktree: `task/<TASK>-<slug>` (never work on `master`).
+2. Work in a **dedicated git worktree** on a new branch — never in the primary checkout or on
+   `master` (agent runtimes with worktree tooling do this for you):
+   ```bash
+   git worktree add ../snf-task-<TASK> -b task/<TASK>-<slug>
+   ```
 3. **TDD:** write a failing test → run it, confirm it fails → minimal implementation →
    run tests, confirm pass. Repeat per acceptance criterion.
 4. Keep the change on-architecture (Reader → Parser → IR → Validator → Generator → Applier).

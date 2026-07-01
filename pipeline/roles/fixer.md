@@ -26,7 +26,11 @@ Work a PR only when its linked task is `status:changes-requested`.
 ## Procedure
 
 1. Read every review thread; list the concrete changes requested (`gh pr view <PR> --comments`).
-2. Check out the PR branch: `gh pr checkout <PR>`.
+2. Check the PR out into its **own git worktree** — never onto the primary checkout or `master`:
+   ```bash
+   git fetch origin
+   git worktree add ../snf-pr-<PR> "$(gh pr view <PR> --json headRefName -q .headRefName)"
+   ```
 3. Reproduce each issue where possible, then fix it **via TDD** (failing test → fix → pass).
 4. Run the full gate: `ruff check .`, `mypy`, `pytest`.
 5. Push to the same PR branch.
