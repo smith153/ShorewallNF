@@ -15,5 +15,6 @@ def test_python_floor_is_consistent() -> None:
     assert pyproject["tool"]["ruff"]["target-version"] == "py311"
     assert pyproject["tool"]["mypy"]["python_version"] == "3.11"
 
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    assert '"3.11"' in ci
+    ci_lines = (ROOT / ".github" / "workflows" / "ci.yml").read_text().splitlines()
+    version_lines = [line for line in ci_lines if "python-version" in line]
+    assert version_lines and all('"3.11"' in line for line in version_lines)

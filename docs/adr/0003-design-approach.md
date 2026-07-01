@@ -28,7 +28,7 @@ be written by AI agents, which rewards a simple, uniform style over clever abstr
 3. **Errors: fail fast, exit gracefully.** A small exception family carrying file/line context,
    raised anywhere in the core and caught **once** in the CLI shell → one clear message →
    non-zero exit. No `Result` monads, no error codes threaded through returns. Detail is
-   [ADR — error-handling conventions](../../docs/adr/) (task #11).
+   deferred to the error-handling ADR (task #11).
 4. **Python floor ≥ 3.11**, confirmed. Reflected in `pyproject.toml` (`requires-python`,
    `tool.ruff.target-version`, `tool.mypy.python_version`) and CI, and guarded by
    `tests/test_python_floor.py`.
@@ -45,8 +45,8 @@ applied to architecture — add structure when a concrete need appears.
   data instead. Genuinely polymorphic spots (per-file parsers, per-rule generators) use a flat
   registry, which must be discoverable — mitigated by keeping registries in one obvious module
   per stage.
-- Downstream ADRs build on this: IR modeling ([#10](../adr/0001-ir-modeling.md)) and error
-  handling (#11) refine points 2 and 3.
+- Downstream ADRs build on this: IR modeling ([ADR-0001](0001-ir-modeling.md), task #10) and
+  error handling (task #11) refine points 2 and 3.
 
 ## Alternatives considered
 
