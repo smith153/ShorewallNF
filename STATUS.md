@@ -3,13 +3,14 @@
 > The living snapshot of where ShorewallNF is. The **Epic Author** reads this first. Keep it
 > current: when an epic is completed or the direction shifts, update this file in the same PR.
 
-_Last updated: 2026-06-30 (foundation)._
+_Last updated: 2026-07-01 (Architecture & Code Standards epic complete)._
 
 ## Where we are
 
-**Foundation only.** The repository scaffolding and the AI development pipeline exist; there
-is **no compiler yet**. The package `src/shorewallnf` is a stub. The next work is the MVP
-backlog below, starting with the Architecture epic.
+**Foundations set; compiler not yet started.** The scaffolding, the AI development pipeline,
+and the **Architecture & Code Standards epic (#3)** are complete — the load-bearing design
+decisions are recorded as ADRs (see below). There is still **no compiler**: `src/shorewallnf`
+holds only the IR stub. Next up is epic #1, **Project & CLI scaffolding**.
 
 Present:
 
@@ -17,8 +18,13 @@ Present:
   The behavioral **netns CI tier is stubbed** (`if: false`) pending the test-harness epic.
 - The pipeline: role prompts (`pipeline/roles/`), labels, workflow, issue/PR templates,
   CODEOWNERS, Claude Code adapter.
-- Design docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), ADR-0002 (unified `inet`),
-  and the foundation design spec under `docs/superpowers/specs/`.
+- Design docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), the ADRs
+  ([ADR-0001](docs/adr/0001-ir-modeling.md) IR modeling,
+  [ADR-0002](docs/adr/0002-unified-inet-dual-stack.md) unified `inet`,
+  [ADR-0003](docs/adr/0003-design-approach.md) design approach,
+  [ADR-0004](docs/adr/0004-error-handling.md) error handling), the
+  [module layout](docs/module-layout.md), and the foundation design spec under
+  `docs/superpowers/specs/`.
 
 ## MVP definition of done
 
@@ -31,9 +37,9 @@ compile every line.
 
 ### MVP core epics (dependency-ordered)
 
-0. **Architecture & Code Standards** — ADR-0001 (IR modeling: dataclasses vs pydantic),
-   confirm ADR-0002 details, module layout, error-handling conventions, and the overall design
-   approach (functional-core vs OOP, dispatch strategy, exception patterns).
+0. **Architecture & Code Standards** — ✅ **Done.** ADR-0001–0004 (IR modeling, unified `inet`
+   confirmed, design approach, error-handling conventions) and the module layout are merged;
+   ARCHITECTURE.md and CLAUDE.md reference them.
 1. **Project & CLI scaffolding** — CLI entrypoint; `params` + `?if`/`?FORMAT`/`?SECTION` preprocessor.
 2. **Config-parsing framework + family-aware IR model.**
 3. **Zones & interfaces + base nft skeleton** — `inet` tables/base-chains, stateful base,
