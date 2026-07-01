@@ -17,7 +17,6 @@
 - { name: "status:implementation-ready", color: "0e8a16", description: "Groomed; ready to implement" }
 - { name: "status:in-progress",          color: "fef2c0", description: "Claimed by an implementer" }
 - { name: "status:blocked",              color: "b60205", description: "Has unmet dependencies" }
-- { name: "status:decomposing",          color: "c5b3e6", description: "Epic claimed for decomposition (transient)" }
 - { name: "status:in-review",            color: "d4c5f9", description: "Has an open PR under review" }
 - { name: "status:changes-requested",    color: "d93f0b", description: "Reviewer found blocking issues; awaiting Fixer" }
 - { name: "status:review-passed",        color: "c2e0c6", description: "AI review clean; awaiting human merge" }

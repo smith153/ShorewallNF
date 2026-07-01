@@ -82,10 +82,12 @@ def test_decomposer_claims_via_atomic_ref() -> None:
 
 
 def test_status_decomposing_label_retired() -> None:
-    """The epic claim is now an atomic ref, not a label — no pipeline doc may reference it."""
+    """The epic claim is now an atomic ref, not a label — neither the pipeline docs nor the
+    canonical label config (`.github/labels.yml`) may reference it."""
+    sources = [*(ROOT / "pipeline").rglob("*.md"), ROOT / ".github" / "labels.yml"]
     lingering = [
-        md.relative_to(ROOT).as_posix()
-        for md in (ROOT / "pipeline").rglob("*.md")
-        if "status:decomposing" in md.read_text()
+        src.relative_to(ROOT).as_posix()
+        for src in sources
+        if "status:decomposing" in src.read_text()
     ]
     assert not lingering, "retired status:decomposing still referenced in:\n" + "\n".join(lingering)
