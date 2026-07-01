@@ -10,6 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
+# Directories whose markdown cross-links are guarded. pipeline/ role docs link each other and
+# workflow.md (e.g. ../workflow.md#comment-attribution), so those must resolve too (#101).
+LINKED_TREES = (DOCS, ROOT / "pipeline")
 
 _LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
@@ -25,14 +28,43 @@ def _relative_links(md: Path) -> list[str]:
 
 
 def test_all_relative_doc_links_resolve() -> None:
-    """Every relative markdown link under docs/ points at a real file."""
+    """Every relative markdown link under docs/ and pipeline/ points at a real file."""
     broken = [
         f"{md.relative_to(ROOT)} -> {target}"
-        for md in DOCS.rglob("*.md")
+        for tree in LINKED_TREES
+        for md in tree.rglob("*.md")
         for target in _relative_links(md)
         if not (md.parent / target).resolve().exists()
     ]
-    assert not broken, "dangling doc links:\n" + "\n".join(broken)
+    assert not broken, "dangling doc/pipeline links:\n" + "\n".join(broken)
+
+
+def _heading_slugs(md: Path) -> set[str]:
+    # GitHub-style anchor: lowercase, drop punctuation (keep word chars/space/hyphen), spaces→-.
+    slugs = set()
+    for line in md.read_text().splitlines():
+        if line.startswith("#"):
+            text = re.sub(r"[^\w\s-]", "", line.lstrip("#").strip().lower())
+            slugs.add(re.sub(r"\s+", "-", text))
+    return slugs
+
+
+def test_all_markdown_anchors_resolve() -> None:
+    """Every relative link's ``#anchor`` matches a heading in the target markdown file."""
+    broken = []
+    for tree in LINKED_TREES:
+        for md in tree.rglob("*.md"):
+            for match in _LINK.finditer(md.read_text()):
+                url = match.group(1)
+                if url.startswith(("http://", "https://", "mailto:")) or "#" not in url:
+                    continue
+                target, _, anchor = url.partition("#")
+                if not anchor:
+                    continue
+                dest = (md.parent / target).resolve() if target else md
+                if dest.suffix == ".md" and dest.exists() and anchor not in _heading_slugs(dest):
+                    broken.append(f"{md.relative_to(ROOT)} -> {url}")
+    assert not broken, "dangling markdown anchors:\n" + "\n".join(broken)
 
 
 def test_inet_family_scoping_is_resolved() -> None:
