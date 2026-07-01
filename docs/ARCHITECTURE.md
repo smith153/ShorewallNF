@@ -11,6 +11,21 @@ config dir ─► Reader ─► Parser ─► IR / model ─► Validator ─►
                  preprocessor resolved here                 (python3-nftables)
 ```
 
+## Design decisions (ADRs)
+
+The load-bearing decisions behind this pipeline live in [`adr/`](adr/):
+
+- [ADR-0001](adr/0001-ir-modeling.md) — the IR is frozen, family-aware stdlib `dataclasses`.
+- [ADR-0002](adr/0002-unified-inet-dual-stack.md) — one family-aware IR, unified `inet` output
+  (see *Dual-stack*, below).
+- [ADR-0003](adr/0003-design-approach.md) — functional core / imperative shell; data and
+  registry dispatch over deep class hierarchies.
+- [ADR-0004](adr/0004-error-handling.md) — one `ShorewallNFError` family, raised in the core and
+  caught once in the CLI shell → clean message, non-zero exit.
+
+Each stage below maps to a concrete module under `src/shorewallnf/` in
+[`module-layout.md`](module-layout.md).
+
 ## Stages
 
 - **Reader** — locates and loads the files in a configuration directory.

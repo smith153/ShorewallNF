@@ -22,6 +22,13 @@ the IR and emits nftables **JSON** (via `python3-nftables`). The IR is **family-
 (IPv4/IPv6) so one config produces family-correct `inet` output. Full detail:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+The foundational decisions are recorded as ADRs in [`docs/adr/`](docs/adr/): IR modeling
+([ADR-0001](docs/adr/0001-ir-modeling.md)), unified `inet` dual-stack
+([ADR-0002](docs/adr/0002-unified-inet-dual-stack.md)), overall design approach — functional
+core ([ADR-0003](docs/adr/0003-design-approach.md)), and error handling
+([ADR-0004](docs/adr/0004-error-handling.md)). The concrete stage→module map is
+[`docs/module-layout.md`](docs/module-layout.md).
+
 ## Standards
 
 - **Python ≥ 3.11**, full type hints. `mypy` runs in **strict** mode.
