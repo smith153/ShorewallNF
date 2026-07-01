@@ -34,15 +34,29 @@ A `type:bug` is fixed TDD-first: write a failing test that reproduces the defect
    ```bash
    gh issue edit <TASK> --add-assignee @me --add-label status:in-progress --remove-label status:implementation-ready
    ```
-2. Work in a **dedicated git worktree** on a new branch — never in the primary checkout or on
-   `master` (agent runtimes with worktree tooling do this for you):
+2. **Guard against a concurrent claim.** Step 1 is *not* a true compare-and-swap: it doesn't
+   read the pre-state, and under the shared account the assignee can't distinguish agents, so
+   two agents can both "claim" the same task in the same window (see #60). Before writing any
+   code, confirm no other agent already owns it:
+   ```bash
+   git ls-remote --heads origin "task/<TASK>-*"        # another agent already pushed a branch?
+   gh pr list --state open --search "<TASK> in:title"  # ...or already opened a PR?
+   ```
+   If either shows a hit, the other agent owns it — **release your claim and pick a different task**:
+   ```bash
+   gh issue edit <TASK> --remove-assignee @me --remove-label status:in-progress --add-label status:implementation-ready
+   ```
+3. Work in a **dedicated git worktree** on a new branch — never in the primary checkout or on
+   `master` (agent runtimes with worktree tooling do this for you). Keep the branch name
+   deterministic (`task/<TASK>-<slug>`) so `git worktree add -b` also collision-detects a
+   same-checkout race (the branch already exists → it fails loudly instead of clobbering):
    ```bash
    git worktree add ../snf-task-<TASK> -b task/<TASK>-<slug>
    ```
-3. **TDD:** write a failing test → run it, confirm it fails → minimal implementation →
+4. **TDD:** write a failing test → run it, confirm it fails → minimal implementation →
    run tests, confirm pass. Repeat per acceptance criterion.
-4. Keep the change on-architecture (Reader → Parser → IR → Validator → Generator → Applier).
-5. Run the full gate locally: `ruff check .`, `mypy`, `pytest`.
+5. Keep the change on-architecture (Reader → Parser → IR → Validator → Generator → Applier).
+6. Run the full gate locally: `ruff check .`, `mypy`, `pytest`.
 
 ## Outputs
 

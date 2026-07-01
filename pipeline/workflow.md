@@ -63,11 +63,18 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 
 ## Collision avoidance
 
-Volunteers run agents concurrently (often overnight), so claiming must be atomic:
+Volunteers run agents concurrently (often overnight), so claiming aims to be atomic — though
+under a single shared account it can only *approximate* it (see below):
 
 - An agent **claims a task by self-assigning AND adding `status:in-progress`** in the same step.
 - Agents only pick tasks that are **unassigned**, `status:implementation-ready`, and **not**
   `status:blocked`.
+- **The claim is not a true compare-and-swap.** It doesn't read the pre-state, and the shared
+  account makes the assignee non-distinguishing, so two agents can both "claim" the same task in
+  a narrow window (#60). The Implementer therefore **re-checks for a rival branch/PR before
+  writing code** and releases its claim if one exists — this closes the common case where one
+  agent pushes or opens a PR first. Deterministic branch names (`task/<N>-<slug>`) also make
+  `git worktree add -b` collision-detect a same-checkout race.
 - The **Epic Decomposer** claims an epic with `status:decomposing` before decomposing it (and
   skips epics that already carry it), so two decomposers can't duplicate the same epic.
 - One task per PR; one PR per branch. **All code work happens in a per-task git worktree —
