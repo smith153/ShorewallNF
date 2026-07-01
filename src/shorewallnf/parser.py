@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from .errors import ConfigError
+from .ir import Zone
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -100,3 +101,37 @@ def build_records(
             validate(obj, record)
         result.append(obj)
     return result
+
+
+# --- per-file parsers (built on the scaffold above) --------------------------
+
+_ZONE_TYPES = frozenset({"ipv4", "ipv6", "firewall"})
+
+
+def parse_zones(records: Iterable[Record]) -> tuple[Zone, ...]:
+    """Parse ``zones``-file records (``<name> <type>``) into :class:`~shorewallnf.ir.Zone` IR.
+
+    Per ADR-0002 the ``ipv4``/``ipv6`` type does **not** put a family on the zone (family lives
+    on membership); the ``firewall`` type marks the ``$FW`` zone via ``is_firewall``. A short
+    line, an unknown type, or a duplicate zone name fails fast with :class:`ConfigError`.
+    """
+    seen: set[str] = set()
+
+    def reject_duplicate(zone: Zone, record: Record) -> None:
+        if zone.name in seen:
+            raise ConfigError(
+                f"duplicate zone {zone.name!r}", path=record.path, line=record.line
+            )
+        seen.add(zone.name)
+
+    return tuple(build_records(records, _build_zone, reject_duplicate))
+
+
+def _build_zone(record: Record) -> Zone:
+    name = require_field(record, 0, "zone name")
+    zone_type = require_field(record, 1, "zone type")
+    if zone_type not in _ZONE_TYPES:
+        raise ConfigError(
+            f"unknown zone type {zone_type!r}", path=record.path, line=record.line
+        )
+    return Zone(name=name, is_firewall=zone_type == "firewall")

@@ -48,12 +48,14 @@ class ZoneMember:
 class Zone:
     """A named zone — one family-independent identity (ADR-0002).
 
-    Family is not modeled on the zone; it lives on each :class:`ZoneMember`. The special
-    firewall zone (``$FW``) has no interface members, so ``members`` defaults to empty.
+    Family is not modeled on the zone; it lives on each :class:`ZoneMember`. ``is_firewall``
+    marks the single ``firewall``-type zone (Shorewall's ``$FW``) — the firewall host itself,
+    which has no interface members, so ``members`` defaults to empty.
     """
 
     name: str
     members: tuple[ZoneMember, ...] = ()
+    is_firewall: bool = False
 
 
 @dataclass(frozen=True, slots=True)
