@@ -110,6 +110,7 @@ why (swap, don't accumulate):
 ```bash
 gh issue edit <TASK> --remove-assignee <assignee> \
   --remove-label status:in-progress --add-label status:implementation-ready
+gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/task/<TASK>   # release the claim ref
 gh issue comment <TASK> --body "Reclaimed: stale claim — no PR and no activity for N days. Back to the queue."
 ```
 
@@ -126,7 +127,8 @@ gh issue close <EPIC> --comment "All child tasks merged (#<list>). Epic complete
 - Do not mark ready if any check is missing; when in doubt, leave it and note what's missing.
 - Only un-block when **every** blocker is closed — never clear `status:blocked` speculatively.
 - Only reclaim a claim that has **no open PR and** is stale — never yank an actively-worked task;
-  reclaim is non-destructive (it just returns the task to the Implementer queue).
+  reclaim is non-destructive (it just returns the task to the Implementer queue). Reclaiming also
+  **deletes the `task/<N>` claim ref** so the task can be re-claimed.
 - Only close an epic that has **≥1 child task and every child closed**. **Never** close a
   childless/undecomposed epic (e.g. an approved-but-not-yet-decomposed epic like #74–#78) — that
   would discard real work. The close is reversible: if the epic turns out under-decomposed, reopen

@@ -63,11 +63,21 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 
 ## Collision avoidance
 
-Volunteers run agents concurrently (often overnight), so claiming must be atomic:
+Volunteers run agents concurrently (often overnight) on separate machines, so claiming must be
+atomic on the **shared remote** — a local worktree or branch can't lock across machines:
 
-- An agent **claims a task by self-assigning AND adding `status:in-progress`** in the same step.
-- Agents only pick tasks that are **unassigned**, `status:implementation-ready`, and **not**
+- An agent **claims a task by atomically creating the ref `refs/heads/task/<N>`** on the remote
+  (`gh api --method POST .../git/refs`) *before* doing any work. Creating a ref is atomic
+  server-side: exactly one agent wins; the rest get `422 Reference already exists` and move on to
+  another task. The branch is the bare issue number (`task/<N>`) so every agent computes the same
+  ref for the same task.
+- Only *after* winning the ref does the agent swap labels (`implementation-ready` → `in-progress`)
+  and self-assign — that's human-visible status, **not** the lock (assignee can't be a lock under
+  one shared account). Agents still only consider tasks that are `implementation-ready` and not
   `status:blocked`.
+- A claim is released by **deleting the ref**: the Implementer on abort, or Merge-readiness when it
+  reclaims a stale claim. (Enable *automatically delete head branches* so a merged `task/<N>` also
+  frees the ref and can't cause a false `422` on a later re-claim.)
 - The **Epic Decomposer** claims an epic with `status:decomposing` before decomposing it (and
   skips epics that already carry it), so two decomposers can't duplicate the same epic.
 - If two in-flight PRs would conflict (overlapping changes), the later one may be **stacked** —

@@ -35,14 +35,21 @@ A `type:bug` is fixed TDD-first: write a failing test that reproduces the defect
 > (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
 > with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
 
-1. **Claim atomically** (self-assign AND mark in-progress in one step) so no one else grabs it:
+1. **Claim atomically on the remote** — create the claim ref *before* any work; the bare issue
+   number makes every agent compute the same ref, and ref creation is atomic server-side:
+   ```bash
+   sha="$(gh api repos/{owner}/{repo}/git/ref/heads/master -q .object.sha)"
+   gh api --method POST repos/{owner}/{repo}/git/refs -f ref=refs/heads/task/<TASK> -f sha="$sha"
+   ```
+   A **`422` (Reference already exists)** means another agent claimed it — skip to the next task.
+   On success you own it; now record human-visible status (not the lock):
    ```bash
    gh issue edit <TASK> --add-assignee @me --add-label status:in-progress --remove-label status:implementation-ready
    ```
-2. Work in a **dedicated git worktree** on a new branch — never in the primary checkout or on
+2. Work in a **dedicated git worktree** tracking the claimed branch — never the primary checkout or
    `master` (agent runtimes with worktree tooling do this for you):
    ```bash
-   git worktree add ../snf-task-<TASK> -b task/<TASK>-<slug>
+   git fetch origin && git worktree add ../snf-task-<TASK> task/<TASK>
    ```
 3. **TDD:** write a failing test → run it, confirm it fails → minimal implementation →
    run tests, confirm pass. Repeat per acceptance criterion.
@@ -54,7 +61,7 @@ A `type:bug` is fixed TDD-first: write a failing test that reproduces the defect
 Open a PR that auto-closes the issue and mark it in-review:
 
 ```bash
-git push -u origin task/<TASK>-<slug>
+git push
 gh pr create --fill --title "<goal>" --body "Closes #<TASK>
 
 ## How it was tested
@@ -81,7 +88,11 @@ rebase if needed. Prefer this over hand-resolving conflicts or forcing the work 
 - Respect the Global Constraints in the plan/CLAUDE.md (Python ≥3.11, type hints, minimal deps).
 - Follow the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): YAGNI (no speculative code),
   fail-fast with a clear error over defensive `if`s, and brief comments/PR summaries.
-- If the task turns out to be wrong or blocked, stop and add `needs-human` with an explanation.
+- If the task turns out to be wrong or blocked, stop, **delete your claim ref** to release it, and
+  add `needs-human` with an explanation:
+  ```bash
+  gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/task/<TASK>
+  ```
 
 ## Stop conditions
 
