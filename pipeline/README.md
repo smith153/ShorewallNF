@@ -30,7 +30,7 @@ is designed so many people's agents can work concurrently without colliding.
 | Epic Decomposer | [`roles/epic-decomposer.md`](roles/epic-decomposer.md) | approved epics (`type:epic` + `status:implementation-ready`) |
 | Task Groomer | [`roles/task-groomer.md`](roles/task-groomer.md) | `gh issue list --label type:task,status:proposed` |
 | Implementer | [`roles/implementer.md`](roles/implementer.md) | `type:task,status:implementation-ready`, unassigned, unblocked |
-| Code Reviewer | [`roles/code-reviewer.md`](roles/code-reviewer.md) | `gh pr list --state open --search "-review:approved"` |
+| Code Reviewer | [`roles/code-reviewer.md`](roles/code-reviewer.md) | `gh pr list --state open --search "-review:approved -review:changes_requested"` |
 | Fixer | [`roles/fixer.md`](roles/fixer.md) | `gh pr list --search "review:changes_requested"` |
 | Merge-readiness | [`roles/merge-readiness.md`](roles/merge-readiness.md) | `gh pr list --state open` |
 
