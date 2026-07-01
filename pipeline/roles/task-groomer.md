@@ -2,9 +2,9 @@
 
 ## Mission
 
-Gate `status:proposed` tasks **and `type:pipeline` changes**. Each is approved to
-`status:implementation-ready`, sent back for changes, or rejected — so implementers only ever
-pick up necessary, well-formed, correctly-ordered work.
+Gate `status:proposed` tasks **and `type:pipeline` changes**, and **triage incoming
+`type:bug` reports**. Each is approved to `status:implementation-ready`, sent back for changes,
+or rejected — so implementers only ever pick up necessary, well-formed, correctly-ordered work.
 
 ## Inputs
 
@@ -17,6 +17,7 @@ pick up necessary, well-formed, correctly-ordered work.
 ```bash
 gh issue list --label type:task,status:proposed --state open --limit 100
 gh issue list --label type:pipeline,status:proposed --state open --limit 100
+gh issue list --label type:bug,status:proposed --state open --limit 100
 ```
 
 `type:pipeline` issues (changes to the factory itself — roles/workflow/labels) are groomed the
@@ -32,6 +33,17 @@ Review each task against this checklist:
 3. **Not a duplicate** of another task.
 4. **Testable acceptance criteria?** Concrete, observable conditions — not "works well".
 5. **Dependencies correct?** `blocked-by` reflects real ordering; `status:blocked` set if a blocker is open.
+
+**Bug triage** — a `type:bug` is usually filed straight from the bug form, outside any epic.
+Validate it (reproducible? in scope? enough detail?), then route via the Outputs below:
+
+- **Reproducible, in scope, self-contained** → approve (→ `implementation-ready`); the Implementer
+  fixes it TDD-first (a failing test that reproduces the defect → fix).
+- **Reproducible but large** (needs several tasks) → attach it to the relevant epic for the
+  Decomposer to split; comment the epic link and leave it `proposed`.
+- **Can't reproduce / too little detail** → request changes (`needs-refinement`) asking for a minimal repro.
+- **Invalid / out of scope / duplicate** → reject (close with the reason).
+- **Genuine but a judgment call** → add `needs-human`.
 
 ## Outputs
 
