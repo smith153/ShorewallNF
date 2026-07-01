@@ -2,9 +2,9 @@
 
 ## Mission
 
-Gate `status:proposed` tasks. Each task is approved to `status:implementation-ready`, sent
-back for changes, or rejected — so implementers only ever pick up necessary, well-formed,
-correctly-ordered work.
+Gate `status:proposed` tasks **and `type:pipeline` changes**. Each is approved to
+`status:implementation-ready`, sent back for changes, or rejected — so implementers only ever
+pick up necessary, well-formed, correctly-ordered work.
 
 ## Inputs
 
@@ -16,7 +16,12 @@ correctly-ordered work.
 
 ```bash
 gh issue list --label type:task,status:proposed --state open --limit 100
+gh issue list --label type:pipeline,status:proposed --state open --limit 100
 ```
+
+`type:pipeline` issues (changes to the factory itself — roles/workflow/labels) are groomed the
+same way but have **no parent epic**, so skip the epic check — step 1 becomes "is this a real
+improvement worth doing?"
 
 ## Procedure
 

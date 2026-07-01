@@ -17,7 +17,13 @@ Unassigned, ready, unblocked tasks:
 ```bash
 gh issue list --label type:task,status:implementation-ready --state open \
   --search "no:assignee -label:status:blocked" --limit 50
+gh issue list --label type:pipeline,status:implementation-ready --state open \
+  --search "no:assignee -label:status:blocked" --limit 50
 ```
+
+`type:pipeline` tasks (changes to the factory itself) are picked up the same way. They're
+usually docs (role/workflow `.md`), so TDD applies where there's testable behavior (add a
+docs-consistency guard); a pure prose edit is verified by the existing docs tests + review.
 
 ## Procedure
 
