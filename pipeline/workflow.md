@@ -5,8 +5,10 @@ through two phases: an upstream **Refinement** phase that grooms ideas into well
 `implementation-ready` tasks, then a standard GitHub **Delivery** phase that turns tasks
 into merged code.
 
-Labels ([`labels.md`](labels.md)) describe an item's type/status/area; native GitHub
-state (issues, PRs, reviews, CI) carries the rest.
+Labels ([`labels.md`](labels.md)) describe an item's type/status; native GitHub state
+(issues, PRs, CI) carries the rest. Review **verdicts** are the exception — a single shared
+account can't cast `--approve`/`--request-changes` on its own PR, so review state rides on
+`status:*` labels, not GitHub reviews.
 
 ## Roles
 
@@ -27,8 +29,8 @@ state (issues, PRs, reviews, CI) carries the rest.
 Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► task:proposed
      ─► Groomer ──(≤2 rounds)──► implementation-ready
      ─► Implementer (assignee + in-progress) ─► PR (Closes #N) ─► in-review
-     ─► Code Reviewer ⇄ Fixer ─► approved + green CI
-     ─► Merge-readiness ─► ready-to-merge ─►(human merge)─► closed
+     ─► Code Reviewer ─► review-passed  (issues → changes-requested ⇄ Fixer → in-review)
+     ─► Merge-readiness (review-passed + green CI) ─► ready-to-merge ─►(human merge)─► closed
 ```
 
 ## Status transitions
@@ -40,7 +42,9 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 | `status:implementation-ready` | Groomed & startable (epics: approved for decomposition) | Human (epics), Task Groomer (tasks) | Implementer claims it |
 | `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened |
 | `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → Merge-readiness un-block sweep clears it |
-| `status:in-review` | Has an open PR under review | Implementer | Review approved + CI green |
+| `status:in-review` | Has an open PR awaiting (re-)review | Implementer / Fixer | Reviewer sets `review-passed` or `changes-requested` |
+| `status:changes-requested` | Reviewer found blocking issues | Code Reviewer | Fixer pushes a fix → back to `in-review` |
+| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | Merge-readiness sets `ready-to-merge` (CI green, up to date) |
 | `status:ready-to-merge` | Approved + green; awaiting human merge | Merge-readiness | Human merges |
 
 ## Status label invariants
@@ -48,8 +52,9 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 - **One status at a time.** A task carries exactly one `status:*` label, optionally plus
   `status:blocked`. Each role **swaps** the label — removing the prior status as it adds the
   next — rather than accumulating: claim = −`implementation-ready` +`in-progress`; PR opened =
-  −`in-progress` +`in-review`; merge-ready = −`in-review` +`ready-to-merge`. Merging closes the
-  issue, so its final `status:*` is moot.
+  −`in-progress` +`in-review`; review clean = −`in-review` +`review-passed`; review found issues =
+  −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; merge-ready =
+  −`review-passed` +`ready-to-merge`. Merging closes the issue, so its final `status:*` is moot.
 - **Un-blocking.** When a blocker's PR merges (its issue closes), the Merge-readiness un-block
   sweep removes `status:blocked` from each dependent once **all** its `blocked-by` blockers are
   closed, returning it to the queue.
@@ -71,8 +76,9 @@ Only two human interventions are required; everything between them is autonomous
    and adding `status:implementation-ready` to the `type:epic` issue. The Decomposer only
    picks up epics in that approved state.
 2. **Merge (final look).** Branch protection on `master` requires green CI **and** a human
-   approving review (via [`CODEOWNERS`](../.github/CODEOWNERS)). The AI Code Reviewer's
-   approval must never satisfy this gate on its own.
+   approving review (via [`CODEOWNERS`](../.github/CODEOWNERS)). The AI Code Reviewer never
+   casts a GitHub review verdict — it signals its verdict with `status:*` labels — so it can
+   never satisfy this gate.
 
 ## Escalation
 
