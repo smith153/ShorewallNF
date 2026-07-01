@@ -29,6 +29,12 @@ gh issue list --label status:in-progress --state open --limit 100
 > (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
 > with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
 
+> **Automation.** The judgment-free sweeps below — un-block, stale-claim reap, ready-to-merge
+> promotion, review-freshness reset, and one-status-invariant flagging — are also run by the
+> `pipeline-reconcile` GitHub Action (`.github/workflows/reconcile.yml`, #106). It ships
+> **dry-run**; until a maintainer sets the `RECONCILE_APPLY` repo variable to `true`, this role
+> stays the runner. The **epic-completion sweep is not automated** — always do it here.
+
 **Merge-ready check** — for each open PR, verify all of:
 
 1. **CI green:** `gh pr checks <PR>` all passing.
@@ -38,13 +44,15 @@ gh issue list --label status:in-progress --state open --limit 100
    gh pr view <PR> --json body -q .body | grep -ioE 'clos(e|es|ed) +#[0-9]+'   # the linked task
    gh issue view <TASK> --json labels -q '.labels[].name'   # expect status:review-passed
    ```
-3. **Review is current:** the commit the review was cast against is still the PR head — no
-   commits landed since. If they differ the `review-passed` label is **stale**: reset the task
-   to `status:in-review` (do **not** promote) so it gets re-reviewed, then move on.
+3. **Review is current:** the latest review was cast at or after the current head commit — no
+   commits landed since. `gh` exposes **no per-review commit**, so compare timestamps: the
+   latest review's `submittedAt` vs. the head commit's `committedDate`. If the head is newer the
+   `review-passed` label is **stale**: reset the task to `status:in-review` (do **not** promote)
+   so it gets re-reviewed, then move on.
    ```bash
-   gh pr view <PR> --json headRefOid -q .headRefOid
-   gh pr view <PR> --json reviews -q '.reviews[-1].commit.oid'   # commit the latest review saw
-   # if they differ:
+   gh pr view <PR> --json commits -q '.commits[-1].committedDate'   # head commit time
+   gh pr view <PR> --json reviews -q '.reviews[-1].submittedAt'     # latest review time
+   # if the head commit is newer than the latest review:
    gh issue edit <TASK> --remove-label status:review-passed --add-label status:in-review
    ```
 4. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`

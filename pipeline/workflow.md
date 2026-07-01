@@ -61,6 +61,18 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
   sweep removes `status:blocked` from each dependent once **all** its `blocked-by` blockers are
   closed, returning it to the queue.
 
+## Automation
+
+The judgment-free transitions — un-blocking dependents, reaping stale claims, promoting
+`review-passed`→`ready-to-merge`, resetting stale reviews, and flagging one-status-invariant
+violations — are run by the `pipeline-reconcile` GitHub Action
+(`.github/workflows/reconcile.yml`, #106), not only the Merge-readiness role. It is an
+idempotent, **level-triggered** reconcile: a cron pass guarantees liveness and the whole board
+is re-derived each run, so a missed event self-heals. It ships **dry-run** (mutates only when
+the `RECONCILE_APPLY` repo variable is `true`); until enabled, Merge-readiness stays the runner.
+Its comments carry the `snf-agent:reconcile` signature like any other role. Epic-completion is
+still role-only.
+
 ## Collision avoidance
 
 Volunteers run agents concurrently (often overnight) on separate machines, so claiming must be

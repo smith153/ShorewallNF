@@ -1,0 +1,53 @@
+name: pipeline-reconcile
+
+# Idempotent, level-triggered reconcile of the pipeline's judgment-free state transitions
+# (issue #106): un-block, stale-claim reap, ready-to-merge promotion, review-freshness reset,
+# and one-status-invariant flagging. Correctness comes from the cron pass; the event triggers
+# just cut latency. The whole board is re-derived each run, so a missed event self-heals.
+#
+# SAFE BY DEFAULT: it only mutates when the repo variable (or dispatch input) RECONCILE_APPLY
+# == "true"; otherwise it prints the actions it would take (dry-run). See scripts/reconcile/
+# and pipeline/roles/merge-readiness.md.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # correctness backstop — do not rely on events alone
+  issues:
+    types: [closed, labeled, unlabeled]
+  pull_request:
+    types: [synchronize, closed]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Set to 'true' to apply changes; otherwise dry-run"
+        default: "false"
+
+# Least privilege: label/assignee edits + comments, plus contents:write to delete a
+# task/<N> claim ref when reaping a stale claim.
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+
+# One reconcile at a time — serializes the mechanical writes so two runs can't race.
+concurrency:
+  group: pipeline-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reconcile pipeline state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
+          RECONCILE_APPLY: ${{ inputs.apply || vars.RECONCILE_APPLY || 'false' }}
+          RECONCILE_STALE_DAYS: ${{ vars.RECONCILE_STALE_DAYS || '2' }}
+        run: python -m reconcile.run

@@ -25,7 +25,8 @@ Present:
 - Python package skeleton with `ruff`/`mypy`/`pytest` and a CI workflow (lint/type/test).
   The behavioral **netns CI tier is stubbed** (`if: false`) pending the test-harness epic.
 - The pipeline: role prompts (`pipeline/roles/`), labels, workflow, issue/PR templates,
-  CODEOWNERS, Claude Code adapter.
+  CODEOWNERS, Claude Code adapter, and a `pipeline-reconcile` GitHub Action (dry-run) that
+  automates the judgment-free state transitions (#106).
 - Design docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), the ADRs
   ([ADR-0001](docs/adr/0001-ir-modeling.md) IR modeling,
   [ADR-0002](docs/adr/0002-unified-inet-dual-stack.md) unified `inet`,
