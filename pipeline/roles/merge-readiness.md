@@ -3,20 +3,23 @@
 ## Mission
 
 Keep the delivery queue accurate for the next picker: (1) surface the PRs that are genuinely
-ready to merge and label them, and (2) un-block tasks whose dependencies have all merged. You
-never merge — that is the human's final gate.
+ready to merge and label them, (2) un-block tasks whose dependencies have all merged, and
+(3) reclaim stale `in-progress` claims back to the queue. You never merge — that is the human's
+final gate.
 
 ## Inputs
 
 - Open PRs, their CI status, the linked task's `status:review-passed` label, and merge state
   (up to date with `master`?).
 - Open issues carrying `status:blocked` and their `blocked-by` references.
+- Open issues carrying `status:in-progress` (to spot and reclaim abandoned claims).
 
 ## Queue
 
 ```bash
 gh pr list --state open --limit 100
 gh issue list --label status:blocked --state open --limit 100
+gh issue list --label status:in-progress --state open --limit 100
 ```
 
 ## Procedure
@@ -52,6 +55,17 @@ gh issue list --label status:blocked --state open --json number,body \
 gh issue view <N> --json state -q .state   # CLOSED ?
 ```
 
+**Stale-claim sweep** — for each open issue with `status:in-progress`, reclaim abandoned claims
+so they don't stall forever. A claim is stale when it has **no open PR** *and* the issue hasn't
+been touched in **N days** (default 2 — tune here):
+
+```bash
+gh issue list --label status:in-progress --state open --json number,updatedAt,assignees \
+  -q '.[] | "#\(.number)\t\(.updatedAt)\t\(.assignees|map(.login)|join(","))"'
+# for each: skip if a PR already closes it; else if updatedAt is older than N days, reclaim it.
+gh pr list --state open --search "<TASK> in:body"   # any open PR for this task? -> skip
+```
+
 ## Outputs
 
 When a PR passes all checks, swap the linked issue to ready and note it on the PR (swap, don't
@@ -71,12 +85,24 @@ gh issue edit <TASK> --remove-label status:blocked
 
 Leave it blocked if any blocker is still open.
 
+When a claim is stale (no open PR **and** untouched for N days), reclaim it to the queue and say
+why (swap, don't accumulate):
+
+```bash
+gh issue edit <TASK> --remove-assignee <assignee> \
+  --remove-label status:in-progress --add-label status:implementation-ready
+gh issue comment <TASK> --body "Reclaimed: stale claim — no PR and no activity for N days. Back to the queue."
+```
+
 ## Guardrails
 
 - **Never merge** and never bypass branch protection — a human clicks merge.
 - Do not mark ready if any check is missing; when in doubt, leave it and note what's missing.
 - Only un-block when **every** blocker is closed — never clear `status:blocked` speculatively.
+- Only reclaim a claim that has **no open PR and** is stale — never yank an actively-worked task;
+  reclaim is non-destructive (it just returns the task to the Implementer queue).
 
 ## Stop conditions
 
-Stop when no open PR can be marked ready and no blocked task can be un-blocked.
+Stop when no open PR can be marked ready, no blocked task can be un-blocked, and no stale claim
+can be reclaimed.

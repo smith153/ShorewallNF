@@ -40,7 +40,7 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 | `status:proposed` | Awaiting refinement/approval | Epic Author (epics), Decomposer (tasks) | Human approves epic / Groomer accepts task |
 | `status:needs-refinement` | Groomer requested changes | Task Groomer | Decomposer/author revises → back to `proposed` |
 | `status:implementation-ready` | Groomed & startable (epics: approved for decomposition) | Human (epics), Task Groomer (tasks) | Implementer claims it |
-| `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened |
+| `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened; or reclaimed to `implementation-ready` if the claim goes stale (Merge-readiness) |
 | `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → Merge-readiness un-block sweep clears it |
 | `status:in-review` | Has an open PR awaiting (re-)review | Implementer / Fixer | Reviewer sets `review-passed` or `changes-requested` |
 | `status:changes-requested` | Reviewer found blocking issues | Code Reviewer | Fixer pushes a fix → back to `in-review` |
