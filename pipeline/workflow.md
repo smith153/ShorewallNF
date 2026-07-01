@@ -67,7 +67,9 @@ Volunteers run agents concurrently (often overnight), so claiming must be atomic
 - An agent **claims a task by self-assigning AND adding `status:in-progress`** in the same step.
 - Agents only pick tasks that are **unassigned**, `status:implementation-ready`, and **not**
   `status:blocked`.
-- One task per PR; one PR per branch. Never commit to `master`.
+- One task per PR; one PR per branch. **All code work happens in a per-task git worktree —
+  never in the primary checkout or on `master`** (that isolation is what lets agents run
+  concurrently).
 
 ## Human gates
 

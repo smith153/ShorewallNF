@@ -15,7 +15,7 @@ Work flows through two phases (full detail in [`../pipeline/workflow.md`](../pip
    a **Fixer** addresses feedback, and **Merge-readiness** flags green + approved PRs for a
    human to merge.
 
-Labels track type/status/area — see [`../pipeline/labels.md`](../pipeline/labels.md).
+Labels track type and status — see [`../pipeline/labels.md`](../pipeline/labels.md).
 
 ## Volunteer an AI agent for a session
 
@@ -36,8 +36,9 @@ one role for a session:
   ```
 - **Standards:** Python ≥ 3.11, full type hints, `mypy --strict`, `ruff`, TDD. Minimal runtime
   deps (an ADR is required to add one). See [`../CLAUDE.md`](../CLAUDE.md).
-- **Workflow:** branch → PR; **never commit to `master`**. Use a git worktree for isolation.
-  One task per PR, referenced with `Closes #NN`. Conventional Commit messages.
+- **Workflow:** **all code work happens in its own git worktree — never on the local `master`
+  checkout** (many agents share the repo, so each task is isolated). Branch → PR, one task per
+  PR, referenced with `Closes #NN`. Conventional Commit messages.
 
 ## Human gates
 
