@@ -77,6 +77,23 @@ Volunteers run agents concurrently (often overnight), so claiming must be atomic
   never in the primary checkout or on `master`** (that isolation is what lets agents run
   concurrently).
 
+## Comment attribution
+
+Everyone — the maintainer and every agent — posts to GitHub as the same shared account, so a
+comment's author can't tell human from agent. Agents make themselves identifiable instead:
+
+- **Sign every comment.** Each agent comment on an issue or PR ends with the machine-readable
+  trailer `<!-- snf-agent:<role> -->` (invisible when rendered) plus a visible `— <role> (agent)`.
+- **Unsigned means human.** A comment without that trailer is the maintainer's.
+- **Heed human input.** Before acting on an item, each role scans its comments; if any are
+  unsigned and newer than that role's own last signed comment, the role must **either** do what
+  they ask (when it is in the role's scope) **or** reply — signed — acknowledging it and route it
+  (`needs-human`, a new issue, or a status reset). Never silently proceed past unaddressed human
+  input.
+
+A comment on an item no role will soon touch is only seen when a role next picks it up; flag such
+items for a human if they need faster attention.
+
 ## Human gates
 
 Only two human interventions are required; everything between them is autonomous.

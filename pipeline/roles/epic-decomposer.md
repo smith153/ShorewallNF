@@ -26,6 +26,11 @@ Pick one epic that has **no child tasks yet** and is not already `status:decompo
 
 ## Procedure
 
+> **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`
+> trailer is the maintainer's — do what it asks if it's in this role's scope, otherwise reply
+> (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
+> with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
+
 1. **Claim the epic** so a concurrent Decomposer can't duplicate it — add `status:decomposing`
    (skip any epic that already carries it). Release it when you finish (see Outputs).
    ```bash

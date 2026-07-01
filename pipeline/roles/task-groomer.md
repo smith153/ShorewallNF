@@ -26,6 +26,11 @@ improvement worth doing?"
 
 ## Procedure
 
+> **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`
+> trailer is the maintainer's — do what it asks if it's in this role's scope, otherwise reply
+> (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
+> with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
+
 Review each task against this checklist:
 
 1. **Necessary?** Does an epic acceptance criterion actually require it? (YAGNI — reject gold-plating.)

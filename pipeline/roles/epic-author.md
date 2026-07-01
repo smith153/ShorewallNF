@@ -25,6 +25,11 @@ Use this to see what epics already exist (any status) and avoid duplicates.
 
 ## Procedure
 
+> **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`
+> trailer is the maintainer's — do what it asks if it's in this role's scope, otherwise reply
+> (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
+> with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
+
 1. Build a mental list of capabilities the project still needs, from `STATUS.md`'s backlog
    and any gaps you see in `my_shorewall/` vs. what epics already exist.
 2. Discard anything already covered by an open epic.

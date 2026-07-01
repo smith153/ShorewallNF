@@ -29,6 +29,11 @@ Fixer). GitHub review **verdicts** aren't used here: a single shared account can
 
 ## Procedure
 
+> **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`
+> trailer is the maintainer's — do what it asks if it's in this role's scope, otherwise reply
+> (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
+> with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
+
 1. Confirm the PR's linked task is `status:in-review` (see Queue); if not, skip it.
 2. Check CI status (`gh pr checks <PR>`); if red, the change isn't ready — note it.
 3. Read the diff: does it satisfy the task's acceptance criteria?
