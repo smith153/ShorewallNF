@@ -36,7 +36,7 @@ Pick one epic that has no child tasks yet.
 For each task, create a `status:proposed` issue linked to the epic, and mark the ordering:
 
 ```bash
-gh issue create --label type:task,status:proposed,area:<area> \
+gh issue create --label type:task,status:proposed \
   --title "Task: <goal>" \
   --body "Parent epic: #<EPIC>
 
