@@ -47,6 +47,21 @@ generator is responsible for the translation:
 | Rule sections | often implicit | explicit `?SECTION ESTABLISHED/RELATED/INVALID/NEW…` |
 | Zones | same names, typed per family | same names, typed per family |
 
+### Family scoping
+
+Family is **data on the IR**, inferred by the Parser and consumed by the Generator (full rules
+in [ADR-0002](adr/0002-unified-inet-dual-stack.md#resolution-2026-07-01-family-scoping-and-cross-family-zones)):
+
+- **Rules** carry a `family` of `both` (default), `ipv4`, or `ipv6`. It is inferred from the
+  rule's content — an address literal or a family-specific protocol (`icmp` vs `ipv6-icmp`) fixes
+  it; NAT is `ipv4` by construction — and defaults to `both` when nothing pins it. A `both` rule
+  is emitted once in `inet` with no family guard; a scoped rule gets `meta nfproto ipv4|ipv6`.
+  Mixing v4 and v6 literals in one rule is a fail-fast validation error.
+- **Zones** share one namespace (`net`, not `net`/`net6`); **family lives on membership**, not on
+  the zone. Interface membership is dual by default; a host/CIDR entry contributes only its own
+  family. The Generator materializes each zone into per-family nft sets (`@net_ipv4`,
+  `@net_ipv6`), since an nftables set holds a single family.
+
 ## Testing pyramid
 
 1. **Golden-file snapshots + `nft -c`** — the fast, hermetic base run on every PR (no root):
