@@ -69,3 +69,16 @@ def test_missing_action_raises() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_policies(_records("loc net"), _ZONES)
     assert "action" in str(exc.value)
+
+
+def test_unsupported_trailing_columns_rejected() -> None:
+    # Shorewall's policy file has further columns (LIMIT:BURST, CONNLIMIT); rather than
+    # silently drop them, reject until supported (#94, fail-fast).
+    with pytest.raises(ConfigError) as exc:
+        parse_policies(_records("net all DROP info 10/sec:20"), _ZONES)
+    assert exc.value.line == 1
+
+
+def test_four_columns_still_accepted() -> None:
+    (policy,) = parse_policies(_records("net all DROP info"), _ZONES)
+    assert policy.log_level == "info"
