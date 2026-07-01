@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a defect in ShorewallNF's behavior.
+labels: ["type:bug", "status:proposed"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The defect — what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual
+      description: What you expected to happen, and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Config & steps to reproduce
+      description: A minimal config snippet and the exact command(s) you ran.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: ShorewallNF version/commit and nftables version.
+    validations:
+      required: false
