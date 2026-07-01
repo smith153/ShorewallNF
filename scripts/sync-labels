@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Create/update GitHub labels from .github/labels.yml (idempotent).
+# Requires: gh (authenticated), python3 with PyYAML.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+extract() {
+  python3 - <<'PY'
+import yaml
+for label in yaml.safe_load(open(".github/labels.yml")):
+    print(f"{label['name']}\t{label['color']}\t{label['description']}")
+PY
+}
+
+extract | while IFS=$'\t' read -r name color desc; do
+  if gh label create "$name" --color "$color" --description "$desc" 2>/dev/null; then
+    echo "created: $name"
+  else
+    gh label edit "$name" --color "$color" --description "$desc" >/dev/null
+    echo "updated: $name"
+  fi
+done

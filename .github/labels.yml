@@ -1,0 +1,39 @@
+# Canonical ShorewallNF labels. Apply with scripts/sync-labels.
+# Keep pipeline/labels.md in sync with this file.
+
+# type:*  — what kind of work item this is
+- { name: "type:epic",         color: "5319e7", description: "High-level feature; parent of tasks" }
+- { name: "type:task",         color: "1d76db", description: "Implementation-ready unit of work" }
+- { name: "type:bug",          color: "d73a4a", description: "Defect in existing behavior" }
+- { name: "type:spike",        color: "c5def5", description: "Time-boxed research/investigation" }
+- { name: "type:docs",         color: "0075ca", description: "Documentation change" }
+- { name: "type:ci",           color: "bfd4f2", description: "CI/build/tooling change" }
+- { name: "type:architecture", color: "6f42c1", description: "Architecture decision / ADR" }
+
+# status:*  — where the item is in the pipeline
+- { name: "status:proposed",             color: "ededed", description: "Awaiting refinement/approval" }
+- { name: "status:needs-refinement",     color: "fbca04", description: "Groomer requested changes" }
+- { name: "status:implementation-ready", color: "0e8a16", description: "Groomed; ready to implement" }
+- { name: "status:in-progress",          color: "fef2c0", description: "Claimed by an implementer" }
+- { name: "status:blocked",              color: "b60205", description: "Has unmet dependencies" }
+- { name: "status:in-review",            color: "d4c5f9", description: "Has an open PR under review" }
+- { name: "status:ready-to-merge",       color: "0e8a16", description: "Approved + green; awaiting human merge" }
+
+# area:*  — which subsystem the work touches
+- { name: "area:parser",       color: "c2e0c6", description: "Config parsing" }
+- { name: "area:generator",    color: "c2e0c6", description: "nftables generation" }
+- { name: "area:cli",          color: "c2e0c6", description: "CLI / entrypoint" }
+- { name: "area:ir",           color: "c2e0c6", description: "Intermediate representation / model" }
+- { name: "area:zones",        color: "c2e0c6", description: "Zones" }
+- { name: "area:interfaces",   color: "c2e0c6", description: "Interfaces" }
+- { name: "area:policy",       color: "c2e0c6", description: "Policy" }
+- { name: "area:rules",        color: "c2e0c6", description: "Rules" }
+- { name: "area:nat",          color: "c2e0c6", description: "DNAT/SNAT" }
+- { name: "area:preprocessor", color: "c2e0c6", description: "params / ?if / ?FORMAT / ?SECTION" }
+- { name: "area:testing",      color: "c2e0c6", description: "Test harness" }
+- { name: "area:ci",           color: "c2e0c6", description: "CI/CD" }
+
+# meta
+- { name: "good-first-issue",  color: "7057ff", description: "Good entry point for new contributors" }
+- { name: "needs-human",       color: "e99695", description: "Escalated: requires a human decision" }
+- { name: "blocked-external",  color: "b60205", description: "Blocked on something outside the repo" }
