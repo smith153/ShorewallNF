@@ -57,9 +57,21 @@ gh pr create --fill --title "<goal>" --body "Closes #<TASK>
 gh issue edit <TASK> --remove-label status:in-progress --add-label status:in-review
 ```
 
+If your change would **conflict with another open PR** (overlapping files, or a dependency
+that's in review but not yet merged), open your PR **against that PR's branch** instead of
+`master` — a "stacked" PR that shows only your diff and merges cleanly:
+
+```bash
+gh pr create --base <other-branch> --fill --title "<goal>" --body "Closes #<TASK> ..."
+```
+
+Once the base PR merges, GitHub retargets yours to `master` (when the base branch is deleted);
+rebase if needed. Prefer this over hand-resolving conflicts or forcing the work to serialize.
+
 ## Guardrails
 
-- **One task per PR**; one PR per branch. Never commit to `master`.
+- **One task per PR**; one PR per branch. Never commit to `master`. Target `master` — unless the
+  change would conflict with another open PR, in which case base it on that PR's branch (Outputs).
 - Tests are required (TDD) — no implementation without a failing test first.
 - Respect the Global Constraints in the plan/CLAUDE.md (Python ≥3.11, type hints, minimal deps).
 - Follow the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): YAGNI (no speculative code),
