@@ -251,11 +251,35 @@ def _is_positive_int_arg(parts: list[str]) -> bool:
     return len(parts) == 2 and parts[1].isdigit() and int(parts[1]) >= 1
 
 
+# Every ``?``-directive the preprocessor understands. Anything else starting with ``?`` is a
+# typo or an unsupported Shorewall directive — rejected rather than parsed as data.
+_KNOWN_DIRECTIVES = _COND_KEYWORDS | {"?format", "?section"}
+
+
+def reject_unknown_directives(lines: Iterable[SourceLine]) -> list[SourceLine]:
+    """Fail fast on any line whose first token starts with ``?`` but is not a recognized
+    directive, leaving all other lines unchanged.
+
+    Run *after* conditional resolution so a directive dropped in an inactive ``?if`` branch is
+    never seen. An unrecognized directive (a typo like ``?FROMAT``, or an unsupported one like
+    ``?SET``/``?ERROR``) would otherwise pass through as config data — worse than refusing.
+    """
+    result = list(lines)
+    for line in result:
+        parts = line.text.split()
+        token = parts[0] if parts else ""
+        if token.startswith("?") and token.lower() not in _KNOWN_DIRECTIVES:
+            raise ConfigError(f"unknown directive {token}", path=line.path, line=line.line)
+    return result
+
+
 def preprocess_file(text: str, path: str, params: Mapping[str, str]) -> list[SourceLine]:
     """Run the full pure per-file pipeline: split into lines, resolve ``?if`` conditionals,
-    validate ``?FORMAT``/``?SECTION``, then substitute ``params`` variables.
+    validate ``?FORMAT``/``?SECTION``, reject unknown ``?``-directives, then substitute
+    ``params`` variables.
     """
     lines = to_source_lines(text, path)
     lines = resolve_conditionals(lines, params)
     lines = resolve_format_section(lines)
+    lines = reject_unknown_directives(lines)
     return substitute(lines, params)
