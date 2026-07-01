@@ -8,7 +8,8 @@ never merge — that is the human's final gate.
 
 ## Inputs
 
-- Open PRs, their CI status, review state, and merge state (up to date with `master`?).
+- Open PRs, their CI status, the linked task's `status:review-passed` label, and merge state
+  (up to date with `master`?).
 - Open issues carrying `status:blocked` and their `blocked-by` references.
 
 ## Queue
@@ -23,7 +24,12 @@ gh issue list --label status:blocked --state open --limit 100
 **Merge-ready check** — for each open PR, verify all of:
 
 1. **CI green:** `gh pr checks <PR>` all passing.
-2. **No unresolved change requests:** `gh pr view <PR> --json reviewDecision` is not `CHANGES_REQUESTED`.
+2. **AI review passed:** the linked task carries `status:review-passed` (the Code Reviewer's
+   clean verdict rides on the label, not a GitHub review — see [`workflow.md`](../workflow.md)).
+   ```bash
+   gh pr view <PR> --json closingIssuesReferences -q '.closingIssuesReferences[].number'
+   gh issue view <TASK> --json labels -q '.labels[].name'   # expect status:review-passed
+   ```
 3. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`
    (if behind, comment asking the Fixer/Implementer to rebase — do not rebase silently).
 
@@ -43,8 +49,8 @@ When a PR passes all checks, swap the linked issue to ready and note it on the P
 accumulate — see workflow.md status invariants):
 
 ```bash
-gh issue edit <TASK> --remove-label status:in-review --add-label status:ready-to-merge
-gh pr comment <PR> --body "Merge-ready: CI green, no unresolved change requests, up to date with master. Awaiting human merge."
+gh issue edit <TASK> --remove-label status:review-passed --add-label status:ready-to-merge
+gh pr comment <PR> --body "Merge-ready: CI green, AI review passed, up to date with master. Awaiting human merge."
 ```
 
 When **all** of a blocked task's blockers are closed, un-block it (returns it to the Groomer /

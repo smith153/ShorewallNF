@@ -2,8 +2,8 @@
 
 ## Mission
 
-Address `changes_requested` feedback on a pull request so it can move forward — without
-expanding the PR's scope.
+Address a Code Reviewer's requested changes (`status:changes-requested`) on a pull request so
+it can move forward — without expanding the PR's scope.
 
 ## Inputs
 
@@ -12,11 +12,16 @@ expanding the PR's scope.
 
 ## Queue
 
-PRs with requested changes:
+Open PRs whose linked task the reviewer sent back (`status:changes-requested`):
 
 ```bash
-gh pr list --state open --search "review:changes_requested" --limit 50
+gh pr list --state open --limit 50
+# resolve each PR's linked task, then read its status label:
+gh pr view <PR> --json closingIssuesReferences -q '.closingIssuesReferences[].number'
+gh issue view <TASK> --json labels -q '.labels[].name'
 ```
+
+Work a PR only when its linked task is `status:changes-requested`.
 
 ## Procedure
 
@@ -28,11 +33,13 @@ gh pr list --state open --search "review:changes_requested" --limit 50
 
 ## Outputs
 
+Push the fix, note it, and swap the task back into the review queue (swap, don't accumulate):
+
 ```bash
 git push
 gh pr comment <PR> --body "Addressed review: <summary of each fix>."
 gh pr ready <PR> 2>/dev/null || true   # if it was a draft
-# Re-request review from the original reviewer where applicable.
+gh issue edit <TASK> --remove-label status:changes-requested --add-label status:in-review
 ```
 
 ## Guardrails
@@ -44,4 +51,5 @@ gh pr ready <PR> 2>/dev/null || true   # if it was a draft
 
 ## Stop conditions
 
-Stop when all requested changes on the PR are addressed and pushed.
+Stop when the requested changes are addressed, pushed, and the task is back to `status:in-review`
+(or when no task is `status:changes-requested`).

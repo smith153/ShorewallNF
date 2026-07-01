@@ -13,27 +13,23 @@ with the Fixer until they are right. You find problems; you do **not** authorize
 
 ## Queue
 
-Open PRs not yet reviewed/approved:
+Open PRs whose linked task is still awaiting review (`status:in-review`):
 
 ```bash
-gh pr list --state open --search "-review:approved -review:changes_requested" --limit 50
+gh pr list --state open --limit 50
+# resolve each PR's linked task, then read its status label:
+gh pr view <PR> --json closingIssuesReferences -q '.closingIssuesReferences[].number'
+gh issue view <TASK> --json labels -q '.labels[].name'
 ```
 
-This query **cannot** exclude PRs you have already cleared. A clean pass leaves a
-*comment-only* review (you must never `--approve`), which sets neither `review:approved` nor
-`review:changes_requested` — so a PR you already blessed reappears here every session and,
-left unchecked, is re-reviewed indefinitely by successive sessions. De-duplicate with the
-skip rule in step 1; Merge-readiness advances these PRs on its own.
+Review a PR only when its linked task is `status:in-review`; skip the rest — `review-passed`
+(already cleared, awaiting human merge / Merge-readiness) or `changes-requested` (with the
+Fixer). GitHub review **verdicts** aren't used here: a single shared account can't cast
+`--approve`/`--request-changes` on its own PR, so your verdict rides on the status label.
 
 ## Procedure
 
-1. **Skip PRs you have already cleared.** The queue can't filter these out (see above). If a
-   PR already carries a COMMENTED review from the AI Code Reviewer and has **no new commits
-   since** that review, it's cleared and awaiting human approval / Merge-readiness — skip it.
-   Re-review only when the Fixer/Implementer has pushed since the last AI review.
-   ```bash
-   gh pr view <PR> --json reviews,commits
-   ```
+1. Confirm the PR's linked task is `status:in-review` (see Queue); if not, skip it.
 2. Check CI status (`gh pr checks <PR>`); if red, the change isn't ready — note it.
 3. Read the diff: does it satisfy the task's acceptance criteria?
 4. Are there **real tests** (TDD), and do they actually exercise the behavior?
@@ -46,19 +42,25 @@ skip rule in step 1; Merge-readiness advances these PRs on its own.
 
 ## Outputs
 
+Post the review as a `--comment` (the verdict rides on the label, not a GitHub review), then
+swap the linked task's status label (swap, don't accumulate — see [`workflow.md`](../workflow.md)):
+
 - If issues found:
   ```bash
-  gh pr review <PR> --request-changes --body "<specific, actionable feedback>"
+  gh pr review <PR> --comment --body "<specific, actionable feedback>"
+  gh issue edit <TASK> --remove-label status:in-review --add-label status:changes-requested
   ```
-- If it looks good, leave a **comment-only** review (a human gives the merge-authorizing approval):
+- If it looks good:
   ```bash
   gh pr review <PR> --comment --body "LGTM from the AI reviewer — no blocking issues. Awaiting human approval."
+  gh issue edit <TASK> --remove-label status:in-review --add-label status:review-passed
   ```
 
 ## Guardrails
 
-- **Never** use `gh pr review --approve` — the AI reviewer's approval must not satisfy branch
-  protection. A human's approval is what unlocks merge (see [`CODEOWNERS`](../../.github/CODEOWNERS)).
+- **Never** cast a GitHub review verdict — no `gh pr review --approve` or `--request-changes`.
+  A human's CODEOWNERS approval is what unlocks merge, and a single shared account can't cast a
+  verdict on its own PR anyway. Signal your verdict with the `status:*` labels above.
 - Never merge.
 - Keep feedback concrete; avoid style nits already enforced by `ruff`.
 - **File issues for things beyond this diff.** If you spot unrelated bugs, shortcomings, or
@@ -67,4 +69,4 @@ skip rule in step 1; Merge-readiness advances these PRs on its own.
 
 ## Stop conditions
 
-Stop when the review queue is empty.
+Stop when no open PR has a linked task in `status:in-review`.
