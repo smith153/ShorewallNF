@@ -15,6 +15,9 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["ruff>=0.5", "mypy>=1.10", "pytest>=8"]
 
+[project.scripts]
+shorewallnf = "shorewallnf.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
