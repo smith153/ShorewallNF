@@ -50,7 +50,8 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 ## Status label invariants
 
 - **One status at a time.** A task carries exactly one `status:*` label, optionally plus
-  `status:blocked`. Each role **swaps** the label — removing the prior status as it adds the
+  `status:blocked`; an epic being decomposed also carries a transient `status:decomposing`
+  claim. Each role **swaps** the label — removing the prior status as it adds the
   next — rather than accumulating: claim = −`implementation-ready` +`in-progress`; PR opened =
   −`in-progress` +`in-review`; review clean = −`in-review` +`review-passed`; review found issues =
   −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; commits after
@@ -67,6 +68,8 @@ Volunteers run agents concurrently (often overnight), so claiming must be atomic
 - An agent **claims a task by self-assigning AND adding `status:in-progress`** in the same step.
 - Agents only pick tasks that are **unassigned**, `status:implementation-ready`, and **not**
   `status:blocked`.
+- The **Epic Decomposer** claims an epic with `status:decomposing` before decomposing it (and
+  skips epics that already carry it), so two decomposers can't duplicate the same epic.
 - One task per PR; one PR per branch. **All code work happens in a per-task git worktree —
   never in the primary checkout or on `master`** (that isolation is what lets agents run
   concurrently).

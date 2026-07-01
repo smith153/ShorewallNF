@@ -18,19 +18,25 @@ Approved epics are `type:epic` with `status:implementation-ready` (a human remov
 `status:proposed` and marked it ready for decomposition):
 
 ```bash
-gh issue list --label type:epic,status:implementation-ready --state open --limit 50
+gh issue list --label type:epic,status:implementation-ready --state open \
+  --search "-label:status:decomposing" --limit 50
 ```
 
-Pick one epic that has no child tasks yet.
+Pick one epic that has **no child tasks yet** and is not already `status:decomposing`.
 
 ## Procedure
 
-1. Re-read the epic's acceptance criteria — every criterion must be covered by at least one task.
-2. Slice the epic into the smallest units that each carry their own test cycle and are worth
+1. **Claim the epic** so a concurrent Decomposer can't duplicate it — add `status:decomposing`
+   (skip any epic that already carries it). Release it when you finish (see Outputs).
+   ```bash
+   gh issue edit <EPIC> --add-label status:decomposing
+   ```
+2. Re-read the epic's acceptance criteria — every criterion must be covered by at least one task.
+3. Slice the epic into the smallest units that each carry their own test cycle and are worth
    a reviewer's gate. Fold setup/scaffolding into the task that needs it.
-3. Order them: derive the dependency chain and record it with `blocked-by`.
-4. Give every task a one-sentence goal and concrete, testable acceptance criteria.
-5. **Reserve a new ADR's number** if a task introduces one. Allocate the next free `NNNN` —
+4. Order them: derive the dependency chain and record it with `blocked-by`.
+5. Give every task a one-sentence goal and concrete, testable acceptance criteria.
+6. **Reserve a new ADR's number** if a task introduces one. Allocate the next free `NNNN` —
    above the highest in `docs/adr/` **and** any number already reserved by another open task —
    and record it in that task's body (see Outputs), so implementers never race for the same
    integer at implementation time.
@@ -65,7 +71,11 @@ gh issue edit <TASK> --add-label status:blocked
 ```
 
 Then comment on the epic listing the child task numbers, and (where available) attach them as
-native sub-issues.
+native sub-issues. Finally, **release the claim**:
+
+```bash
+gh issue edit <EPIC> --remove-label status:decomposing
+```
 
 ## Guardrails
 
@@ -73,6 +83,9 @@ native sub-issues.
 - **YAGNI** — do not invent speculative tasks the epic's acceptance criteria don't require.
 - Respect the architecture's ordering (parser → IR → generator, etc.).
 - Do not mark tasks `implementation-ready` — that is the Groomer's job.
+- **Claim before decomposing, release after.** Skip epics already carrying `status:decomposing`;
+  add it as your claim and remove it when done. An epic that has carried `status:decomposing`
+  with no child tasks and looks abandoned is a dead claim — clear it and take the epic.
 - **Reserve ADR numbers here, not at implementation time.** A task that needs a new ADR carries
   its reserved `ADR-NNNN` in the body; never leave implementers to pick "the next free number"
   — concurrent implementers would collide (see #22).

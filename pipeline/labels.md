@@ -30,6 +30,7 @@ subsystem labels; use GitHub search to filter.
 | `status:implementation-ready` | Groomed; ready to implement | Task Groomer |
 | `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) |
 | `status:blocked` | Has unmet dependencies | Decomposer / Groomer |
+| `status:decomposing` | Epic claimed for decomposition (transient) | Epic Decomposer |
 | `status:in-review` | Has an open PR under review | Implementer / Fixer |
 | `status:changes-requested` | Reviewer found blocking issues; awaiting Fixer | Code Reviewer |
 | `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer |
