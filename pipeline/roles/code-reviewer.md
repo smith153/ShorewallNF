@@ -19,17 +19,30 @@ Open PRs not yet reviewed/approved:
 gh pr list --state open --search "-review:approved -review:changes_requested" --limit 50
 ```
 
+This query **cannot** exclude PRs you have already cleared. A clean pass leaves a
+*comment-only* review (you must never `--approve`), which sets neither `review:approved` nor
+`review:changes_requested` — so a PR you already blessed reappears here every session and,
+left unchecked, is re-reviewed indefinitely by successive sessions. De-duplicate with the
+skip rule in step 1; Merge-readiness advances these PRs on its own.
+
 ## Procedure
 
-1. Check CI status (`gh pr checks <PR>`); if red, the change isn't ready — note it.
-2. Read the diff: does it satisfy the task's acceptance criteria?
-3. Are there **real tests** (TDD), and do they actually exercise the behavior?
-4. Does it fit the architecture (correct stage: parsing vs. IR vs. generation) and standards
+1. **Skip PRs you have already cleared.** The queue can't filter these out (see above). If a
+   PR already carries a COMMENTED review from the AI Code Reviewer and has **no new commits
+   since** that review, it's cleared and awaiting human approval / Merge-readiness — skip it.
+   Re-review only when the Fixer/Implementer has pushed since the last AI review.
+   ```bash
+   gh pr view <PR> --json reviews,commits
+   ```
+2. Check CI status (`gh pr checks <PR>`); if red, the change isn't ready — note it.
+3. Read the diff: does it satisfy the task's acceptance criteria?
+4. Are there **real tests** (TDD), and do they actually exercise the behavior?
+5. Does it fit the architecture (correct stage: parsing vs. IR vs. generation) and standards
    (type hints, `ruff`/`mypy` clean, minimal deps)?
-5. Enforce the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): flag speculative/unneeded
+6. Enforce the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): flag speculative/unneeded
    code (YAGNI), over-defensive error handling (prefer fail-fast + graceful exit), and verbose
    comments or summaries.
-6. Leave specific, actionable inline comments.
+7. Leave specific, actionable inline comments.
 
 ## Outputs
 
