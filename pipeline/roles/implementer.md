@@ -49,6 +49,8 @@ gh issue edit <TASK> --add-label status:in-review
 - **One task per PR**; one PR per branch. Never commit to `master`.
 - Tests are required (TDD) — no implementation without a failing test first.
 - Respect the Global Constraints in the plan/CLAUDE.md (Python ≥3.11, type hints, minimal deps).
+- Follow the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): YAGNI (no speculative code),
+  fail-fast with a clear error over defensive `if`s, and brief comments/PR summaries.
 - If the task turns out to be wrong or blocked, stop and add `needs-human` with an explanation.
 
 ## Stop conditions

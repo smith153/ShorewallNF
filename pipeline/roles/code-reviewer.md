@@ -26,7 +26,10 @@ gh pr list --state open --search "-review:approved -review:changes_requested" --
 3. Are there **real tests** (TDD), and do they actually exercise the behavior?
 4. Does it fit the architecture (correct stage: parsing vs. IR vs. generation) and standards
    (type hints, `ruff`/`mypy` clean, minimal deps)?
-5. Leave specific, actionable inline comments.
+5. Enforce the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): flag speculative/unneeded
+   code (YAGNI), over-defensive error handling (prefer fail-fast + graceful exit), and verbose
+   comments or summaries.
+6. Leave specific, actionable inline comments.
 
 ## Outputs
 

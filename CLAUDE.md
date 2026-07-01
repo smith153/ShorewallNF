@@ -31,6 +31,16 @@ the IR and emits nftables **JSON** (via `python3-nftables`). The IR is **family-
 - **TDD**: write a failing test, watch it fail, write the minimal code, watch it pass. No
   implementation without a test first.
 
+## Code philosophy
+
+- **YAGNI.** Build only what a current task needs. No speculative abstractions, config knobs,
+  or "might need it later" code paths — add them when a real requirement arrives.
+- **Fail fast, exit gracefully.** Validate up front and stop with one clear, actionable error;
+  don't scatter defensive `if`s trying to survive every conceivable state. A compiler that
+  emits wrong firewall rules is worse than one that refuses to run.
+- **Be brief.** Comment only what the code can't say itself. Keep commit messages, PR
+  summaries, and issue comments short and to the point.
+
 ## Working agreement
 
 - **All work happens on a branch → pull request. Never commit to `master`.** Use a worktree
