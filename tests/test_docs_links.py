@@ -67,6 +67,38 @@ def test_all_markdown_anchors_resolve() -> None:
     assert not broken, "dangling markdown anchors:\n" + "\n".join(broken)
 
 
+def test_guard_detects_broken_link_and_anchor(tmp_path: Path) -> None:
+    """Negative check so the positive guards above can't pass vacuously (#101 review).
+
+    Runs the same scan predicates against a fixture with a known-broken link and a known-bad
+    anchor: if ``_LINK``/``_relative_links``/``_heading_slugs`` ever regress (e.g. match
+    nothing), these assertions fail loudly instead of the live scans silently going green.
+    """
+    (tmp_path / "target.md").write_text("# Real Heading\n")
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        "[ok](target.md#real-heading)\n"     # valid file + valid anchor
+        "[bad file](nope.md)\n"              # broken relative link
+        "[bad anchor](target.md#missing)\n"  # valid file, missing anchor
+    )
+
+    # link existence — mirrors test_all_relative_doc_links_resolve
+    broken_links = [t for t in _relative_links(doc) if not (doc.parent / t).resolve().exists()]
+    assert broken_links == ["nope.md"], "link-existence scan failed to flag exactly the bad link"
+
+    # anchor resolution — mirrors test_all_markdown_anchors_resolve
+    broken_anchors = []
+    for match in _LINK.finditer(doc.read_text()):
+        url = match.group(1)
+        if "#" not in url:
+            continue
+        target, _, anchor = url.partition("#")
+        dest = (doc.parent / target).resolve() if target else doc
+        if dest.suffix == ".md" and dest.exists() and anchor not in _heading_slugs(dest):
+            broken_anchors.append(url)
+    assert broken_anchors == ["target.md#missing"], "anchor scan failed to flag the bad anchor"
+
+
 def test_inet_family_scoping_is_resolved() -> None:
     """ADR-0002's deferred details (family scoping, cross-family zones) are settled.
 
