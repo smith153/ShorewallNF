@@ -25,6 +25,11 @@ Work a PR only when its linked task is `status:changes-requested`.
 
 ## Procedure
 
+> **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`
+> trailer is the maintainer's — do what it asks if it's in this role's scope, otherwise reply
+> (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
+> with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
+
 1. Read every review thread; list the concrete changes requested (`gh pr view <PR> --comments`).
 2. Check the PR out into its **own git worktree** — never onto the primary checkout or `master`:
    ```bash
