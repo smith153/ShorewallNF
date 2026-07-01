@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from typing import NamedTuple, TypeVar
 
 from .errors import ConfigError
-from .ir import Family, Interface, Zone, ZoneMember
+from .ir import Family, Interface, Policy, Zone, ZoneMember
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -205,3 +205,36 @@ def _interfaces_options_field(directive: Record) -> int:
         path=directive.path,
         line=directive.line,
     )
+
+
+_POLICY_ACTIONS = frozenset({"ACCEPT", "DROP", "REJECT"})
+
+
+def parse_policies(records: Iterable[Record], zones: tuple[Zone, ...]) -> tuple[Policy, ...]:
+    """Parse ``policy``-file records (``<source> <dest> <action> [log_level]``) into
+    :class:`~shorewallnf.ir.Policy` IR — the inter-zone default policies.
+
+    ``source``/``dest`` must each be a known zone (the firewall zone included) or the wildcard
+    ``all``. The action must be ``ACCEPT``/``DROP``/``REJECT``. A malformed line, unknown zone,
+    or unknown action fails fast with :class:`ConfigError`.
+    """
+    zone_names = {zone.name for zone in zones}
+
+    def check_zones(policy: Policy, record: Record) -> None:
+        for zone in (policy.source, policy.dest):
+            if zone != "all" and zone not in zone_names:
+                raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
+
+    return tuple(build_records(records, _build_policy, check_zones))
+
+
+def _build_policy(record: Record) -> Policy:
+    source = require_field(record, 0, "source zone")
+    dest = require_field(record, 1, "dest zone")
+    action = require_field(record, 2, "policy action")
+    if action not in _POLICY_ACTIONS:
+        raise ConfigError(
+            f"unknown policy action {action!r}", path=record.path, line=record.line
+        )
+    log_level = record.fields[3] if len(record.fields) > 3 else None
+    return Policy(source=source, dest=dest, action=action, log_level=log_level)
