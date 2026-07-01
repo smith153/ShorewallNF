@@ -20,7 +20,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from reconcile.core import (
-    REBASE_TAG,
     Action,
     ActionKind,
     BlockerState,
@@ -30,9 +29,14 @@ from reconcile.core import (
     reconcile,
 )
 
-_CLOSES = re.compile(r"clos(?:e|es|ed)\s+#(\d+)", re.IGNORECASE)
-_BLOCKED_BY = re.compile(r"blocked-by\s+#(\d+)", re.IGNORECASE)
+# GitHub's PR→issue closing keywords (any, with optional colon) link a PR to its task.
+_CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d+)", re.IGNORECASE)
+_BLOCKED_BY_LINE = re.compile(r"blocked-by", re.IGNORECASE)
+_ISSUE_REF = re.compile(r"#(\d+)")
 _OK_CHECK = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+# Only these mean "not up to date". Everything else — including UNKNOWN (not yet computed) and
+# DRAFT — is treated conservatively as not-ready, so a promote never happens on a guess.
+_NOT_UP_TO_DATE = frozenset({"BEHIND", "DIRTY", "UNKNOWN", "DRAFT"})
 
 
 def _gh(*args: str) -> str:
@@ -48,6 +52,21 @@ def _gh_json(*args: str) -> Any:
 
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _blocked_by(body: str) -> tuple[int, ...]:
+    """Issue numbers this task is blocked by — every `#N` on any line mentioning `blocked-by`,
+    so an inline list (`blocked-by #2, #3`) isn't under-counted (which would un-block early).
+    Over-counting a stray same-line `#N` only keeps it blocked longer — the safe direction."""
+    nums: list[int] = []
+    for line in body.splitlines():
+        if _BLOCKED_BY_LINE.search(line):
+            nums.extend(int(n) for n in _ISSUE_REF.findall(line))
+    return tuple(dict.fromkeys(nums))
+
+
+def _up_to_date(merge_state: str) -> bool:
+    return merge_state.upper() not in _NOT_UP_TO_DATE
 
 
 def _label_names(obj: Any) -> frozenset[str]:
@@ -69,7 +88,7 @@ def _fetch_issues() -> list[Issue]:
                 labels=labels,
                 updated_at=_dt(str(item["updatedAt"])),
                 assignees=tuple(str(a["login"]) for a in item["assignees"]),
-                blocked_by=tuple(int(n) for n in _BLOCKED_BY.findall(body)),
+                blocked_by=_blocked_by(body),
                 is_epic="type:epic" in labels,
             )
         )
@@ -80,11 +99,13 @@ def _ci_green(rollup: Any) -> bool:
     checks = rollup or []
     if not checks:
         return False  # no signal that CI is green
+    saw_success = False
     for check in checks:
-        outcome = str(check.get("conclusion") or check.get("state") or "")
-        if outcome.upper() not in _OK_CHECK:
+        outcome = str(check.get("conclusion") or check.get("state") or "").upper()
+        if outcome not in _OK_CHECK:
             return False
-    return True
+        saw_success = saw_success or outcome == "SUCCESS"
+    return saw_success  # all-SKIPPED/NEUTRAL with no real success is not "green"
 
 
 def _linked_task(body: str) -> int | None:
@@ -126,7 +147,7 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
                 task=task,
                 base_ref=str(item["baseRefName"]),
                 ci_green=_ci_green(item["statusCheckRollup"]),
-                up_to_date=str(item["mergeStateStatus"]) not in {"BEHIND", "DIRTY"},
+                up_to_date=_up_to_date(str(item["mergeStateStatus"] or "UNKNOWN")),
                 head_committed_at=head,
                 last_review_at=last_review,
             )
@@ -187,24 +208,32 @@ def _repo() -> str:
     return _gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").strip()
 
 
-def _already_nudged(number: int) -> bool:
-    """True if a reconcile rebase nudge already exists on this PR at or after its current head —
-    so the once-per-stale-head nudge doesn't repeat every run."""
-    info = _gh_json("pr", "view", str(number), "--json", "comments,commits")
-    commits = info["commits"] or []
-    if not commits:
-        return False
-    head = _dt(str(commits[-1]["committedDate"]))
-    stamps = [
-        _dt(str(c["createdAt"]))
-        for c in (info["comments"] or [])
-        if REBASE_TAG in str(c.get("body") or "")
-    ]
-    return any(t >= head for t in stamps)
+def _rebase_marker(oid: str) -> str:
+    return f"<!-- snf-agent:reconcile:rebase:{oid} -->"
+
+
+def _nudged_for_head(number: int) -> tuple[bool, str]:
+    """``(already-nudged-for-current-head, head-oid)``. Keyed on the head SHA, not a timestamp,
+    so it's immune to committer-clock skew: a nudge repeats only when the head actually changes."""
+    info = _gh_json("pr", "view", str(number), "--json", "headRefOid,comments")
+    oid = str(info["headRefOid"])
+    marker = _rebase_marker(oid)
+    hit = any(marker in str(c.get("body") or "") for c in (info["comments"] or []))
+    return hit, oid
+
+
+def _try(*args: str) -> None:
+    """Run a mutating gh command best-effort: one failure (e.g. deleting an already-gone ref, or
+    a transient error) must not abort the rest of the run. Log and continue."""
+    try:
+        _gh(*args)
+    except subprocess.CalledProcessError as e:
+        print(f"  ! gh {' '.join(args)} failed: {(e.stderr or '').strip() or e}")
 
 
 def _apply(actions: list[Action]) -> None:
-    """Group label/assignee edits per issue into one ``gh issue edit`` call; then comments/refs."""
+    """Group label/assignee edits per issue into one ``gh issue edit`` call; then comments/refs.
+    Every write is best-effort so one failing issue can't strand the rest of the board."""
     edits: dict[int, list[str]] = {}
     for a in actions:
         if a.kind is ActionKind.ADD_LABEL:
@@ -214,15 +243,19 @@ def _apply(actions: list[Action]) -> None:
         elif a.kind is ActionKind.UNASSIGN:
             edits.setdefault(a.number, []).extend(["--remove-assignee", a.value])
     for number, args in edits.items():
-        _gh("issue", "edit", str(number), *args)
+        _try("issue", "edit", str(number), *args)
     for a in actions:
         if a.kind is ActionKind.COMMENT:
-            if a.reason == "rebase" and _already_nudged(a.number):
-                continue  # deduped — already nudged for this head
+            body = a.value
+            if a.reason == "rebase":
+                nudged, oid = _nudged_for_head(a.number)
+                if nudged:
+                    continue  # already nudged for this exact head — no spam
+                body = f"{body}\n{_rebase_marker(oid)}"
             verb = "pr" if a.on_pr else "issue"
-            _gh(verb, "comment", str(a.number), "--body", a.value)
+            _try(verb, "comment", str(a.number), "--body", body)
         elif a.kind is ActionKind.DELETE_REF:
-            _gh("api", "--method", "DELETE", f"repos/{_repo()}/git/refs/heads/{a.value}")
+            _try("api", "--method", "DELETE", f"repos/{_repo()}/git/refs/heads/{a.value}")
 
 
 def main() -> int:

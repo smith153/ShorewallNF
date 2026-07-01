@@ -6,8 +6,9 @@ name: pipeline-reconcile
 # just cut latency. The whole board is re-derived each run, so a missed event self-heals.
 #
 # SAFE BY DEFAULT: it only mutates when the repo variable (or dispatch input) RECONCILE_APPLY
-# == "true"; otherwise it prints the actions it would take (dry-run). See scripts/reconcile/
-# and pipeline/roles/merge-readiness.md.
+# == "true"; otherwise it prints the actions it would take (dry-run). pull_request events ALWAYS
+# dry-run (they run the PR's unmerged code), so only master's reviewed code ever applies. See
+# scripts/reconcile/ and pipeline/roles/merge-readiness.md.
 
 on:
   schedule:
@@ -39,6 +40,7 @@ concurrency:
 jobs:
   reconcile:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # a hung gh/API call must not hold the concurrency slot for 6h
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,6 +50,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
-          RECONCILE_APPLY: ${{ inputs.apply || vars.RECONCILE_APPLY || 'false' }}
+          # Never apply on pull_request events — they check out the PR's unmerged code. Only
+          # master's reviewed code applies (cron / workflow_dispatch / issues / check_suite).
+          RECONCILE_APPLY: ${{ github.event_name != 'pull_request' && (inputs.apply == 'true' || vars.RECONCILE_APPLY == 'true') }}
           RECONCILE_STALE_DAYS: ${{ vars.RECONCILE_STALE_DAYS || '2' }}
         run: python -m reconcile.run
