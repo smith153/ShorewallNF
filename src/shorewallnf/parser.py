@@ -7,15 +7,23 @@ location the following stages report errors against. It handles the lexical conc
 to every Shorewall tabular file (``#`` comments, blank lines, trailing-``\\`` continuation);
 per-file *meaning* (which column is a zone, a proto, …) belongs to the per-file parsers built
 on top of this. Malformed input fails fast with :class:`~shorewallnf.errors.ConfigError`.
+
+It also provides the reusable **parse-to-IR scaffold** (:func:`build_records`,
+:func:`require_field`): a per-file parser supplies a builder that maps one :class:`Record` to
+one typed IR object and an optional validation hook for per-file semantic checks (e.g. ADR-0002
+family consistency). The concrete builders live in the feature epics.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import TypeVar
 
 from .errors import ConfigError
 from .preprocessor import SourceLine
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,3 +67,36 @@ def parse(lines: Iterable[SourceLine]) -> list[Record]:
     if start is not None:  # last line ended with an unterminated continuation
         raise ConfigError("unterminated line continuation", path=start[0], line=start[1])
     return records
+
+
+def require_field(record: Record, index: int, name: str) -> str:
+    """Return ``record.fields[index]``, or fail fast with the record's location if absent.
+
+    The field accessor per-file builders use so a short line reports ``file:line: missing
+    <name>`` rather than an opaque ``IndexError``.
+    """
+    try:
+        return record.fields[index]
+    except IndexError:
+        raise ConfigError(f"missing {name}", path=record.path, line=record.line) from None
+
+
+def build_records(
+    records: Iterable[Record],
+    builder: Callable[[Record], _T],
+    validate: Callable[[_T, Record], None] | None = None,
+) -> list[_T]:
+    """Map each field-record to a typed IR object, the reusable parse-to-IR scaffold.
+
+    ``builder`` turns one :class:`Record` into one IR object (using :func:`require_field` for
+    located errors). ``validate``, if given, is the **per-file semantic hook**: it runs on
+    each built object with its source ``record`` (so it can raise a located
+    :class:`ConfigError` — e.g. rejecting a rule that mixes IPv4 and IPv6 literals, ADR-0002).
+    """
+    result: list[_T] = []
+    for record in records:
+        obj = builder(record)
+        if validate is not None:
+            validate(obj, record)
+        result.append(obj)
+    return result
