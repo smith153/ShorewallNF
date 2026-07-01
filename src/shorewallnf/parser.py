@@ -17,11 +17,11 @@ family consistency). The concrete builders live in the feature epics.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from typing import TypeVar
+from dataclasses import dataclass, replace
+from typing import NamedTuple, TypeVar
 
 from .errors import ConfigError
-from .ir import Zone
+from .ir import Family, Interface, Zone, ZoneMember
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -135,3 +135,73 @@ def _build_zone(record: Record) -> Zone:
             f"unknown zone type {zone_type!r}", path=record.path, line=record.line
         )
     return Zone(name=name, is_firewall=zone_type == "firewall")
+
+
+class ParsedInterfaces(NamedTuple):
+    """The `interfaces` parse result: the devices, plus the zones with their membership."""
+
+    interfaces: tuple[Interface, ...]
+    zones: tuple[Zone, ...]
+
+
+def parse_interfaces(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedInterfaces:
+    """Parse ``interfaces``-file records into :class:`~shorewallnf.ir.Interface` IR and attach
+    dual-stack :class:`~shorewallnf.ir.ZoneMember`\\ s to the named zones (ADR-0002).
+
+    Each row is ``ZONE INTERFACE [BROADCAST] OPTIONS``; the OPTIONS column depends on the active
+    ``?FORMAT`` (which the preprocessor preserves in the stream): FORMAT 1 (the default) has a
+    BROADCAST column so OPTIONS is field 3, FORMAT 2 drops BROADCAST so OPTIONS is field 2. A
+    ``-`` zone means the device belongs to no zone. An unsupported ``?FORMAT``, an unknown zone,
+    or a missing interface fails fast with :class:`ConfigError`. Other directive rows
+    (``?SECTION``) are skipped — the rules parser interprets those itself.
+    """
+    zone_names = {zone.name for zone in zones}
+    new_members: dict[str, list[ZoneMember]] = {}
+    interfaces: list[Interface] = []
+    options_field = 3  # FORMAT 1 default: ZONE INTERFACE BROADCAST OPTIONS
+
+    for record in records:
+        head = record.fields[0]
+        if head.startswith("?"):
+            if head.lower() == "?format":
+                options_field = _interfaces_options_field(record)
+            continue  # directive rows configure parsing; they are not interface entries
+        device = require_field(record, 1, "interface")
+        options = (
+            tuple(record.fields[options_field].split(","))
+            if len(record.fields) > options_field
+            else ()
+        )
+        interfaces.append(Interface(name=device, options=options))
+        if head != "-":  # "-" is Shorewall's no-zone marker (e.g. an ifb device)
+            if head not in zone_names:
+                raise ConfigError(f"unknown zone {head!r}", path=record.path, line=record.line)
+            new_members.setdefault(head, []).append(
+                ZoneMember(interface=device, family=Family.BOTH)
+            )
+
+    populated = tuple(
+        replace(zone, members=zone.members + tuple(new_members[zone.name]))
+        if zone.name in new_members
+        else zone
+        for zone in zones
+    )
+    return ParsedInterfaces(interfaces=tuple(interfaces), zones=populated)
+
+
+def _interfaces_options_field(directive: Record) -> int:
+    """Map a ``?FORMAT n`` row to the OPTIONS column index for the interface rows that follow.
+
+    FORMAT 1 (BROADCAST present) → field 3; FORMAT 2 (no BROADCAST) → field 2. The preprocessor
+    already validated ``n`` is a positive integer; only 1 and 2 are meaningful for ``interfaces``.
+    """
+    fmt = directive.fields[1]
+    if fmt == "1":
+        return 3
+    if fmt == "2":
+        return 2
+    raise ConfigError(
+        f"unsupported ?FORMAT {fmt} for interfaces (expected 1 or 2)",
+        path=directive.path,
+        line=directive.line,
+    )
