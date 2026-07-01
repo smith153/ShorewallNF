@@ -48,6 +48,9 @@ gh pr list --state open --search "-review:approved -review:changes_requested" --
   protection. A human's approval is what unlocks merge (see [`CODEOWNERS`](../../.github/CODEOWNERS)).
 - Never merge.
 - Keep feedback concrete; avoid style nits already enforced by `ruff`.
+- **File issues for things beyond this diff.** If you spot unrelated bugs, shortcomings, or
+  tech debt while reviewing, open a brief issue for each (`type:*` + `status:proposed`) — don't
+  block this PR on them, and don't silently ignore them.
 
 ## Stop conditions
 

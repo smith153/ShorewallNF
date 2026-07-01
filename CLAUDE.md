@@ -50,6 +50,10 @@ the IR and emits nftables **JSON** (via `python3-nftables`). The IR is **family-
   commit message with the repo's `Co-Authored-By:` trailer.
 - Humans approve epics and merges; agents do everything in between. Never self-approve a PR
   to satisfy branch protection.
+- **Raise issues freely.** If you notice something off — a bug, shortcoming, tech debt, risky
+  pattern — file a brief GitHub issue for it (`type:bug`/`type:*` + `status:proposed`), even if
+  it's unrelated to what you're working on. File it and move on; don't fix out-of-scope things
+  inline.
 
 ## Where project state lives
 
