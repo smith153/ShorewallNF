@@ -50,10 +50,23 @@ def test_missing_interface_raises() -> None:
     assert "interface" in str(exc.value)
 
 
-def test_directive_records_are_skipped() -> None:
-    # ?FORMAT survives preprocessing as a record; it is not an interface row.
-    result = parse_interfaces(_records("?FORMAT 2", "net eth0 detect"), _ZONES)
-    assert result.interfaces == (Interface(name="eth0"),)
+def test_directive_rows_are_not_interfaces_and_format2_drops_broadcast() -> None:
+    # ?FORMAT survives preprocessing as a record: it configures columns (FORMAT 2 has no
+    # BROADCAST column, so OPTIONS is field 2) and is not itself an interface entry.
+    result = parse_interfaces(_records("?FORMAT 2", "net eth0 tcpflags,dhcp"), _ZONES)
+    assert result.interfaces == (Interface(name="eth0", options=("tcpflags", "dhcp")),)
+
+
+def test_format1_default_keeps_broadcast_column() -> None:
+    # No ?FORMAT → FORMAT 1: ZONE INTERFACE BROADCAST OPTIONS, so "detect" is the BROADCAST
+    # value (ignored) and OPTIONS is field 3.
+    result = parse_interfaces(_records("net eth0 detect tcpflags,dhcp"), _ZONES)
+    assert result.interfaces == (Interface(name="eth0", options=("tcpflags", "dhcp")),)
+
+
+def test_unsupported_format_for_interfaces_raises() -> None:
+    with pytest.raises(ConfigError):
+        parse_interfaces(_records("?FORMAT 3", "net eth0 x"), _ZONES)
 
 
 def test_multiple_interfaces_populate_their_zones() -> None:
