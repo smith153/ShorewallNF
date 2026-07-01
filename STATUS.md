@@ -32,7 +32,8 @@ compile every line.
 ### MVP core epics (dependency-ordered)
 
 0. **Architecture & Code Standards** — ADR-0001 (IR modeling: dataclasses vs pydantic),
-   confirm ADR-0002 details, module layout, error-handling conventions.
+   confirm ADR-0002 details, module layout, error-handling conventions, and the overall design
+   approach (functional-core vs OOP, dispatch strategy, exception patterns).
 1. **Project & CLI scaffolding** — CLI entrypoint; `params` + `?if`/`?FORMAT`/`?SECTION` preprocessor.
 2. **Config-parsing framework + family-aware IR model.**
 3. **Zones & interfaces + base nft skeleton** — `inet` tables/base-chains, stateful base,
