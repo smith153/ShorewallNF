@@ -27,7 +27,7 @@ gh issue list --label status:blocked --state open --limit 100
 2. **AI review passed:** the linked task carries `status:review-passed` (the Code Reviewer's
    clean verdict rides on the label, not a GitHub review — see [`workflow.md`](../workflow.md)).
    ```bash
-   gh pr view <PR> --json closingIssuesReferences -q '.closingIssuesReferences[].number'
+   gh pr view <PR> --json body -q .body | grep -ioE 'clos(e|es|ed) +#[0-9]+'   # the linked task
    gh issue view <TASK> --json labels -q '.labels[].name'   # expect status:review-passed
    ```
 3. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`
