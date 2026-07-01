@@ -9,6 +9,7 @@
 - { name: "type:docs",         color: "0075ca", description: "Documentation change" }
 - { name: "type:ci",           color: "bfd4f2", description: "CI/build/tooling change" }
 - { name: "type:architecture", color: "6f42c1", description: "Architecture decision / ADR" }
+- { name: "type:pipeline",     color: "8a63d2", description: "Change to the pipeline itself (roles/workflow/labels/templates)" }
 
 # status:*  — where the item is in the pipeline
 - { name: "status:proposed",             color: "ededed", description: "Awaiting refinement/approval" }

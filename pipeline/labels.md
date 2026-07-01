@@ -19,6 +19,7 @@ subsystem labels; use GitHub search to filter.
 | `type:docs` | Documentation change | Anyone |
 | `type:ci` | CI/build/tooling change | Anyone |
 | `type:architecture` | Architecture decision / ADR | Anyone |
+| `type:pipeline` | Change to the pipeline itself (roles/workflow/labels/templates) | Anyone |
 
 ## `status:*` — position in the pipeline
 
