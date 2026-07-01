@@ -1,0 +1,21 @@
+# User/private inputs — never commit
+my_shorewall/
+orig_source/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.DS_Store
+*.swp
