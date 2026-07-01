@@ -19,20 +19,6 @@
 - { name: "status:in-review",            color: "d4c5f9", description: "Has an open PR under review" }
 - { name: "status:ready-to-merge",       color: "0e8a16", description: "Approved + green; awaiting human merge" }
 
-# area:*  — which subsystem the work touches
-- { name: "area:parser",       color: "c2e0c6", description: "Config parsing" }
-- { name: "area:generator",    color: "c2e0c6", description: "nftables generation" }
-- { name: "area:cli",          color: "c2e0c6", description: "CLI / entrypoint" }
-- { name: "area:ir",           color: "c2e0c6", description: "Intermediate representation / model" }
-- { name: "area:zones",        color: "c2e0c6", description: "Zones" }
-- { name: "area:interfaces",   color: "c2e0c6", description: "Interfaces" }
-- { name: "area:policy",       color: "c2e0c6", description: "Policy" }
-- { name: "area:rules",        color: "c2e0c6", description: "Rules" }
-- { name: "area:nat",          color: "c2e0c6", description: "DNAT/SNAT" }
-- { name: "area:preprocessor", color: "c2e0c6", description: "params / ?if / ?FORMAT / ?SECTION" }
-- { name: "area:testing",      color: "c2e0c6", description: "Test harness" }
-- { name: "area:ci",           color: "c2e0c6", description: "CI/CD" }
-
 # meta
 - { name: "good-first-issue",  color: "7057ff", description: "Good entry point for new contributors" }
 - { name: "needs-human",       color: "e99695", description: "Escalated: requires a human decision" }

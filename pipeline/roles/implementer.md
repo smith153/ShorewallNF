@@ -41,7 +41,7 @@ gh pr create --fill --title "<goal>" --body "Closes #<TASK>
 
 ## How it was tested
 <tests added; nft -c clean; netns if applicable>"
-gh issue edit <TASK> --add-label status:in-review
+gh issue edit <TASK> --remove-label status:in-progress --add-label status:in-review
 ```
 
 ## Guardrails

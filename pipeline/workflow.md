@@ -39,9 +39,20 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 | `status:needs-refinement` | Groomer requested changes | Task Groomer | Decomposer/author revises → back to `proposed` |
 | `status:implementation-ready` | Groomed & startable (epics: approved for decomposition) | Human (epics), Task Groomer (tasks) | Implementer claims it |
 | `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened |
-| `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | Dependency closes |
+| `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → Merge-readiness un-block sweep clears it |
 | `status:in-review` | Has an open PR under review | Implementer | Review approved + CI green |
 | `status:ready-to-merge` | Approved + green; awaiting human merge | Merge-readiness | Human merges |
+
+## Status label invariants
+
+- **One status at a time.** A task carries exactly one `status:*` label, optionally plus
+  `status:blocked`. Each role **swaps** the label — removing the prior status as it adds the
+  next — rather than accumulating: claim = −`implementation-ready` +`in-progress`; PR opened =
+  −`in-progress` +`in-review`; merge-ready = −`in-review` +`ready-to-merge`. Merging closes the
+  issue, so its final `status:*` is moot.
+- **Un-blocking.** When a blocker's PR merges (its issue closes), the Merge-readiness un-block
+  sweep removes `status:blocked` from each dependent once **all** its `blocked-by` blockers are
+  closed, returning it to the queue.
 
 ## Collision avoidance
 

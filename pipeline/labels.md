@@ -3,9 +3,10 @@
 > **Source of truth:** [`.github/labels.yml`](../.github/labels.yml). Apply/refresh with
 > [`scripts/sync-labels`](../scripts/sync-labels). Keep this table in sync with that file.
 
-Labels describe an item's **type**, its **status** in the pipeline, the **area** of the
-codebase it touches, and a few **meta** flags. Native GitHub state (issue open/closed, PR
-review, CI status) carries the rest of the workflow — see [`workflow.md`](workflow.md).
+Labels describe an item's **type**, its **status** in the pipeline, and a few **meta** flags.
+Native GitHub state (issue open/closed, PR review, CI status) carries the rest of the workflow
+— see [`workflow.md`](workflow.md). Work is grouped by **epics** (and their sub-issues), not by
+subsystem labels; use GitHub search to filter.
 
 ## `type:*` — kind of work item
 
@@ -30,11 +31,6 @@ review, CI status) carries the rest of the workflow — see [`workflow.md`](work
 | `status:blocked` | Has unmet dependencies | Decomposer / Groomer |
 | `status:in-review` | Has an open PR under review | Implementer |
 | `status:ready-to-merge` | Approved + green; awaiting human merge | Merge-readiness |
-
-## `area:*` — subsystem touched
-
-`area:parser`, `area:generator`, `area:cli`, `area:ir`, `area:zones`, `area:interfaces`,
-`area:policy`, `area:rules`, `area:nat`, `area:preprocessor`, `area:testing`, `area:ci`.
 
 ## `meta`
 
