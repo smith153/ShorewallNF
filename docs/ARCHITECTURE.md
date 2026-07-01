@@ -38,7 +38,9 @@ Each stage below maps to a concrete module under `src/shorewallnf/` in
   from `dataclasses` or `pydantic` is [ADR-0001](adr/0001-ir-modeling.md).)
 - **Validator** — semantic checks: unknown zones, bad references, dependency/ordering sanity.
 - **Generator** — consumes the IR and emits nftables **JSON** for libnftables. It is
-  responsible for all family-correct output (see below).
+  responsible for all family-correct output (see below). Its base `inet` skeleton — table,
+  fail-closed base chains, stateful/loopback accepts — is fixed in
+  [ADR-0005](adr/0005-nftables-base-chain-layout.md).
 - **Applier** — validates and loads the ruleset (`nft -c` to check, then apply).
 
 Keeping these stages separate is what makes the system testable: the parser is unit-tested
