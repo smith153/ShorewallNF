@@ -38,3 +38,31 @@ def test_every_role_heeds_and_signs() -> None:
         if SIGN_TRAILER not in text:
             missing.append(f"{role.name}: missing '{SIGN_TRAILER}' signing trailer")
     assert not missing, "role docs missing the comment convention:\n" + "\n".join(missing)
+
+
+# --- atomic remote-ref task claim (replaces the label semaphore) --------------
+
+IMPLEMENTER = ROOT / "pipeline" / "roles" / "implementer.md"
+MERGE_READINESS = ROOT / "pipeline" / "roles" / "merge-readiness.md"
+CLAIM_REF = "refs/heads/task/"
+
+
+def test_workflow_documents_atomic_ref_claim() -> None:
+    """Collision avoidance must describe the ref-as-mutex claim, not a label semaphore."""
+    text = WORKFLOW.read_text()
+    assert CLAIM_REF in text, "workflow.md must document the task claim ref"
+    assert "git/refs" in text, "workflow.md must show atomic ref creation as the claim"
+    assert "422" in text, "workflow.md must note 422 = already claimed"
+
+
+def test_implementer_claims_via_atomic_ref() -> None:
+    """The Implementer claims by creating the ref and handles the already-claimed case."""
+    text = IMPLEMENTER.read_text()
+    assert "git/refs" in text and CLAIM_REF in text, "implementer must create the claim ref"
+    assert "422" in text, "implementer must handle 422 (already claimed)"
+
+
+def test_merge_readiness_reclaim_deletes_ref() -> None:
+    """Reclaiming a stale claim must delete the ref so the task can be re-claimed."""
+    text = MERGE_READINESS.read_text()
+    assert "DELETE" in text and CLAIM_REF in text, "reclaim must delete the claim ref"
