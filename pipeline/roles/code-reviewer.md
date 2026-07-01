@@ -62,6 +62,9 @@ swap the linked task's status label (swap, don't accumulate — see [`workflow.m
   A human's CODEOWNERS approval is what unlocks merge, and a single shared account can't cast a
   verdict on its own PR anyway. Signal your verdict with the `status:*` labels above.
 - Never merge.
+- **A pass pins to the reviewed commit.** `review-passed` is cast against the current head; if
+  new commits land, Merge-readiness resets the task to `status:in-review` and it returns to your
+  queue for re-review — a pass isn't permanent.
 - Keep feedback concrete; avoid style nits already enforced by `ruff`.
 - **File issues for things beyond this diff.** If you spot unrelated bugs, shortcomings, or
   tech debt while reviewing, open a brief issue for each (`type:*` + `status:proposed`) — don't
