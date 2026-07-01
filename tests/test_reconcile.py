@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from reconcile.core import (
     AGENT_SIGN,
+    REBASE_TAG,
     Action,
     ActionKind,
     BlockerState,
@@ -186,9 +187,13 @@ def test_no_promote_when_ci_red() -> None:
     assert _run(board) == []
 
 
-def test_no_promote_when_behind_base() -> None:
+def test_behind_base_nudges_rebase_not_promote() -> None:
     board = _board([_issue(7, {"status:review-passed"})], [_pr(20, task=7, up_to_date=False)])
-    assert _run(board) == []
+    acts = _run(board)
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(acts, 7)
+    nudges = [a for a in acts if a.reason == "rebase"]
+    assert len(nudges) == 1
+    assert nudges[0].on_pr and nudges[0].number == 20 and REBASE_TAG in nudges[0].value
 
 
 def test_no_promote_when_stacked_on_non_master() -> None:

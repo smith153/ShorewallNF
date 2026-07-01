@@ -49,6 +49,10 @@ NEEDS_HUMAN = "needs-human"
 #: workflow.md#comment-attribution) still holds for comments this Action posts.
 AGENT_SIGN = "<!-- snf-agent:reconcile -->"
 
+#: Extra tag on the "please rebase" nudge so the shell can dedupe it (one per stale head),
+#: since a behind-base PR stays behind across runs and a plain comment would repeat every cron.
+REBASE_TAG = "<!-- snf-agent:reconcile:rebase -->"
+
 
 class BlockerState(Enum):
     """Closed-state of a referenced blocker issue."""
@@ -265,9 +269,28 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
                 ),
             ]
             continue
-        # R3: promote only when green, up to date, and on master.
-        if not (pr.ci_green and pr.up_to_date and pr.base_ref == "master"):
+        # Review is current. A stacked PR (base ≠ master) is held until it retargets; a red
+        # PR isn't ready — skip both silently.
+        if pr.base_ref != "master" or not pr.ci_green:
             continue
+        if not pr.up_to_date:
+            # R3b: green + current but behind base — nudge to rebase instead of promoting
+            # (the shell dedupes this so it fires once per stale head, not every run).
+            actions.append(
+                Action(
+                    ActionKind.COMMENT,
+                    pr.number,
+                    f"{REBASE_TAG}\n"
+                    + _sign(
+                        "This PR is behind `master`, so it can't be marked merge-ready yet — "
+                        "please rebase/update the branch. (CI green, AI review passed.)"
+                    ),
+                    on_pr=True,
+                    reason="rebase",
+                )
+            )
+            continue
+        # R3: green, current, up to date, on master — promote.
         actions += [
             Action(ActionKind.REMOVE_LABEL, task.number, "status:review-passed", reason="ready"),
             Action(ActionKind.ADD_LABEL, task.number, "status:ready-to-merge", reason="ready"),

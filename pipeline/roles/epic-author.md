@@ -2,9 +2,10 @@
 
 ## Mission
 
-Survey the current project state and propose the next **epics** — high-level features at the
+Survey the current project state, propose the next **epics** — high-level features at the
 altitude of "SNAT support", never as broad as "a firewall system" nor as narrow as a single
-task. You propose; a human approves before any decomposition happens.
+task — and **close epics whose work is complete**. You propose new epics; a human approves before
+any decomposition happens.
 
 ## Inputs
 
@@ -12,7 +13,8 @@ Read, in order:
 
 - [`STATUS.md`](../../STATUS.md) — the current snapshot and the seed backlog.
 - [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) and [`docs/adr/`](../../docs/adr/) — where the design is going.
-- Existing open epics (see Queue) — so you do not duplicate.
+- Existing open epics (see Queue) — so you do not duplicate, and their child-task state, to
+  spot completed epics to close.
 - `my_shorewall/` (if present) — the concrete features the MVP must eventually reproduce.
 
 ## Queue
@@ -36,6 +38,14 @@ Use this to see what epics already exist (any status) and avoid duplicates.
 3. For each genuinely new capability, draft an epic with: a one-paragraph **Summary**,
    **In/Out of scope**, **Acceptance criteria** (observable outcomes), and **References**.
 4. Keep each epic to a **single capability**. If it needs "and", split it.
+5. **Close completed epics.** For each open epic, list its child tasks; if it has **≥1 child** and
+   **every child is closed**, confirm the epic's **acceptance criteria are actually met** (not
+   merely that the tasks closed — a thin decomposition can close every task yet leave a criterion
+   uncovered). If met, close it; if a criterion is still uncovered, file the missing task(s) and
+   leave the epic open.
+   ```bash
+   gh issue list --state all --search "\"Parent epic: #<EPIC>\" in:body" --json number,state
+   ```
 
 ## Outputs
 
@@ -59,6 +69,16 @@ EOF
 
 Do **not** create child tasks and do **not** approve epics yourself.
 
+Close a completed epic (bookkeeping — the delivered work already cleared the merge gate, so this
+is not a new gate; reversible with `gh issue reopen`):
+
+```bash
+gh issue close <EPIC> --comment "All child tasks merged (#<list>) and acceptance criteria met. Epic complete.
+
+— epic-author (agent)
+<!-- snf-agent:epic-author -->"
+```
+
 ## Guardrails
 
 - One capability per epic; correct altitude (≈ "SNAT support").
@@ -66,8 +86,11 @@ Do **not** create child tasks and do **not** approve epics yourself.
   approval gate.
 - Cap proposals at **5 per run** to keep the human review queue manageable.
 - If unsure whether something belongs, add `needs-human` and describe the question.
+- **Only close an epic with ≥1 child task, every child closed, and its acceptance criteria met.**
+  **Never** close a childless/undecomposed epic — that would discard un-built work. A close is
+  reversible (`gh issue reopen`): reopen and file a follow-up if it turns out under-decomposed.
 
 ## Stop conditions
 
-Stop when there are no un-covered capabilities left, or when you have proposed 5 epics this
-run — whichever comes first.
+Stop when there are no un-covered capabilities left and no completed epic remains to close, or
+when you have proposed 5 epics this run — whichever comes first.

@@ -2,10 +2,15 @@
 
 ## Mission
 
+> **Fallback runbook — not an active session role.** These sweeps are run automatically by the
+> `pipeline-reconcile` GitHub Action (`.github/workflows/reconcile.yml`, #106). Run this by hand
+> only when the Action is disabled or broken. Epic-closing moved to the
+> [Epic Author](epic-author.md).
+
 Keep the delivery queue accurate for the next picker: (1) surface the PRs that are genuinely
-ready to merge and label them, (2) un-block tasks whose dependencies have all merged, (3) reclaim
-stale `in-progress` claims back to the queue, and (4) close epics whose child tasks have all
-merged. You never merge — that is the human's final gate.
+ready to merge and label them, (2) un-block tasks whose dependencies have all merged, and (3)
+reclaim stale `in-progress` claims back to the queue. You never merge — that is the human's final
+gate.
 
 ## Inputs
 
@@ -28,12 +33,6 @@ gh issue list --label status:in-progress --state open --limit 100
 > trailer is the maintainer's — do what it asks if it's in this role's scope, otherwise reply
 > (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
 > with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
-
-> **Automation.** The judgment-free sweeps below — un-block, stale-claim reap, ready-to-merge
-> promotion, review-freshness reset, and one-status-invariant flagging — are also run by the
-> `pipeline-reconcile` GitHub Action (`.github/workflows/reconcile.yml`, #106). It ships
-> **dry-run**; until a maintainer sets the `RECONCILE_APPLY` repo variable to `true`, this role
-> stays the runner. The **epic-completion sweep is not automated** — always do it here.
 
 **Merge-ready check** — for each open PR, verify all of:
 
@@ -82,17 +81,6 @@ gh issue list --label status:in-progress --state open --json number,updatedAt,as
 gh pr list --state open --search "<TASK> in:body"   # any open PR for this task? -> skip
 ```
 
-**Epic-completion sweep** — for each open `type:epic`, close it once every child task has merged.
-Nothing else closes a completed epic, so it lingers open and skews the backlog (e.g. #5 had to be
-closed by hand). Children link back with `Parent epic: #<EPIC>` in their body:
-
-```bash
-gh issue list --label type:epic --state open --json number -q '.[].number'
-# for each EPIC, list its child tasks and check they all closed:
-gh issue list --state all --search "\"Parent epic: #<EPIC>\" in:body" --json number,state
-# close iff >=1 child AND every child is CLOSED (see Outputs).
-```
-
 ## Outputs
 
 When a PR passes all checks, swap the linked issue to ready and note it on the PR (swap, don't
@@ -122,13 +110,6 @@ gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/task/<TASK>   # relea
 gh issue comment <TASK> --body "Reclaimed: stale claim — no PR and no activity for N days. Back to the queue."
 ```
 
-When an epic has **≥1 child task and every child is closed**, close the epic (bookkeeping — the
-delivered work already cleared the merge human-gate, so this is not a new gate):
-
-```bash
-gh issue close <EPIC> --comment "All child tasks merged (#<list>). Epic complete."
-```
-
 ## Guardrails
 
 - **Never merge** and never bypass branch protection — a human clicks merge.
@@ -137,12 +118,8 @@ gh issue close <EPIC> --comment "All child tasks merged (#<list>). Epic complete
 - Only reclaim a claim that has **no open PR and** is stale — never yank an actively-worked task;
   reclaim is non-destructive (it just returns the task to the Implementer queue). Reclaiming also
   **deletes the `task/<N>` claim ref** so the task can be re-claimed.
-- Only close an epic that has **≥1 child task and every child closed**. **Never** close a
-  childless/undecomposed epic (e.g. an approved-but-not-yet-decomposed epic like #74–#78) — that
-  would discard real work. The close is reversible: if the epic turns out under-decomposed, reopen
-  it and file a follow-up task rather than holding it open speculatively.
 
 ## Stop conditions
 
-Stop when no open PR can be marked ready, no blocked task can be un-blocked, no stale claim can be
-reclaimed, and no completed epic can be closed.
+Stop when no open PR can be marked ready, no blocked task can be un-blocked, and no stale claim
+can be reclaimed.

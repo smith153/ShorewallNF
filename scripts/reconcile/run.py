@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from reconcile.core import (
+    REBASE_TAG,
     Action,
     ActionKind,
     BlockerState,
@@ -186,6 +187,22 @@ def _repo() -> str:
     return _gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").strip()
 
 
+def _already_nudged(number: int) -> bool:
+    """True if a reconcile rebase nudge already exists on this PR at or after its current head —
+    so the once-per-stale-head nudge doesn't repeat every run."""
+    info = _gh_json("pr", "view", str(number), "--json", "comments,commits")
+    commits = info["commits"] or []
+    if not commits:
+        return False
+    head = _dt(str(commits[-1]["committedDate"]))
+    stamps = [
+        _dt(str(c["createdAt"]))
+        for c in (info["comments"] or [])
+        if REBASE_TAG in str(c.get("body") or "")
+    ]
+    return any(t >= head for t in stamps)
+
+
 def _apply(actions: list[Action]) -> None:
     """Group label/assignee edits per issue into one ``gh issue edit`` call; then comments/refs."""
     edits: dict[int, list[str]] = {}
@@ -200,6 +217,8 @@ def _apply(actions: list[Action]) -> None:
         _gh("issue", "edit", str(number), *args)
     for a in actions:
         if a.kind is ActionKind.COMMENT:
+            if a.reason == "rebase" and _already_nudged(a.number):
+                continue  # deduped — already nudged for this head
             verb = "pr" if a.on_pr else "issue"
             _gh(verb, "comment", str(a.number), "--body", a.value)
         elif a.kind is ActionKind.DELETE_REF:
