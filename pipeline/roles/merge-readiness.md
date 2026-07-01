@@ -30,7 +30,16 @@ gh issue list --label status:blocked --state open --limit 100
    gh pr view <PR> --json body -q .body | grep -ioE 'clos(e|es|ed) +#[0-9]+'   # the linked task
    gh issue view <TASK> --json labels -q '.labels[].name'   # expect status:review-passed
    ```
-3. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`
+3. **Review is current:** the commit the review was cast against is still the PR head — no
+   commits landed since. If they differ the `review-passed` label is **stale**: reset the task
+   to `status:in-review` (do **not** promote) so it gets re-reviewed, then move on.
+   ```bash
+   gh pr view <PR> --json headRefOid -q .headRefOid
+   gh pr view <PR> --json reviews -q '.reviews[-1].commit.oid'   # commit the latest review saw
+   # if they differ:
+   gh issue edit <TASK> --remove-label status:review-passed --add-label status:in-review
+   ```
+4. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`
    (if behind, comment asking the Fixer/Implementer to rebase — do not rebase silently).
 
 **Un-block sweep** — for each open issue with `status:blocked`, read its `blocked-by #N`

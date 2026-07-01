@@ -44,7 +44,7 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 | `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → Merge-readiness un-block sweep clears it |
 | `status:in-review` | Has an open PR awaiting (re-)review | Implementer / Fixer | Reviewer sets `review-passed` or `changes-requested` |
 | `status:changes-requested` | Reviewer found blocking issues | Code Reviewer | Fixer pushes a fix → back to `in-review` |
-| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | Merge-readiness sets `ready-to-merge` (CI green, up to date) |
+| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | Merge-readiness sets `ready-to-merge` (CI green, up to date, review still current); new commits → back to `in-review` |
 | `status:ready-to-merge` | Approved + green; awaiting human merge | Merge-readiness | Human merges |
 
 ## Status label invariants
@@ -53,8 +53,9 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
   `status:blocked`. Each role **swaps** the label — removing the prior status as it adds the
   next — rather than accumulating: claim = −`implementation-ready` +`in-progress`; PR opened =
   −`in-progress` +`in-review`; review clean = −`in-review` +`review-passed`; review found issues =
-  −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; merge-ready =
-  −`review-passed` +`ready-to-merge`. Merging closes the issue, so its final `status:*` is moot.
+  −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; commits after
+  review = −`review-passed` +`in-review`; merge-ready = −`review-passed` +`ready-to-merge`. Merging
+  closes the issue, so its final `status:*` is moot.
 - **Un-blocking.** When a blocker's PR merges (its issue closes), the Merge-readiness un-block
   sweep removes `status:blocked` from each dependent once **all** its `blocked-by` blockers are
   closed, returning it to the queue.
