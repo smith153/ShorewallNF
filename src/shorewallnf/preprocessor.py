@@ -7,9 +7,10 @@ Reader (imperative shell) supplies the raw text and source paths. Undefined vari
 malformed input fail fast with :class:`~shorewallnf.errors.ConfigError` carrying the
 offending location. See docs/module-layout.md.
 
-This module currently implements ``params`` substitution and ``?if``/``?elsif``/``?else``/
-``?endif`` conditional resolution; ``?FORMAT``/``?SECTION`` land in a later task on the same
-chain.
+This module implements the full pure preprocessor chain — ``params`` substitution,
+``?if``/``?elsif``/``?else``/``?endif`` conditionals, and ``?FORMAT``/``?SECTION`` validation —
+composed per file by :func:`preprocess_file`. The imperative entry that reads a config
+directory and runs this over each file lives in the shell (``cli.preprocess``).
 """
 
 from __future__ import annotations
@@ -213,3 +214,48 @@ def _eval_condition(
 def _resolve_token(token: str, params: Mapping[str, str]) -> str:
     # Condition context: an undefined variable resolves to empty (falsy), unlike substitute().
     return _VAR_REF.sub(lambda m: params.get(m["braced"] or m["bare"], ""), token)
+
+
+def to_source_lines(text: str, path: str) -> list[SourceLine]:
+    """Split raw file ``text`` into :class:`SourceLine`\\ s tagged with ``path`` and 1-based
+    line numbers — the entry point that turns the Reader's text into the preprocessor stream.
+    """
+    return [SourceLine(text=t, path=path, line=i) for i, t in enumerate(text.splitlines(), 1)]
+
+
+def resolve_format_section(lines: Iterable[SourceLine]) -> list[SourceLine]:
+    """Validate ``?FORMAT n`` and ``?SECTION <NAME>`` directives, leaving lines unchanged.
+
+    ``?FORMAT`` must carry a single positive integer; ``?SECTION`` a single name — otherwise
+    :class:`ConfigError`. The directives are **preserved** in the stream (they mark
+    format/section boundaries the per-file parsers act on later); the generic preprocessor
+    only checks they are well-formed. Which format numbers or section names a given file
+    actually allows is a per-file parser concern, not enforced here.
+    """
+    result = list(lines)
+    for line in result:
+        parts = line.text.split()
+        keyword = parts[0].lower() if parts else ""
+        if keyword == "?format" and not _is_positive_int_arg(parts):
+            raise ConfigError(
+                "?FORMAT requires a single positive integer", path=line.path, line=line.line
+            )
+        if keyword == "?section" and len(parts) != 2:
+            raise ConfigError(
+                "?SECTION requires a single section name", path=line.path, line=line.line
+            )
+    return result
+
+
+def _is_positive_int_arg(parts: list[str]) -> bool:
+    return len(parts) == 2 and parts[1].isdigit() and int(parts[1]) >= 1
+
+
+def preprocess_file(text: str, path: str, params: Mapping[str, str]) -> list[SourceLine]:
+    """Run the full pure per-file pipeline: split into lines, resolve ``?if`` conditionals,
+    validate ``?FORMAT``/``?SECTION``, then substitute ``params`` variables.
+    """
+    lines = to_source_lines(text, path)
+    lines = resolve_conditionals(lines, params)
+    lines = resolve_format_section(lines)
+    return substitute(lines, params)

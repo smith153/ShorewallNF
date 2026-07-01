@@ -1,0 +1,6 @@
+?SECTION NEW
+?if $ENABLE
+ACCEPT net fw tcp 22
+?else
+DROP net fw
+?endif

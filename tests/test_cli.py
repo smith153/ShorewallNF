@@ -20,9 +20,17 @@ def test_missing_verb_is_usage_error_exit_2() -> None:
     assert exc.value.code == 2
 
 
-def test_check_verb_dispatches(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["check", "myconfig"]) == 0
-    assert "myconfig" in capsys.readouterr().err
+_FIXTURE_DIR = str(Path(__file__).parent / "fixtures" / "preprocess_dir")
+
+
+def test_check_verb_preprocesses_a_valid_config(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["check", _FIXTURE_DIR]) == 0
+    assert "OK" in capsys.readouterr().out
+
+
+def test_check_verb_reports_a_missing_config_dir(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["check", "no-such-config-dir"]) == 1
+    assert "error:" in capsys.readouterr().err
 
 
 def test_error_shell_formats_and_exits_one(
