@@ -18,11 +18,11 @@ Approved epics are `type:epic` with `status:implementation-ready` (a human remov
 `status:proposed` and marked it ready for decomposition):
 
 ```bash
-gh issue list --label type:epic,status:implementation-ready --state open \
-  --search "-label:status:decomposing" --limit 50
+gh issue list --label type:epic,status:implementation-ready --state open --limit 50
 ```
 
-Pick one epic that has **no child tasks yet** and is not already `status:decomposing`.
+Pick one epic that has **no child tasks yet**. The claim is atomic (step 1), so you don't need to
+pre-filter claimed epics — a lost race just returns `422`.
 
 ## Procedure
 
@@ -31,11 +31,14 @@ Pick one epic that has **no child tasks yet** and is not already `status:decompo
 > (signed) and route (`needs-human`, a new issue, or a status reset). **Sign every comment you post**
 > with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
 
-1. **Claim the epic** so a concurrent Decomposer can't duplicate it — add `status:decomposing`
-   (skip any epic that already carries it). Release it when you finish (see Outputs).
+1. **Claim the epic atomically** so a concurrent Decomposer can't duplicate it — create the epic
+   claim ref *before* decomposing; ref creation is atomic server-side:
    ```bash
-   gh issue edit <EPIC> --add-label status:decomposing
+   sha="$(gh api repos/{owner}/{repo}/git/ref/heads/master -q .object.sha)"
+   gh api --method POST repos/{owner}/{repo}/git/refs -f ref=refs/heads/epic/<EPIC> -f sha="$sha"
    ```
+   A **`422` (Reference already exists)** means another Decomposer has it — skip to another epic.
+   Release the ref when you finish (see Outputs).
 2. Re-read the epic's acceptance criteria — every criterion must be covered by at least one task.
 3. Slice the epic into the smallest units that each carry their own test cycle and are worth
    a reviewer's gate. Fold setup/scaffolding into the task that needs it.
@@ -76,10 +79,10 @@ gh issue edit <TASK> --add-label status:blocked
 ```
 
 Then comment on the epic listing the child task numbers, and (where available) attach them as
-native sub-issues. Finally, **release the claim**:
+native sub-issues. Finally, **release the claim** by deleting the epic ref:
 
 ```bash
-gh issue edit <EPIC> --remove-label status:decomposing
+gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/epic/<EPIC>
 ```
 
 ## Guardrails
@@ -88,9 +91,9 @@ gh issue edit <EPIC> --remove-label status:decomposing
 - **YAGNI** — do not invent speculative tasks the epic's acceptance criteria don't require.
 - Respect the architecture's ordering (parser → IR → generator, etc.).
 - Do not mark tasks `implementation-ready` — that is the Groomer's job.
-- **Claim before decomposing, release after.** Skip epics already carrying `status:decomposing`;
-  add it as your claim and remove it when done. An epic that has carried `status:decomposing`
-  with no child tasks and looks abandoned is a dead claim — clear it and take the epic.
+- **Claim before decomposing, release after.** The claim is the atomic `epic/<N>` ref (a `422` on
+  create means another Decomposer holds it); delete the ref when done. An `epic/<N>` ref whose epic
+  still has no child tasks and looks abandoned is a dead claim — delete the ref and take the epic.
 - **Reserve ADR numbers here, not at implementation time.** A task that needs a new ADR carries
   its reserved `ADR-NNNN` in the body; never leave implementers to pick "the next free number"
   — concurrent implementers would collide (see #22).
