@@ -66,3 +66,28 @@ def test_merge_readiness_reclaim_deletes_ref() -> None:
     """Reclaiming a stale claim must delete the ref so the task can be re-claimed."""
     text = MERGE_READINESS.read_text()
     assert "DELETE" in text and CLAIM_REF in text, "reclaim must delete the claim ref"
+
+
+# --- atomic epic-claim for the Decomposer (retires status:decomposing) --------
+
+DECOMPOSER = ROOT / "pipeline" / "roles" / "epic-decomposer.md"
+EPIC_REF = "refs/heads/epic/"
+
+
+def test_decomposer_claims_via_atomic_ref() -> None:
+    """The Decomposer claims an epic via an epic ref and handles the already-claimed case."""
+    text = DECOMPOSER.read_text()
+    assert "git/refs" in text and EPIC_REF in text, "decomposer must claim via an epic ref"
+    assert "422" in text, "decomposer must handle 422 (already being decomposed)"
+
+
+def test_status_decomposing_label_retired() -> None:
+    """The epic claim is now an atomic ref, not a label — neither the pipeline docs nor the
+    canonical label config (`.github/labels.yml`) may reference it."""
+    sources = [*(ROOT / "pipeline").rglob("*.md"), ROOT / ".github" / "labels.yml"]
+    lingering = [
+        src.relative_to(ROOT).as_posix()
+        for src in sources
+        if "status:decomposing" in src.read_text()
+    ]
+    assert not lingering, "retired status:decomposing still referenced in:\n" + "\n".join(lingering)

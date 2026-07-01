@@ -50,8 +50,8 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 ## Status label invariants
 
 - **One status at a time.** A task carries exactly one `status:*` label, optionally plus
-  `status:blocked`; an epic being decomposed also carries a transient `status:decomposing`
-  claim. Each role **swaps** the label — removing the prior status as it adds the
+  `status:blocked`. (An epic being decomposed is claimed by a transient `epic/<N>` git ref, not a
+  label — see Collision avoidance.) Each role **swaps** the label — removing the prior status as it adds the
   next — rather than accumulating: claim = −`implementation-ready` +`in-progress`; PR opened =
   −`in-progress` +`in-review`; review clean = −`in-review` +`review-passed`; review found issues =
   −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; commits after
@@ -78,8 +78,9 @@ atomic on the **shared remote** — a local worktree or branch can't lock across
 - A claim is released by **deleting the ref**: the Implementer on abort, or Merge-readiness when it
   reclaims a stale claim. (Enable *automatically delete head branches* so a merged `task/<N>` also
   frees the ref and can't cause a false `422` on a later re-claim.)
-- The **Epic Decomposer** claims an epic with `status:decomposing` before decomposing it (and
-  skips epics that already carry it), so two decomposers can't duplicate the same epic.
+- The **Epic Decomposer** claims an epic the same way — atomically creating `refs/heads/epic/<N>`
+  before decomposing it (a `422` means another Decomposer already has it) — and deletes the ref when
+  done, so two decomposers can't duplicate the same epic.
 - If two in-flight PRs would conflict (overlapping changes), the later one may be **stacked** —
   opened against the other's branch instead of `master` — rather than serialized or hand-merged.
   Merge-readiness holds a stacked PR until its base merges and GitHub retargets it to `master`.
