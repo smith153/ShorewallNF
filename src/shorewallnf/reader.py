@@ -43,14 +43,17 @@ def discover(config_dir: str | Path) -> tuple[str, ...]:
 def read_file(config_dir: str | Path, name: str) -> str:
     """Read one config file's text from ``config_dir``.
 
-    A missing directory or file — or any other read error — raises :class:`ConfigError`
-    with the offending file path.
+    A missing directory or file, a non-UTF-8 file, or any other read error raises
+    :class:`ConfigError` with the offending file path.
     """
     file_path = Path(config_dir) / name
     try:
         return file_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise ConfigError("config file not found", path=str(file_path)) from None
+    except UnicodeDecodeError:
+        # A mis-encoded config is invalid user input (ADR-0004), not a programming error.
+        raise ConfigError("config file is not valid UTF-8", path=str(file_path)) from None
     except OSError as err:
         raise ConfigError(
             f"cannot read config file: {err.strerror or err}", path=str(file_path)

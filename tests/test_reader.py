@@ -50,3 +50,12 @@ def test_read_file_missing_directory_raises_with_path() -> None:
     with pytest.raises(ConfigError) as exc:
         read_file(FIXTURE / "nope", "params")
     assert exc.value.path == str(FIXTURE / "nope" / "params")
+
+
+def test_read_file_non_utf8_raises_config_error(tmp_path: Path) -> None:
+    # A mis-encoded config is invalid user input (ADR-0004) → ConfigError, not an
+    # uncaught UnicodeDecodeError crash.
+    (tmp_path / "params").write_bytes(b"NET_IF=\xff\xfe\n")
+    with pytest.raises(ConfigError) as exc:
+        read_file(tmp_path, "params")
+    assert exc.value.path == str(tmp_path / "params")
