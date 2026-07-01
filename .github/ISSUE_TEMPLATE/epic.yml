@@ -1,0 +1,30 @@
+name: Epic
+description: A high-level feature (e.g. "SNAT support"). Created by the Epic Author; approved by a human.
+labels: ["type:epic", "status:proposed"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What capability, and why (altitude ~ "SNAT support" — not "a firewall").
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope / Out of scope
+      description: What this epic covers and, explicitly, what it does not.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable outcomes that mean this epic is done.
+    validations:
+      required: true
+  - type: textarea
+    id: refs
+    attributes:
+      label: References
+      description: Relevant my_shorewall/ files, docs, ADRs, prior issues.

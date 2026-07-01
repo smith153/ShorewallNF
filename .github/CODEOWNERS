@@ -1,0 +1,7 @@
+# Merges to master require review from a human maintainer.
+# The AI Code Reviewer's approval alone must NOT satisfy branch protection —
+# configure branch protection to require review from these owners.
+#
+# Replace @ShorewallNF/maintainers with the real team/handle before enabling
+# branch protection on the repository.
+*       @ShorewallNF/maintainers
