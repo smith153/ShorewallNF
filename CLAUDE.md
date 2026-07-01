@@ -46,8 +46,8 @@ the IR and emits nftables **JSON** (via `python3-nftables`). The IR is **family-
 - **All work happens on a branch → pull request. Never commit to `master`.** Use a worktree
   for isolation.
 - One task per PR; reference the issue with `Closes #NN`.
-- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `test:`). End each
-  commit message with the repo's `Co-Authored-By:` trailer.
+- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `test:`), kept brief. Do
+  **not** add AI or `Co-Authored-By:` trailers — the human running the session is the sole author.
 - Humans approve epics and merges; agents do everything in between. Never self-approve a PR
   to satisfy branch protection.
 - **Raise issues freely.** If you notice something off — a bug, shortcoming, tech debt, risky
