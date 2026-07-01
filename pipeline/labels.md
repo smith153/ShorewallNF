@@ -34,7 +34,8 @@ review, CI status) carries the rest of the workflow — see [`workflow.md`](work
 ## `area:*` — subsystem touched
 
 `area:parser`, `area:generator`, `area:cli`, `area:ir`, `area:zones`, `area:interfaces`,
-`area:policy`, `area:rules`, `area:nat`, `area:preprocessor`, `area:testing`, `area:ci`.
+`area:policy`, `area:rules`, `area:nat`, `area:preprocessor`, `area:testing`, `area:ci`,
+`area:pipeline`.
 
 ## `meta`
 

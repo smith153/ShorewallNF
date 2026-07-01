@@ -32,6 +32,7 @@
 - { name: "area:preprocessor", color: "c2e0c6", description: "params / ?if / ?FORMAT / ?SECTION" }
 - { name: "area:testing",      color: "c2e0c6", description: "Test harness" }
 - { name: "area:ci",           color: "c2e0c6", description: "CI/CD" }
+- { name: "area:pipeline",     color: "c2e0c6", description: "Pipeline / factory maintenance" }
 
 # meta
 - { name: "good-first-issue",  color: "7057ff", description: "Good entry point for new contributors" }
