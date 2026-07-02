@@ -57,6 +57,17 @@ swap the linked task's status label (swap, don't accumulate — see [`workflow.m
 > resets the task from `review-passed` back to `status:in-review` every run and it never reaches
 > `status:ready-to-merge`.
 
+> **Re-read the task status right before you cast (avoid a double-cast, #119).** The verdict is
+> two non-atomic steps — the `gh pr review` and the label swap — and reviewers run concurrently
+> under one shared account. So **immediately before the label swap, re-read the linked task's
+> labels and skip if it is no longer `status:in-review`** (another reviewer already cast, or the
+> reconcile Action already promoted it). Without this, a late `--add-label status:review-passed`
+> lands on top of `ready-to-merge`, stacking a second primary status and tripping the reconcile
+> one-status invariant (R5) → the task is stranded on `needs-human`:
+> ```bash
+> gh issue view <TASK> --json labels -q '.labels[].name' | grep -qx status:in-review || exit 0
+> ```
+
 - If issues found:
   ```bash
   gh pr review <PR> --comment --body "<specific, actionable feedback>"
