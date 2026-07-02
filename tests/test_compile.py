@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import tests.golden_harness as gh
 from shorewallnf import cli
 from shorewallnf.ir import Family, Nat, Policy, Rule, ZoneMember
 from shorewallnf.parser import parse_config
@@ -59,25 +61,74 @@ def test_compile_verb_reports_a_missing_config_dir(capsys: pytest.CaptureFixture
     assert "error:" in capsys.readouterr().err
 
 
-# --- nft -c validation (gated on python3-nftables) ---------------------------
+# --- nft --check dry-run validation (task #165) ------------------------------
+#
+# ``nft --check`` reads the kernel ruleset cache and so needs CAP_NET_ADMIN (root); it cannot
+# run in the fast unprivileged tier. These tests are marked ``nft`` and run in a dedicated
+# privileged CI step (see ci.yml). ``require_nft`` makes a missing/broken nft a HARD failure
+# under CI so the dry-run can never silently skip there, while skipping locally for dev
+# convenience — replacing the old ``skipif(not python3-nftables)`` that skipped silently in CI.
+
+# A rule added into a table/chain that was never created — a ruleset ``nft --check`` must reject.
+_BROKEN_RULESET: dict[str, Any] = {
+    "nftables": [
+        {
+            "add": {
+                "rule": {
+                    "family": "inet",
+                    "table": "snf_ghost",
+                    "chain": "snf_ghost",
+                    "expr": [{"accept": None}],
+                }
+            }
+        }
+    ]
+}
 
 
-def _nft_available() -> bool:
-    try:
-        import nftables  # type: ignore[import-not-found]  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-@pytest.mark.skipif(
-    not _nft_available(),
-    reason="python3-nftables not installed (behavioral netns tier, #77/#78)",
-)
+@pytest.mark.nft
 def test_generated_ruleset_passes_nft_check() -> None:
+    gh.require_nft()  # hard-fails under CI if nft can't run; skips locally
     from shorewallnf.applier import check_ruleset
 
-    check_ruleset(cli.compile_config(FIXTURE))  # must not raise
+    validated = 0
+    for fixture in (FIXTURE, POLICY_FIXTURE, RULES_FIXTURE):
+        check_ruleset(cli.compile_config(fixture))  # raises ConfigError if nft rejects it
+        validated += 1
+    assert validated >= 1  # non-vacuous: at least one ruleset really passed nft --check
+
+
+@pytest.mark.nft
+def test_check_ruleset_rejects_a_broken_ruleset() -> None:
+    gh.require_nft()  # negative control needs a working nft to reject against
+    from shorewallnf.applier import check_ruleset
+    from shorewallnf.errors import ConfigError
+
+    with pytest.raises(ConfigError):
+        check_ruleset(_BROKEN_RULESET)
+
+
+# --- the CI-aware gate itself (hermetic: no nft needed) ----------------------
+
+
+def test_require_nft_hard_fails_under_ci_when_nft_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Under CI a missing/broken nft must FAIL, never skip — the guard against a silent all-skip.
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(gh, "nft_available", lambda: False)
+    with pytest.raises(AssertionError, match="must run in CI"):
+        gh.require_nft()
+
+
+def test_require_nft_skips_locally_when_nft_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Off CI, a missing nft skips for dev convenience rather than failing the developer's run.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(gh, "nft_available", lambda: False)
+    with pytest.raises(pytest.skip.Exception):
+        gh.require_nft()
 
 
 # --- policies end-to-end (#91) -----------------------------------------------
@@ -99,7 +150,7 @@ def test_parse_config_parses_the_policy_file() -> None:
 
 def test_policy_compile_end_to_end_matches_golden() -> None:
     # Full path: preprocess (I/O) -> parse_config (policy wired in) -> generate. The golden
-    # harness also dry-run validates the output with nft -c where python3-nftables is available.
+    # harness also dry-run validates the output with nft --check where nft can run.
     assert_golden(parse_config(cli.preprocess(POLICY_FIXTURE)), "policy_compile")
 
 
@@ -133,7 +184,7 @@ def test_parse_config_parses_the_rules_file() -> None:
 
 def test_rules_compile_end_to_end_matches_golden() -> None:
     # Full path: preprocess (I/O) -> parse_config (rules wired in) -> generate. The golden
-    # harness also dry-run validates the output with nft -c where python3-nftables is available.
+    # harness also dry-run validates the output with nft --check where nft can run.
     assert_golden(parse_config(cli.preprocess(RULES_FIXTURE)), "rules_compile")
 
 
@@ -214,7 +265,7 @@ NAT_FIXTURE = Path(__file__).parent / "fixtures" / "nat_compile_dir"
 
 def test_nat_compile_end_to_end_matches_golden() -> None:
     # Full path: preprocess (I/O) -> parse_config (nats wired in) -> generate. The golden harness
-    # also dry-run validates the output with nft -c where python3-nftables is available.
+    # also dry-run validates the output with nft --check where nft can run.
     assert_golden(parse_config(cli.preprocess(NAT_FIXTURE)), "nat_compile")
 
 
@@ -246,11 +297,9 @@ def test_nat_compile_config_carries_dnat_and_v6_accept_through() -> None:
     assert not any(r["table"] == "nat" and "2001:db8::5" in json.dumps(r) for r in rules)
 
 
-@pytest.mark.skipif(
-    not _nft_available(),
-    reason="python3-nftables not installed (behavioral netns tier, #77/#78)",
-)
+@pytest.mark.nft
 def test_nat_compiled_ruleset_passes_nft_check() -> None:
+    gh.require_nft()  # hard-fails under CI if nft can't run; skips locally
     from shorewallnf.applier import check_ruleset
 
     check_ruleset(cli.compile_config(NAT_FIXTURE))  # must not raise

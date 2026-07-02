@@ -16,7 +16,26 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m ruff check .
       - run: python -m mypy
-      - run: python -m pytest -v
+      # Fast hermetic suite (golden diffs, unit tests). The `nft --check` dry-run is excluded
+      # here — it needs CAP_NET_ADMIN — and runs privileged in the next step instead.
+      - run: python -m pytest -v -m "not nft"
+      - name: Install nft for the golden dry-run
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables
+      - name: Golden nft --check dry-run (privileged; needs CAP_NET_ADMIN)
+        run: |
+          set -eo pipefail
+          # `nft --check` reads the kernel ruleset cache, so it needs CAP_NET_ADMIN — run the
+          # nft-marked tests as root. require_nft() hard-fails (never skips) under GITHUB_ACTIONS,
+          # so a missing/broken nft can't pass green; assert 0 skips too (mirrors the netns guard).
+          sudo env "PATH=/usr/sbin:/sbin:$PATH" GITHUB_ACTIONS=true "$(command -v python)" \
+            -m pytest -v -m nft -o addopts= | tee nft.log
+          if grep -qE '[0-9]+ skipped' nft.log; then
+            echo "::error::nft --check dry-run was skipped; expected it to run privileged"
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' nft.log
 
   # Behavioral (network-namespace) tier: builds a throwaway `ip netns` sandbox, loads a
   # generated ruleset via the `nft` binary, and drives real packets to catch packet-path
