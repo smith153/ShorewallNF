@@ -152,3 +152,64 @@ def test_roles_preserve_status_blocked() -> None:
     assert not missing, (
         "role docs missing the blocked-preservation invariant:\n" + "\n".join(missing)
     )
+
+
+# --- stacking sanctioned for flow + bounded blocked-claim to stack (#148) ----------
+
+
+def _missing_bounded_claim(text: str) -> list[str]:
+    """Return which elements of the bounded blocked-claim-to-stack rule (#148) are absent.
+
+    An implementer may claim a `status:blocked` task *to stack it* only when every open blocker
+    is already approved (`review-passed`/`ready-to-merge`), basing the PR on the blocker's
+    `task/<N>` branch and keeping `status:blocked`."""
+    lowered = text.lower()
+    missing = []
+    if "status:blocked" not in text:
+        missing.append("claim a status:blocked task")
+    if "review-passed" not in text:
+        missing.append("blocker review-passed")
+    if "ready-to-merge" not in text:
+        missing.append("blocker ready-to-merge")
+    if "task/<n>" not in lowered:
+        missing.append("base PR on blocker's task/<N> branch")
+    if "keeps `status:blocked`" not in lowered and "keep `status:blocked`" not in lowered:
+        missing.append("keep status:blocked")
+    return missing
+
+
+def test_workflow_sanctions_stacking_for_flow() -> None:
+    """workflow.md must sanction stacking BOTH to avoid conflicting changes AND to keep delivery
+    flowing when the human merge gate is closed (#148), not conflicts only."""
+    lowered = WORKFLOW.read_text().lower()
+    assert "conflict" in lowered, "workflow.md must keep the conflict-avoidance stacking reason"
+    assert "keep delivery flowing" in lowered, (
+        "workflow.md must sanction stacking to keep delivery flowing"
+    )
+    assert "merge gate is closed" in lowered, (
+        "workflow.md must tie flow-stacking to the closed human merge gate"
+    )
+
+
+def test_workflow_stacking_notation_is_base_branch_no_label() -> None:
+    """The 'stacked' notation stays the PR base branch — no new label (#148)."""
+    text = WORKFLOW.read_text()
+    lowered = text.lower()
+    assert "base_ref" in text or "base branch" in lowered, (
+        "workflow.md must state the stacked notation is the PR base branch"
+    )
+    assert "no new label" in lowered, "workflow.md must state no new label is introduced"
+
+
+def test_workflow_bounded_blocked_claim_to_stack() -> None:
+    """workflow.md must state the bounded claim exception exactly, at the claim rule (#148)."""
+    missing = _missing_bounded_claim(WORKFLOW.read_text())
+    assert not missing, "workflow.md missing bounded blocked-claim elements: " + ", ".join(missing)
+
+
+def test_implementer_bounded_blocked_claim_to_stack() -> None:
+    """implementer.md must state the same bounded claim exception (#148)."""
+    missing = _missing_bounded_claim(IMPLEMENTER.read_text())
+    assert not missing, (
+        "implementer.md missing bounded blocked-claim elements: " + ", ".join(missing)
+    )
