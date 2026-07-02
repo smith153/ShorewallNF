@@ -562,3 +562,114 @@ def test_zone_host_narrowing_matches_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "rule_zone_host_narrowing")
+
+
+# ---- ?SECTION connection-state gating & ordering (task #124, ADR-0007) ------------------
+
+
+def _ct(state: str) -> dict[str, Any]:
+    return {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": state}}
+
+
+def _sec(section: str | None, **kw: Any) -> Rule:
+    return Rule(action="ACCEPT", source="loc", dest="net", section=section, **kw)
+
+
+def test_established_section_gates_on_ct_state_established() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec("ESTABLISHED"),))
+    assert _added_rules(rs, _LN)[0]["expr"] == [
+        _iif("eth1"), _oif("eth0"), _ct("established"), {"accept": None}
+    ]
+
+
+def test_related_section_gates_on_ct_state_related() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec("RELATED"),))
+    assert _ct("related") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_invalid_section_gates_on_ct_state_invalid() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec("INVALID"),))
+    assert _ct("invalid") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_new_section_is_ungated() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec("NEW"),))
+    assert _added_rules(rs, _LN)[0]["expr"] == [_iif("eth1"), _oif("eth0"), {"accept": None}]
+
+
+def test_unsectioned_defaults_to_new_and_is_ungated() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec(None),))
+    assert _added_rules(rs, _LN)[0]["expr"] == [_iif("eth1"), _oif("eth0"), {"accept": None}]
+
+
+def test_section_name_is_case_insensitive() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec("established"),))
+    assert _ct("established") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_sections_ordered_established_related_invalid_new() -> None:
+    # Input order is deliberately reversed from the required emit order.
+    rs = Ruleset(
+        zones=_LN,
+        rules=(_sec("NEW"), _sec("INVALID"), _sec("RELATED"), _sec("ESTABLISHED")),
+    )
+    added = _added_rules(rs, _LN)
+    gates = [next((e for e in r["expr"] if "ct" in str(e)), "new") for r in added]
+    assert gates == [_ct("established"), _ct("related"), _ct("invalid"), "new"]
+
+
+def test_stable_order_within_a_section() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22", section="NEW"),
+            Rule(action="DROP", source="loc", dest="net", proto="tcp", dport="23", section="NEW"),
+        ),
+    )
+    added = _added_rules(rs, _LN)
+    assert [r["expr"][-1] for r in added] == [{"accept": None}, {"drop": None}]
+
+
+def test_ct_state_sits_between_address_and_l4() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT",
+                source="loc:10.0.0.5",
+                dest="net",
+                proto="tcp",
+                dport="22",
+                section="RELATED",
+                family=Family.IPV4,
+            ),
+        ),
+    )
+    assert _added_rules(rs, _LN)[0]["expr"] == [
+        _iif("eth1"),
+        _oif("eth0"),
+        _addr("saddr", "ip", "10.0.0.5"),
+        _ct("related"),
+        _dport("tcp", 22),
+        {"accept": None},
+    ]
+
+
+def test_unknown_section_fails_fast() -> None:
+    rs = Ruleset(zones=_LN, rules=(_sec("BOGUS"),))
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "SECTION" in str(exc.value) or "section" in str(exc.value)
+
+
+def test_sectioned_rules_match_golden() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22", section="NEW"),
+            Rule(action="DROP", source="net", dest="loc", section="INVALID"),
+            Rule(action="ACCEPT", source="loc", dest="net", section="ESTABLISHED"),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "rule_sections")
