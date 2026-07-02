@@ -253,15 +253,18 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
     """Assemble a :class:`~shorewallnf.ir.Ruleset` from the preprocessed per-file streams.
 
     Dispatches each known config file to its per-file parser and combines the results. Zones
-    are parsed first so ``interfaces`` can validate references and attach membership (the
-    ``interfaces`` result carries the zones with their members populated). Files absent from
-    ``streams`` are simply skipped.
+    are parsed first so ``interfaces`` can validate references and attach membership, then
+    ``policy`` is validated against the populated zones (the ``interfaces`` result carries the
+    zones with their members populated). Files absent from ``streams`` are simply skipped.
     """
     zones: tuple[Zone, ...] = ()
     interfaces: tuple[Interface, ...] = ()
+    policies: tuple[Policy, ...] = ()
     if "zones" in streams:
         zones = parse_zones(parse(streams["zones"]))
     if "interfaces" in streams:
         parsed = parse_interfaces(parse(streams["interfaces"]), zones)
         zones, interfaces = parsed.zones, parsed.interfaces
-    return Ruleset(zones=zones, interfaces=interfaces)
+    if "policy" in streams:
+        policies = parse_policies(parse(streams["policy"]), zones)
+    return Ruleset(zones=zones, interfaces=interfaces, policies=policies)
