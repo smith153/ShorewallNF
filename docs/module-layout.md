@@ -20,7 +20,7 @@ config dir ─► Reader ─► Preprocessor ─► Parser ─► IR ─► Vali
 | Parser | `shorewallnf/parser.py` | core (pure: text → IR) | planned |
 | IR / model | `shorewallnf/ir.py` | core (immutable data) | **present** |
 | Validator | `shorewallnf/validator.py` | core (pure: IR → IR, or raises) | **present** (semantic checks; e.g. the ESTABLISHED/RELATED base-accept shadow, [ADR-0005](adr/0005-nftables-base-chain-layout.md)) |
-| Generator | `shorewallnf/generator.py` | core (pure: IR → nftables JSON) | **present** (base skeleton [ADR-0005](adr/0005-nftables-base-chain-layout.md); inter-zone policy rules [ADR-0006](adr/0006-inter-zone-policy-compilation.md); per-connection rules [ADR-0007](adr/0007-rules-compilation.md)) |
+| Generator | `shorewallnf/generator.py` | core (pure: IR → nftables JSON) | **present** (base skeleton [ADR-0005](adr/0005-nftables-base-chain-layout.md); inter-zone policy rules [ADR-0006](adr/0006-inter-zone-policy-compilation.md); per-connection rules [ADR-0007](adr/0007-rules-compilation.md); IPv4 DNAT nat compilation [ADR-0008](adr/0008-nat-compilation.md)) |
 | Applier | `shorewallnf/applier.py` | shell (runs `nft -c`, then applies) | planned |
 
 Cross-cutting:

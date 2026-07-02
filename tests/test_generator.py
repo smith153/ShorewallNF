@@ -6,7 +6,7 @@ import pytest
 
 from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate
-from shorewallnf.ir import Family, Policy, Rule, Ruleset, Zone, ZoneMember
+from shorewallnf.ir import Family, Nat, Policy, Rule, Ruleset, Zone, ZoneMember
 from tests.golden_harness import assert_golden
 
 POLICY_GOLDEN = Path(__file__).parent / "golden" / "policy_default_rules.json"
@@ -804,3 +804,210 @@ def test_icmp_rules_match_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "rule_icmp")
+
+
+# ---- IPv4 DNAT: nat prerouting + forward accept (task #143, ADR-0008) --------------------
+
+
+def _nat_cmds(kind: str, table: str, ruleset: Ruleset) -> list[dict[str, Any]]:
+    """The `add` payloads of the given kind in the given table from `generate(ruleset)`.
+
+    A `table` payload is keyed by `name` (it *is* the table); `chain`/`rule` payloads carry a
+    `table` field.
+    """
+    out = []
+    for cmd in generate(ruleset)["nftables"]:
+        payload = cmd["add"].get(kind)
+        if payload is None:
+            continue
+        owner = payload["name"] if kind == "table" else payload["table"]
+        if owner == table:
+            out.append(payload)
+    return out
+
+
+def _daddr(proto: str, value: Any) -> dict[str, Any]:
+    left = {"payload": {"protocol": proto, "field": "daddr"}}
+    return {"match": {"op": "==", "left": left, "right": value}}
+
+
+# net(eth0) is the external source zone; loc(eth1) the internal zone the DNAT targets.
+_NL = (_FW, _zone("net", "eth0"), _zone("loc", "eth1"))
+
+
+def _dnat(host: str, port: Any | None = None) -> dict[str, Any]:
+    target: dict[str, Any] = {"addr": host, "family": "ip"}
+    if port is not None:
+        target["port"] = port
+    return {"dnat": target}
+
+
+def test_no_nats_leaves_base_skeleton_unchanged() -> None:
+    assert generate(Ruleset(zones=_NL, nats=())) == generate(Ruleset(zones=_NL))
+    # ...and with no nats there is no inet nat table at all.
+    assert _nat_cmds("table", "nat", Ruleset(zones=_NL)) == []
+
+
+def test_dnat_emits_inet_nat_table_and_base_chains() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+    )
+    assert {"family": "inet", "name": "nat"} in _nat_cmds("table", "nat", rs)
+    chains = {c["name"]: c for c in _nat_cmds("chain", "nat", rs)}
+    assert set(chains) == {"prerouting", "postrouting"}
+    assert (chains["prerouting"]["type"], chains["prerouting"]["hook"]) == ("nat", "prerouting")
+    assert chains["prerouting"]["prio"] == -100
+    assert (chains["postrouting"]["type"], chains["postrouting"]["hook"]) == ("nat", "postrouting")
+    assert chains["postrouting"]["prio"] == 100
+    for chain in chains.values():
+        assert chain["policy"] == "accept"
+
+
+def test_dnat_prerouting_rule_matches_iif_proto_dport_and_dnat_target() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+    )
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    assert len(prerouting) == 1
+    assert prerouting[0]["expr"] == [_iif("eth0"), _dport("tcp", 80), _dnat("192.0.2.10")]
+
+
+def test_dnat_emits_forward_accept_to_internal_host() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+    )
+    added = _added_rules(rs, _NL)
+    forward = [r for r in added if r["chain"] == "forward"]
+    assert len(forward) == 1
+    assert forward[0]["expr"] == [
+        _iif("eth0"),
+        _oif("eth1"),
+        _daddr("ip", "192.0.2.10"),
+        _dport("tcp", 80),
+        {"accept": None},
+    ]
+
+
+def test_dnat_comma_list_dest_port_is_anonymous_set() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80,443", family=Family.IPV4),),
+    )
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    assert prerouting[0]["expr"][1] == _dport("tcp", {"set": [80, 443]})
+
+
+def test_dnat_dest_port_range() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="udp",
+                  dport="49160:49300", family=Family.IPV4),),
+    )
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    assert prerouting[0]["expr"][1] == _dport("udp", {"range": [49160, 49300]})
+
+
+def test_dnat_target_port_remap_rewrites_dnat_and_forward_port() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10:8080", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+    )
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    # prerouting matches the EXTERNAL port; the dnat target carries the REMAPPED port.
+    assert prerouting[0]["expr"] == [_iif("eth0"), _dport("tcp", 80), _dnat("192.0.2.10", 8080)]
+    forward = [r for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    # the forward accept matches the post-DNAT (remapped) port on the internal host.
+    assert forward[0]["expr"] == [
+        _iif("eth0"),
+        _oif("eth1"),
+        _daddr("ip", "192.0.2.10"),
+        _dport("tcp", 8080),
+        {"accept": None},
+    ]
+
+
+def test_dnat_without_remap_forward_matches_external_port() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="22", family=Family.IPV4),),
+    )
+    forward = [r for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    assert _dport("tcp", 22) in forward[0]["expr"]
+
+
+def test_dnat_forward_accept_precedes_policy_default_in_forward_chain() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    # the DNAT accept is reached before the `all all DROP` fall-through.
+    assert forward[-2]["expr"][-1] == {"accept": None}
+    assert forward[-1]["expr"] == [{"drop": None}]
+
+
+def test_dnat_all_source_omits_iifname() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="all", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+    )
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    assert prerouting[0]["expr"] == [_dport("tcp", 80), _dnat("192.0.2.10")]
+
+
+def test_dnat_port_without_proto_fails_fast() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", dport="80"),),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "proto" in str(exc.value).lower()
+
+
+def test_dnat_zone_without_interfaces_fails_fast() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("net"), _zone("loc", "eth1")),
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                  dport="80", family=Family.IPV4),),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "net" in str(exc.value)
+
+
+def test_ipv6_dnat_not_yet_supported_fails_fast() -> None:
+    # IPv6 exposes a service by a plain ACCEPT (no NAT) — task #144, out of scope here.
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                  dport="443", family=Family.IPV6),),
+    )
+    with pytest.raises(ConfigError):
+        generate(rs)
+
+
+def test_dnat_matches_golden() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(
+            Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                dport="80,443", family=Family.IPV4),
+            Nat(action="DNAT", source="net", dest="loc", to="192.0.2.20:8022", proto="tcp",
+                dport="22", family=Family.IPV4),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "dnat_prerouting_forward")
