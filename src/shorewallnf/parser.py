@@ -208,6 +208,12 @@ def _interfaces_options_field(directive: Record) -> int:
 
 
 _POLICY_ACTIONS = frozenset({"ACCEPT", "DROP", "REJECT"})
+# nft `log level` keywords (plus `audit`). Shorewall's syslog spellings (`warning`/`error`/
+# `panic`), numeric levels, and NFLOG/ULOG targets are not these; reject them (#117, fail-fast)
+# rather than emit a ruleset nft rejects. Translating them is deferred (YAGNI).
+_LOG_LEVELS = frozenset(
+    {"emerg", "alert", "crit", "err", "warn", "notice", "info", "debug", "audit"}
+)
 
 
 def parse_policies(records: Iterable[Record], zones: tuple[Zone, ...]) -> tuple[Policy, ...]:
@@ -246,6 +252,12 @@ def _build_policy(record: Record) -> Policy:
             line=record.line,
         )
     log_level = record.fields[3] if len(record.fields) > 3 else None
+    if log_level is not None and log_level not in _LOG_LEVELS:
+        raise ConfigError(
+            f"unsupported log level {log_level!r} (expected one of {sorted(_LOG_LEVELS)})",
+            path=record.path,
+            line=record.line,
+        )
     return Policy(source=source, dest=dest, action=action, log_level=log_level)
 
 
