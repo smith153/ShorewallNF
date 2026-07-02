@@ -105,21 +105,32 @@ class Rule:
 
 @dataclass(frozen=True, slots=True)
 class Nat:
-    """A NAT entry (``DNAT``/``SNAT``/``MASQUERADE``), e.g. a ``DNAT`` from the ``rules`` file.
+    """A NAT entry — a v4 ``DNAT`` port-forward (``rules`` file) or source NAT (``snat`` file).
 
-    ``source`` is the source zone; ``dest`` the target zone and ``to`` its ``host[:port]`` (the
-    DNAT target, port an optional remap); ``proto``/``dport`` the matched protocol and external
-    destination port(s). ``family`` is IPv4 for true NAT (ADR-0002: IPv6 does no NAT) — the
-    default — but a ``DNAT`` whose target is an IPv6 literal is scoped :data:`Family.IPV6` and
-    compiles to a plain ``ACCEPT`` to the global address instead of NAT.
+    ``Nat`` is a tagged union over ``action``; which columns are populated depends on it:
+
+    - **DNAT** (``rules``): ``source``/``dest`` are the source/target zones and ``to`` the
+      ``host[:port]`` DNAT target (port an optional remap); ``proto``/``dport`` the matched
+      protocol and external destination port(s).
+    - **MASQUERADE**/**SNAT** (``snat``): ``source_nets`` is the source network list (a
+      comma-separated CIDR list stored verbatim for the generator to expand), ``out_interface``
+      the egress (out) interface; ``snat_to`` carries the explicit ``SNAT(<addr>)`` address —
+      ``None`` for ``MASQUERADE``, which uses the egress interface's own address.
+
+    ``family`` is IPv4 for true NAT (ADR-0002: IPv6 does no NAT) — the default, and always IPv4
+    for source NAT — but a ``DNAT`` whose target is an IPv6 literal is scoped :data:`Family.IPV6`
+    and compiles to a plain ``ACCEPT`` to the global address instead of NAT.
     """
 
     action: str
-    source: str
-    dest: str
+    source: str = ""
+    dest: str = ""
     to: str | None = None
     proto: str | None = None
     dport: str | None = None
+    source_nets: str | None = None
+    out_interface: str | None = None
+    snat_to: str | None = None
     family: Family = Family.IPV4
 
 
