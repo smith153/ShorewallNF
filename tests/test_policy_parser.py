@@ -82,3 +82,31 @@ def test_unsupported_trailing_columns_rejected() -> None:
 def test_four_columns_still_accepted() -> None:
     (policy,) = parse_policies(_records("net all DROP info"), _ZONES)
     assert policy.log_level == "info"
+
+
+# --- log-level validation (#117) ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "level", ["emerg", "alert", "crit", "err", "warn", "notice", "info", "debug", "audit"]
+)
+def test_valid_nft_log_levels_accepted(level: str) -> None:
+    (policy,) = parse_policies(_records(f"net all DROP {level}"), _ZONES)
+    assert policy.log_level == level
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["warning", "error", "panic", "6", "NFLOG", "ULOG", "Info"],
+)
+def test_unsupported_log_level_fails_fast(bad: str) -> None:
+    # syslog spellings, numeric levels, NFLOG/ULOG targets, and non-lowercase spellings
+    # aren't nft `log level` values — reject rather than emit an invalid ruleset (ADR-0004).
+    with pytest.raises(ConfigError, match="log level"):
+        parse_policies(_records(f"net all DROP {bad}"), _ZONES)
+
+
+def test_unsupported_log_level_error_is_located() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_policies(_records("loc net ACCEPT", "net all DROP warning"), _ZONES)
+    assert exc.value.line == 2
