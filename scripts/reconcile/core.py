@@ -13,9 +13,9 @@ The rules mirror the judgment-free half of pipeline/roles/merge-readiness.md:
 * **R2 stale-claim reap** — return an abandoned ``in-progress`` claim to the queue and free
   its ``task/<N>`` ref.
 * **R3 ready-to-merge** — promote a ``review-passed`` PR that is green, current and on master.
-* **R4 review-freshness** — reset a ``review-passed`` PR whose head moved past the review
-  (the correct mechanism for the check merge-readiness.md still does via a nonexistent
-  ``.reviews[-1].commit.oid`` field).
+* **R4 review-freshness** — reset a ``review-passed`` PR whose current head oid no longer
+  equals the commit oid the latest review was cast against (``reviews(last:1).commit.oid`` via
+  GraphQL) — an exact "review pins to this commit" check, not a timestamp proxy.
 * **R5 one-status invariant** — flag any issue that does not carry exactly one primary
   ``status:*`` label; malformed issues are flagged, never otherwise mutated.
 """
@@ -113,8 +113,8 @@ class PullRequest:
     base_ref: str
     ci_green: bool
     mergeability: Mergeability  # standing vs. base — READY / NEEDS_REBASE / PENDING
-    head_committed_at: datetime
-    last_review_at: datetime | None
+    head_oid: str  # current PR head commit oid
+    reviewed_oid: str | None  # commit oid the latest review was cast against (None if no review)
 
 
 @dataclass(frozen=True)
@@ -138,8 +138,9 @@ def _has_status(issue: Issue) -> bool:
 
 
 def _review_current(pr: PullRequest) -> bool:
-    """True iff the latest review was cast at or after the current head commit."""
-    return pr.last_review_at is not None and pr.last_review_at >= pr.head_committed_at
+    """True iff the latest review was cast against the current head commit — i.e. its reviewed
+    oid equals the PR head oid. No review (``reviewed_oid is None``) is not current."""
+    return pr.reviewed_oid is not None and pr.reviewed_oid == pr.head_oid
 
 
 def _invariant_violators(issues: tuple[Issue, ...]) -> set[int]:
@@ -265,7 +266,7 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
         if task is None or "status:review-passed" not in task.labels:
             continue
         if not _review_current(pr):
-            # R4: head moved past the review — reset for re-review.
+            # R4: head oid no longer matches the reviewed oid (or no review) — reset.
             actions += [
                 Action(
                     ActionKind.REMOVE_LABEL, task.number, "status:review-passed", reason="freshness"
@@ -275,8 +276,8 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
                     ActionKind.COMMENT,
                     pr.number,
                     _sign(
-                        "Review is stale: new commits landed after the reviewed head, so "
-                        "resetting to `status:in-review` for re-review."
+                        "Review is stale: the current head differs from the reviewed commit, "
+                        "so resetting to `status:in-review` for re-review."
                     ),
                     on_pr=True,
                     reason="freshness",

@@ -39,14 +39,16 @@ def _issue(number: int, labels: set[str], **kw: object) -> Issue:
 
 
 def _pr(number: int, task: int, **kw: object) -> PullRequest:
+    head_oid = str(kw.pop("head_oid", "head-oid"))
     return PullRequest(
         number=number,
         task=task,
         base_ref=str(kw.pop("base_ref", "master")),
         ci_green=bool(kw.pop("ci_green", True)),
         mergeability=kw.pop("mergeability", Mergeability.READY),  # type: ignore[arg-type]
-        head_committed_at=kw.pop("head_committed_at", NOW - timedelta(hours=2)),  # type: ignore[arg-type]
-        last_review_at=kw.pop("last_review_at", NOW - timedelta(hours=1)),  # type: ignore[arg-type]
+        head_oid=head_oid,
+        # default: the review pins to the current head (current → promotable)
+        reviewed_oid=kw.pop("reviewed_oid", head_oid),  # type: ignore[arg-type]
     )
 
 
@@ -216,13 +218,23 @@ def test_no_promote_when_stacked_on_non_master() -> None:
     assert _run(board) == []
 
 
-# --- R4: review-freshness (fixes the .reviews[-1].commit.oid bug) --------------------------
+# --- R4: review-freshness (reviewed commit oid vs. head oid, not timestamps) ---------------
+
+
+def test_promote_when_review_pins_to_current_head() -> None:
+    # reviewed oid == head oid -> review is current -> promote.
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, head_oid="abc123", reviewed_oid="abc123")],
+    )
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") in _kinds(_run(board), 7)
 
 
 def test_reset_to_in_review_when_head_moved_past_review() -> None:
+    # reviewed an older commit; head has since moved -> stale -> reset.
     board = _board(
         [_issue(7, {"status:review-passed"})],
-        [_pr(20, task=7, head_committed_at=NOW, last_review_at=NOW - timedelta(hours=3))],
+        [_pr(20, task=7, head_oid="new-oid", reviewed_oid="old-oid")],
     )
     acts = _kinds(_run(board), 7)
     assert (ActionKind.REMOVE_LABEL, "status:review-passed") in acts
@@ -232,7 +244,7 @@ def test_reset_to_in_review_when_head_moved_past_review() -> None:
 
 def test_reset_when_no_review_recorded() -> None:
     board = _board(
-        [_issue(7, {"status:review-passed"})], [_pr(20, task=7, last_review_at=None)]
+        [_issue(7, {"status:review-passed"})], [_pr(20, task=7, reviewed_oid=None)]
     )
     assert (ActionKind.ADD_LABEL, "status:in-review") in _kinds(_run(board), 7)
 
