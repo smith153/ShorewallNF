@@ -28,6 +28,14 @@ usually docs (role/workflow `.md`), so TDD applies where there's testable behavi
 docs-consistency guard); a pure prose edit is verified by the existing docs tests + review.
 A `type:bug` is fixed TDD-first: write a failing test that reproduces the defect, then fix it.
 
+**Claiming a blocked task to stack it (bounded exception).** The queue excludes `status:blocked`
+because an unmet dependency is not a stable foundation. You MAY still claim a `status:blocked` task
+**to stack it** — but only when **every open `blocked-by` blocker is already `status:review-passed`
+or `status:ready-to-merge`** (approved, awaiting only the human merge). Base the PR on the blocker's
+`task/<N>` branch (not `master`) and **keep `status:blocked`** (swap only the primary `status:*` —
+see Guardrails; the reconcile un-block sweep clears `status:blocked` once the blocker closes).
+Claiming a `status:blocked` task whose blocker is **not yet approved** remains a violation.
+
 ## Procedure
 
 > **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`
@@ -69,12 +77,15 @@ gh pr create --fill --title "<goal>" --body "Closes #<TASK>
 gh issue edit <TASK> --remove-label status:in-progress --add-label status:in-review
 ```
 
-If your change would **conflict with another open PR** (overlapping files, or a dependency
-that's in review but not yet merged), open your PR **against that PR's branch** instead of
-`master` — a "stacked" PR that shows only your diff and merges cleanly:
+**Stack instead of stalling.** Open your PR **against another `task/<N>` branch** instead of
+`master` — a "stacked" PR that shows only your diff and merges cleanly — for either reason: your
+change would **conflict with another open PR** (overlapping files), **or** you are keeping delivery
+flowing while the human merge gate is closed (e.g. overnight) by building a dependent task on its
+approved blocker's not-yet-merged branch (per the bounded claim exception above). The "stacked"
+signal is the **PR base branch** (`base_ref != "master"`) — no new label:
 
 ```bash
-gh pr create --base <other-branch> --fill --title "<goal>" --body "Closes #<TASK> ..."
+gh pr create --base <blocker-or-other-branch> --fill --title "<goal>" --body "Closes #<TASK> ..."
 ```
 
 Once the base PR merges, GitHub retargets yours to `master` (when the base branch is deleted);
@@ -82,8 +93,9 @@ rebase if needed. Prefer this over hand-resolving conflicts or forcing the work 
 
 ## Guardrails
 
-- **One task per PR**; one PR per branch. Never commit to `master`. Target `master` — unless the
-  change would conflict with another open PR, in which case base it on that PR's branch (Outputs).
+- **One task per PR**; one PR per branch. Never commit to `master`. Target `master` — unless you are
+  stacking (to avoid a conflict, or to keep flow on an approved blocker), in which case base it on
+  that `task/<N>` branch (Outputs).
 - Tests are required (TDD) — no implementation without a failing test first.
 - **Never remove `status:blocked`.** Swap only the primary `status:*` label (e.g.
   `implementation-ready` → `in-progress`, `in-progress` → `in-review`) — a stacked task can

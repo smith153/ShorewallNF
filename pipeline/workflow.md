@@ -93,16 +93,28 @@ atomic on the **shared remote** — a local worktree or branch can't lock across
 - Only *after* winning the ref does the agent swap labels (`implementation-ready` → `in-progress`)
   and self-assign — that's human-visible status, **not** the lock (assignee can't be a lock under
   one shared account). Agents still only consider tasks that are `implementation-ready` and not
-  `status:blocked`.
+  `status:blocked` — **except** to deliberately stack on an approved blocker (bounded exception below).
 - A claim is released by **deleting the ref**: the Implementer on abort, or the reconcile Action when it
   reclaims a stale claim. (Enable *automatically delete head branches* so a merged `task/<N>` also
   frees the ref and can't cause a false `422` on a later re-claim.)
 - The **Epic Decomposer** claims an epic the same way — atomically creating `refs/heads/epic/<N>`
   before decomposing it (a `422` means another Decomposer already has it) — and deletes the ref when
   done, so two decomposers can't duplicate the same epic.
-- If two in-flight PRs would conflict (overlapping changes), the later one may be **stacked** —
-  opened against the other's branch instead of `master` — rather than serialized or hand-merged.
-  The reconcile Action holds a stacked PR (skips promoting it) until its base merges and GitHub retargets it to `master`.
+- **Stacking is sanctioned for two reasons — not conflicts only.** A PR may be **stacked** — opened
+  against another `task/<N>` branch instead of `master` — either **to avoid conflicting changes**
+  (two in-flight PRs touch overlapping files, so the later is based on the earlier's branch rather
+  than serialized or hand-merged) **or to keep delivery flowing when the human merge gate is closed**
+  (e.g. overnight): a dependent task is built on its blocker's not-yet-merged branch rather than
+  stalling. The **notation for "stacked" is the PR base branch** (`base_ref != "master"`) —
+  **no new label** is introduced (native GitHub state carries the rest). The reconcile Action holds
+  a stacked PR (skips promoting it) until its base merges and GitHub retargets it to `master`.
+- **Claiming a blocked task to stack it — bounded exception.** An implementer MAY claim a
+  `status:blocked` task **to stack it** only when **every open `blocked-by` blocker is already
+  `status:review-passed` or `status:ready-to-merge`** (approved, awaiting only the human merge). It
+  then bases the PR on the blocker's `task/<N>` branch (not `master`) and **keeps `status:blocked`**
+  (per #146 Rule A — swap only the primary `status:*`; the reconcile un-block sweep R1 clears
+  `status:blocked` once the blocker closes). Claiming a `status:blocked` task whose blocker is **not
+  yet approved** remains a violation — an unmet dependency is not a stable foundation.
 - One task per PR; one PR per branch. **All code work happens in a per-task git worktree —
   never in the primary checkout or on `master`** (that isolation is what lets agents run
   concurrently).
