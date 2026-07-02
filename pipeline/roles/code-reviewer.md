@@ -79,6 +79,13 @@ swap the linked task's status label (swap, don't accumulate — see [`workflow.m
   gh issue edit <TASK> --remove-label status:in-review --add-label status:review-passed
   ```
 
+> **Never remove `status:blocked`.** Swap only the primary `status:*` label — a stacked task can
+> legitimately be `status:blocked` *and* `status:in-review` at once. Stripping `status:blocked`
+> erases the task's dependency gate (this was the #125/#142 incident); only the reconcile un-block
+> sweep (R1) clears it, once every `blocked-by` blocker has closed. So a blocked task you pass
+> becomes `status:blocked` + `status:review-passed`, and one you send back becomes `status:blocked`
+> + `status:changes-requested`.
+
 ## Guardrails
 
 - **Never** cast a GitHub review verdict — no `gh pr review --approve` or `--request-changes`.
