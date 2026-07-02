@@ -50,6 +50,13 @@ Fixer). GitHub review **verdicts** aren't used here: a single shared account can
 Post the review as a `--comment` (the verdict rides on the label, not a GitHub review), then
 swap the linked task's status label (swap, don't accumulate — see [`workflow.md`](../workflow.md)):
 
+> **Cast the review with `gh pr review --comment`, never a plain `gh pr comment`.** The pass/fail
+> verdict rides on the status label, but the review itself MUST be a GitHub review: the reconcile
+> Action's freshness check (`scripts/reconcile/run.py::_freshness`) only sees `reviews[].submittedAt`,
+> which a COMMENTED review populates. A plain `gh pr comment` leaves `last_review_at` null, so R4
+> resets the task from `review-passed` back to `status:in-review` every run and it never reaches
+> `status:ready-to-merge`.
+
 - If issues found:
   ```bash
   gh pr review <PR> --comment --body "<specific, actionable feedback>"

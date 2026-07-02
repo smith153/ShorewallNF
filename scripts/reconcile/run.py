@@ -133,6 +133,13 @@ def _freshness(number: int) -> tuple[datetime, datetime | None]:
 
     Fetched per-PR (and only for review-passed PRs) because pulling ``commits`` in a bulk
     ``pr list`` blows past GitHub's GraphQL node ceiling.
+
+    The latest-review time is ``max(reviews[].submittedAt)``, which is populated **only**
+    because the Code Reviewer casts its verdict via ``gh pr review`` (a COMMENTED review
+    carries a ``submittedAt``). If a reviewer used a plain ``gh pr comment`` instead,
+    ``reviews`` would be empty, ``last_review_at`` would be ``None``, and R4 would reset every
+    ``review-passed`` task back to ``status:in-review`` — nothing would ever reach
+    ``ready-to-merge``. This coupling is load-bearing; see pipeline/roles/code-reviewer.md.
     """
     info = _gh_json("pr", "view", str(number), "--json", "commits,reviews")
     commits = info["commits"] or []
