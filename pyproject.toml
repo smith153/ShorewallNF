@@ -37,3 +37,6 @@ files = ["src", "tests", "scripts"]
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["src", "scripts"]
+markers = [
+    "netns: behavioral tier requiring root + ip/nft in a network namespace (select with -m netns)",
+]
