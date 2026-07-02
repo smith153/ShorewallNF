@@ -3,7 +3,7 @@
 #ACTION         SOURCE           DEST    PROTO       DPORT
 ACCEPT          net              fw      tcp         22
 ACCEPT          loc              net     tcp         80,443
-ACCEPT          loc:10.0.0.0/24  net     udp         53
+ACCEPT          loc:192.0.2.0/24 net     udp         53
 ACCEPT          net              fw      icmp        echo-request
 ACCEPT          net              fw      ipv6-icmp   echo-request
 

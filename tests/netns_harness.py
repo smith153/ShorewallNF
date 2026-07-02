@@ -28,8 +28,8 @@ Writing a behavioral test::
     ZONES = (Zone("fw", is_firewall=True),
              Zone("client", members=(ZoneMember("v_cli", Family.BOTH),)),
              Zone("server", members=(ZoneMember("v_srv", Family.BOTH),)))
-    CLIENT = nh.Endpoint("client", "v_cli", "p_cli", "10.0.1.2/24", "10.0.1.1/24")
-    SERVER = nh.Endpoint("server", "v_srv", "p_srv", "10.0.2.2/24", "10.0.2.1/24")
+    CLIENT = nh.Endpoint("client", "v_cli", "p_cli", "192.0.2.2/24", "192.0.2.1/24")
+    SERVER = nh.Endpoint("server", "v_srv", "p_srv", "198.51.100.2/24", "198.51.100.1/24")
     TOPO = nh.Topology("router", (CLIENT, SERVER))
 
     @pytest.mark.skipif(not nh.netns_available(), reason="needs root + ip/nft")

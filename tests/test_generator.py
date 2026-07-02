@@ -430,13 +430,13 @@ def _addr(field: str, proto: str, value: Any) -> dict[str, Any]:
 def test_ipv4_source_host_adds_ip_saddr_after_interfaces() -> None:
     rs = Ruleset(
         zones=_LN,
-        rules=(Rule(action="ACCEPT", source="loc:10.0.0.5", dest="net", family=Family.IPV4),),
+        rules=(Rule(action="ACCEPT", source="loc:192.0.2.5", dest="net", family=Family.IPV4),),
     )
     added = _added_rules(rs, _LN)
     assert added[0]["expr"] == [
         _iif("eth1"),
         _oif("eth0"),
-        _addr("saddr", "ip", "10.0.0.5"),
+        _addr("saddr", "ip", "192.0.2.5"),
         {"accept": None},
     ]
 
@@ -444,9 +444,9 @@ def test_ipv4_source_host_adds_ip_saddr_after_interfaces() -> None:
 def test_ipv4_dest_host_adds_ip_daddr() -> None:
     rs = Ruleset(
         zones=_LN,
-        rules=(Rule(action="ACCEPT", source="loc", dest="net:10.0.0.9", family=Family.IPV4),),
+        rules=(Rule(action="ACCEPT", source="loc", dest="net:192.0.2.9", family=Family.IPV4),),
     )
-    assert _addr("daddr", "ip", "10.0.0.9") in _added_rules(rs, _LN)[0]["expr"]
+    assert _addr("daddr", "ip", "192.0.2.9") in _added_rules(rs, _LN)[0]["expr"]
 
 
 def test_both_hosts_saddr_before_daddr() -> None:
@@ -454,15 +454,15 @@ def test_both_hosts_saddr_before_daddr() -> None:
         zones=_LN,
         rules=(
             Rule(
-                action="ACCEPT", source="loc:10.0.0.5", dest="net:10.0.0.9", family=Family.IPV4
+                action="ACCEPT", source="loc:192.0.2.5", dest="net:192.0.2.9", family=Family.IPV4
             ),
         ),
     )
     assert _added_rules(rs, _LN)[0]["expr"] == [
         _iif("eth1"),
         _oif("eth0"),
-        _addr("saddr", "ip", "10.0.0.5"),
-        _addr("daddr", "ip", "10.0.0.9"),
+        _addr("saddr", "ip", "192.0.2.5"),
+        _addr("daddr", "ip", "192.0.2.9"),
         {"accept": None},
     ]
 
@@ -478,9 +478,11 @@ def test_ipv6_host_uses_ip6_payload() -> None:
 def test_ipv4_cidr_host_uses_prefix() -> None:
     rs = Ruleset(
         zones=_LN,
-        rules=(Rule(action="ACCEPT", source="loc:10.36.36.0/24", dest="net", family=Family.IPV4),),
+        rules=(
+            Rule(action="ACCEPT", source="loc:198.51.100.0/24", dest="net", family=Family.IPV4),
+        ),
     )
-    want = _addr("saddr", "ip", {"prefix": {"addr": "10.36.36.0", "len": 24}})
+    want = _addr("saddr", "ip", {"prefix": {"addr": "198.51.100.0", "len": 24}})
     assert want in _added_rules(rs, _LN)[0]["expr"]
 
 
@@ -497,22 +499,22 @@ def test_firewall_source_host_targets_output_with_saddr() -> None:
     zones = (_FW, _zone("net", "eth0"))
     rs = Ruleset(
         zones=zones,
-        rules=(Rule(action="ACCEPT", source="fw:10.0.0.1", dest="net", family=Family.IPV4),),
+        rules=(Rule(action="ACCEPT", source="fw:192.0.2.1", dest="net", family=Family.IPV4),),
     )
     added = _added_rules(rs, zones)
     assert added[0]["chain"] == "output"
-    assert added[0]["expr"] == [_oif("eth0"), _addr("saddr", "ip", "10.0.0.1"), {"accept": None}]
+    assert added[0]["expr"] == [_oif("eth0"), _addr("saddr", "ip", "192.0.2.1"), {"accept": None}]
 
 
 def test_firewall_dest_host_targets_input_with_daddr() -> None:
     zones = (_FW, _zone("loc", "eth1"))
     rs = Ruleset(
         zones=zones,
-        rules=(Rule(action="ACCEPT", source="loc", dest="fw:10.0.0.1", family=Family.IPV4),),
+        rules=(Rule(action="ACCEPT", source="loc", dest="fw:192.0.2.1", family=Family.IPV4),),
     )
     added = _added_rules(rs, zones)
     assert added[0]["chain"] == "input"
-    assert added[0]["expr"] == [_iif("eth1"), _addr("daddr", "ip", "10.0.0.1"), {"accept": None}]
+    assert added[0]["expr"] == [_iif("eth1"), _addr("daddr", "ip", "192.0.2.1"), {"accept": None}]
 
 
 def test_host_narrowing_precedes_l4_matches() -> None:
@@ -521,7 +523,7 @@ def test_host_narrowing_precedes_l4_matches() -> None:
         rules=(
             Rule(
                 action="ACCEPT",
-                source="loc:10.0.0.5",
+                source="loc:192.0.2.5",
                 dest="net",
                 proto="tcp",
                 dport="22",
@@ -532,7 +534,7 @@ def test_host_narrowing_precedes_l4_matches() -> None:
     assert _added_rules(rs, _LN)[0]["expr"] == [
         _iif("eth1"),
         _oif("eth0"),
-        _addr("saddr", "ip", "10.0.0.5"),
+        _addr("saddr", "ip", "192.0.2.5"),
         _dport("tcp", 22),
         {"accept": None},
     ]
@@ -544,7 +546,7 @@ def test_zone_host_narrowing_matches_golden() -> None:
         rules=(
             Rule(
                 action="ACCEPT",
-                source="loc:10.36.36.0/24",
+                source="loc:198.51.100.0/24",
                 dest="net",
                 proto="tcp",
                 dport="22",
@@ -636,7 +638,7 @@ def test_ct_state_sits_between_address_and_l4() -> None:
         rules=(
             Rule(
                 action="ACCEPT",
-                source="loc:10.0.0.5",
+                source="loc:192.0.2.5",
                 dest="net",
                 proto="tcp",
                 dport="22",
@@ -648,7 +650,7 @@ def test_ct_state_sits_between_address_and_l4() -> None:
     assert _added_rules(rs, _LN)[0]["expr"] == [
         _iif("eth1"),
         _oif("eth0"),
-        _addr("saddr", "ip", "10.0.0.5"),
+        _addr("saddr", "ip", "192.0.2.5"),
         _ct("related"),
         _dport("tcp", 22),
         {"accept": None},

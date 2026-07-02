@@ -14,10 +14,14 @@ from shorewallnf.ir import Family, Policy, Ruleset, Zone, ZoneMember
 from tests import netns_harness as nh
 
 CLIENT = nh.Endpoint(
-    name="snf_client", iface="v_cli", peer="p_cli", addr4="10.0.1.2/24", router4="10.0.1.1/24"
+    name="snf_client", iface="v_cli", peer="p_cli", addr4="192.0.2.2/24", router4="192.0.2.1/24"
 )
 SERVER = nh.Endpoint(
-    name="snf_server", iface="v_srv", peer="p_srv", addr4="10.0.2.2/24", router4="10.0.2.1/24"
+    name="snf_server",
+    iface="v_srv",
+    peer="p_srv",
+    addr4="198.51.100.2/24",
+    router4="198.51.100.1/24",
 )
 TOPO = nh.Topology(router="snf_r", endpoints=(CLIENT, SERVER))
 
@@ -60,8 +64,8 @@ def test_namespaces_are_router_then_endpoints() -> None:
 
 
 def test_endpoint_derives_bare_addresses() -> None:
-    assert CLIENT.host_ip4 == "10.0.1.2"
-    assert CLIENT.gateway4 == "10.0.1.1"
+    assert CLIENT.host_ip4 == "192.0.2.2"
+    assert CLIENT.gateway4 == "192.0.2.1"
 
 
 def test_setup_creates_namespaces_first() -> None:
@@ -80,9 +84,9 @@ def test_setup_creates_and_moves_veth_pairs() -> None:
 
 def test_setup_assigns_addresses_and_default_route() -> None:
     cmds = nh.setup_commands(TOPO)
-    assert ["ip", "-n", "snf_r", "addr", "add", "10.0.1.1/24", "dev", "v_cli"] in cmds
-    assert ["ip", "-n", "snf_client", "addr", "add", "10.0.1.2/24", "dev", "p_cli"] in cmds
-    assert ["ip", "-n", "snf_client", "route", "add", "default", "via", "10.0.1.1"] in cmds
+    assert ["ip", "-n", "snf_r", "addr", "add", "192.0.2.1/24", "dev", "v_cli"] in cmds
+    assert ["ip", "-n", "snf_client", "addr", "add", "192.0.2.2/24", "dev", "p_cli"] in cmds
+    assert ["ip", "-n", "snf_client", "route", "add", "default", "via", "192.0.2.1"] in cmds
 
 
 def test_setup_enables_forwarding_on_router() -> None:
@@ -98,20 +102,20 @@ def test_dual_stack_endpoint_adds_v6_address_and_route() -> None:
         name="c6",
         iface="v6c",
         peer="p6c",
-        addr4="10.0.3.2/24",
-        router4="10.0.3.1/24",
-        addr6="fd00:3::2/64",
-        router6="fd00:3::1/64",
+        addr4="203.0.113.2/24",
+        router4="203.0.113.1/24",
+        addr6="2001:db8:3::2/64",
+        router6="2001:db8:3::1/64",
     )
     cmds = nh.setup_commands(nh.Topology(router="r", endpoints=(ep,)))
-    assert ["ip", "-n", "r", "addr", "add", "fd00:3::1/64", "dev", "v6c"] in cmds
-    assert ["ip", "-n", "c6", "addr", "add", "fd00:3::2/64", "dev", "p6c"] in cmds
-    assert ["ip", "-6", "-n", "c6", "route", "add", "default", "via", "fd00:3::1"] in cmds
+    assert ["ip", "-n", "r", "addr", "add", "2001:db8:3::1/64", "dev", "v6c"] in cmds
+    assert ["ip", "-n", "c6", "addr", "add", "2001:db8:3::2/64", "dev", "p6c"] in cmds
+    assert ["ip", "-6", "-n", "c6", "route", "add", "default", "via", "2001:db8:3::1"] in cmds
 
 
 def test_v4_only_endpoint_adds_no_v6_commands() -> None:
     cmds = nh.setup_commands(TOPO)
-    assert not any("fd00" in tok or tok == "-6" for cmd in cmds for tok in cmd)
+    assert not any("2001:db8" in tok or tok == "-6" for cmd in cmds for tok in cmd)
 
 
 def test_teardown_deletes_every_namespace() -> None:
@@ -127,15 +131,15 @@ def test_load_command_reads_json_from_stdin() -> None:
 
 
 def test_ping_command_v4() -> None:
-    assert nh.ping_command("snf_client", "10.0.2.2", count=2) == [
-        "ip", "netns", "exec", "snf_client", "ping", "-4", "-c", "2", "-W", "1", "10.0.2.2",
+    assert nh.ping_command("snf_client", "198.51.100.2", count=2) == [
+        "ip", "netns", "exec", "snf_client", "ping", "-4", "-c", "2", "-W", "1", "198.51.100.2",
     ]
 
 
 def test_ping_command_v6() -> None:
-    cmd = nh.ping_command("c6", "fd00:3::2", family=6)
+    cmd = nh.ping_command("c6", "2001:db8:3::2", family=6)
     assert cmd[4:6] == ["ping", "-6"]
-    assert cmd[-1] == "fd00:3::2"
+    assert cmd[-1] == "2001:db8:3::2"
 
 
 # ---- behavioral tier (gated: root + ip/nft) ---------------------------------------------

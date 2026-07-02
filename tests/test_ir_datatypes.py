@@ -56,8 +56,8 @@ def test_rule_optional_proto_and_dport() -> None:
 
 
 def test_nat_shape() -> None:
-    nat = Nat(action="DNAT", source="net", dest="fw", to="10.0.0.5")
-    assert (nat.action, nat.source, nat.dest, nat.to) == ("DNAT", "net", "fw", "10.0.0.5")
+    nat = Nat(action="DNAT", source="net", dest="fw", to="192.0.2.5")
+    assert (nat.action, nat.source, nat.dest, nat.to) == ("DNAT", "net", "fw", "192.0.2.5")
 
 
 def test_nat_is_ipv4_by_construction() -> None:
