@@ -1,7 +1,7 @@
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Family, Rule, Zone
+from shorewallnf.ir import Family, Nat, Rule, Zone
 from shorewallnf.parser import Record, parse, parse_rules
 from shorewallnf.preprocessor import SourceLine
 
@@ -19,7 +19,7 @@ def _records(*texts: str, path: str = "rules") -> list[Record]:
 
 
 def _one(text: str) -> Rule:
-    (rule,) = parse_rules(_records(text), _ZONES)
+    (rule,) = parse_rules(_records(text), _ZONES).rules
     return rule
 
 
@@ -141,7 +141,7 @@ def test_section_attached_to_following_rules() -> None:
     rules = parse_rules(
         _records("?SECTION ESTABLISHED", "ACCEPT loc net", "?SECTION NEW", "DROP net loc"),
         _ZONES,
-    )
+    ).rules
     assert [(r.action, r.section) for r in rules] == [
         ("ACCEPT", "ESTABLISHED"),
         ("DROP", "NEW"),
@@ -181,3 +181,58 @@ def test_error_carries_source_location() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_rules(_records("ACCEPT loc net", "BOGUS loc net"), _ZONES)
     assert exc.value.line == 2
+
+
+# --- DNAT rows build Nat entries (task #142, epic #75) ------------------------
+
+
+def _nats(*texts: str) -> tuple[Nat, ...]:
+    return parse_rules(_records(*texts), _ZONES).nats
+
+
+def test_dnat_action_builds_a_nat_entry_not_a_rule() -> None:
+    parsed = parse_rules(_records("DNAT net loc:10.0.0.5 tcp 22"), _ZONES)
+    assert parsed.rules == ()
+    assert parsed.nats == (
+        Nat(
+            action="DNAT", source="net", dest="loc", to="10.0.0.5",
+            proto="tcp", dport="22", family=Family.IPV4,
+        ),
+    )
+
+
+def test_dnat_target_port_remap_is_captured_in_to() -> None:
+    (nat,) = _nats("DNAT net loc:10.0.0.5:8022 tcp 22")
+    assert (nat.to, nat.dport) == ("10.0.0.5:8022", "22")
+
+
+def test_dnat_port_range() -> None:
+    assert _nats("DNAT net loc:10.0.0.5 tcp 49160:49300")[0].dport == "49160:49300"
+
+
+def test_dnat_v6_target_infers_ipv6() -> None:
+    (nat,) = _nats("DNAT net loc:2001:db8::5 tcp 443")
+    assert nat.family is Family.IPV6
+    assert nat.to == "2001:db8::5"
+
+
+def test_dnat_proto_is_lowercased() -> None:
+    assert _nats("DNAT net loc:10.0.0.5 TCP 80")[0].proto == "tcp"
+
+
+def test_filter_rules_and_dnat_are_separated() -> None:
+    parsed = parse_rules(
+        _records("ACCEPT loc net tcp 22", "DNAT net loc:10.0.0.5 tcp 80"), _ZONES
+    )
+    assert len(parsed.rules) == 1 and parsed.rules[0].action == "ACCEPT"
+    assert len(parsed.nats) == 1 and parsed.nats[0].action == "DNAT"
+
+
+def test_dnat_without_target_host_fails_fast() -> None:
+    with pytest.raises(ConfigError, match="host"):
+        _nats("DNAT net loc tcp 22")
+
+
+def test_dnat_unknown_target_zone_fails_fast() -> None:
+    with pytest.raises(ConfigError, match="zone"):
+        _nats("DNAT net bogus:10.0.0.5 tcp 22")
