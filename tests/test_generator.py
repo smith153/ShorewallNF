@@ -415,3 +415,150 @@ def test_rules_match_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "rule_verdicts_ports")
+
+
+# ---- zone:host source/dest narrowing (task #123, ADR-0007) ------------------------------
+
+_LN = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+
+
+def _addr(field: str, proto: str, value: Any) -> dict[str, Any]:
+    left = {"payload": {"protocol": proto, "field": field}}
+    return {"match": {"op": "==", "left": left, "right": value}}
+
+
+def test_ipv4_source_host_adds_ip_saddr_after_interfaces() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc:10.0.0.5", dest="net", family=Family.IPV4),),
+    )
+    added = _added_rules(rs, _LN)
+    assert added[0]["expr"] == [
+        _iif("eth1"),
+        _oif("eth0"),
+        _addr("saddr", "ip", "10.0.0.5"),
+        {"accept": None},
+    ]
+
+
+def test_ipv4_dest_host_adds_ip_daddr() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net:10.0.0.9", family=Family.IPV4),),
+    )
+    assert _addr("daddr", "ip", "10.0.0.9") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_both_hosts_saddr_before_daddr() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc:10.0.0.5", dest="net:10.0.0.9", family=Family.IPV4
+            ),
+        ),
+    )
+    assert _added_rules(rs, _LN)[0]["expr"] == [
+        _iif("eth1"),
+        _oif("eth0"),
+        _addr("saddr", "ip", "10.0.0.5"),
+        _addr("daddr", "ip", "10.0.0.9"),
+        {"accept": None},
+    ]
+
+
+def test_ipv6_host_uses_ip6_payload() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc:2001:db8::1", dest="net", family=Family.IPV6),),
+    )
+    assert _addr("saddr", "ip6", "2001:db8::1") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_ipv4_cidr_host_uses_prefix() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc:10.36.36.0/24", dest="net", family=Family.IPV4),),
+    )
+    want = _addr("saddr", "ip", {"prefix": {"addr": "10.36.36.0", "len": 24}})
+    assert want in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_ipv6_cidr_host_uses_ip6_prefix() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc:2001:db8::/64", dest="net", family=Family.IPV6),),
+    )
+    want = _addr("saddr", "ip6", {"prefix": {"addr": "2001:db8::", "len": 64}})
+    assert want in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_firewall_source_host_targets_output_with_saddr() -> None:
+    zones = (_FW, _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="fw:10.0.0.1", dest="net", family=Family.IPV4),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["chain"] == "output"
+    assert added[0]["expr"] == [_oif("eth0"), _addr("saddr", "ip", "10.0.0.1"), {"accept": None}]
+
+
+def test_firewall_dest_host_targets_input_with_daddr() -> None:
+    zones = (_FW, _zone("loc", "eth1"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="fw:10.0.0.1", family=Family.IPV4),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["chain"] == "input"
+    assert added[0]["expr"] == [_iif("eth1"), _addr("daddr", "ip", "10.0.0.1"), {"accept": None}]
+
+
+def test_host_narrowing_precedes_l4_matches() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT",
+                source="loc:10.0.0.5",
+                dest="net",
+                proto="tcp",
+                dport="22",
+                family=Family.IPV4,
+            ),
+        ),
+    )
+    assert _added_rules(rs, _LN)[0]["expr"] == [
+        _iif("eth1"),
+        _oif("eth0"),
+        _addr("saddr", "ip", "10.0.0.5"),
+        _dport("tcp", 22),
+        {"accept": None},
+    ]
+
+
+def test_zone_host_narrowing_matches_golden() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT",
+                source="loc:10.36.36.0/24",
+                dest="net",
+                proto="tcp",
+                dport="22",
+                family=Family.IPV4,
+            ),
+            Rule(
+                action="ACCEPT",
+                source="net",
+                dest="fw:2001:db8::1",
+                proto="tcp",
+                dport="443",
+                family=Family.IPV6,
+            ),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "rule_zone_host_narrowing")
