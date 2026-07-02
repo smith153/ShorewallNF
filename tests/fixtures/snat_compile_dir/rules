@@ -1,0 +1,5 @@
+# A DNAT port-forward so the source-NAT postrouting rules are proven to compile alongside a
+# prerouting DNAT (ADR-0008/0009). Documentation addresses only: RFC 5737.
+#ACTION   SOURCE   DEST              PROTO   DPORT
+ACCEPT    net      fw                tcp     22
+DNAT      net      loc:192.0.2.10    tcp     80

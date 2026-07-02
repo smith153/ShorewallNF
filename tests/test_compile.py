@@ -254,3 +254,52 @@ def test_nat_compiled_ruleset_passes_nft_check() -> None:
     from shorewallnf.applier import check_ruleset
 
     check_ruleset(cli.compile_config(NAT_FIXTURE))  # must not raise
+
+
+# --- source NAT (SNAT/MASQUERADE) end-to-end (#158) --------------------------
+#
+# A committed IPv4 fixture mirroring the reference config's outbound-NAT intent with RFC 5737
+# documentation ranges and generic interface names: masquerade a LAN subnet out the WAN egress
+# interface, plus one static SNAT to a fixed source address (ADR-0009). A DNAT port-forward sits
+# alongside it, so the postrouting source-NAT rules are proven to compile beside the prerouting
+# DNAT (ADR-0008) in one ruleset. Kept in its own region so it doesn't interleave with the above.
+
+SNAT_FIXTURE = Path(__file__).parent / "fixtures" / "snat_compile_dir"
+
+
+def test_snat_compile_end_to_end_matches_golden() -> None:
+    # Full path: preprocess (I/O) -> parse_config (snat wired in) -> generate. The golden harness
+    # also dry-run validates the output with nft -c where python3-nftables is available.
+    assert_golden(parse_config(cli.preprocess(SNAT_FIXTURE)), "snat_compile")
+
+
+def test_snat_compile_config_carries_masquerade_and_snat_through() -> None:
+    # compile_config runs the whole pipeline (preprocess -> parse -> validate -> generate); the
+    # MASQUERADE/SNAT `Nat` entries must surface as nat postrouting source-NAT rules, alongside
+    # the DNAT prerouting rule, the base skeleton, the filter rules, and the policy defaults.
+    compiled = cli.compile_config(SNAT_FIXTURE)
+    adds = compiled["nftables"]
+    # The nat table skeleton is present (the source-NAT + DNAT entries need it, ADR-0008)...
+    assert {"add": {"table": {"family": "inet", "name": "nat"}}} in adds
+    rules = [c["add"]["rule"] for c in adds if "rule" in c["add"]]
+    # ...the MASQUERADE and explicit SNAT compile to nat postrouting source-NAT rules...
+    postrouting = [r for r in rules if r["table"] == "nat" and r["chain"] == "postrouting"]
+    targets = [e for r in postrouting for e in r["expr"] if "masquerade" in e or "snat" in e]
+    assert {"masquerade": None} in targets  # dynamic source NAT to the egress address
+    assert {"snat": {"addr": "203.0.113.5", "family": "ip"}} in targets  # static SNAT(<addr>)
+    # ...source NAT emits no forward accept (ADR-0009 §5) — the postrouting rules carry only
+    # oifname + ip saddr + the source-NAT target, never an accept verdict...
+    assert all(not any("accept" in expr for expr in r["expr"]) for r in postrouting)
+    # ...and the DNAT still compiles to a prerouting dnat rule beside the source-NAT rules.
+    prerouting = [r for r in rules if r["table"] == "nat" and r["chain"] == "prerouting"]
+    assert any("dnat" in expr for r in prerouting for expr in r["expr"])
+
+
+@pytest.mark.skipif(
+    not _nft_available(),
+    reason="python3-nftables not installed (behavioral netns tier, #77/#78)",
+)
+def test_snat_compiled_ruleset_passes_nft_check() -> None:
+    from shorewallnf.applier import check_ruleset
+
+    check_ruleset(cli.compile_config(SNAT_FIXTURE))  # must not raise

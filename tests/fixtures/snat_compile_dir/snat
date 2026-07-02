@@ -1,0 +1,6 @@
+# Source-NAT mirroring the reference config's outbound-NAT intent, IPv4-only (ADR-0002:
+# IPv6 does no NAT). Masquerade a LAN subnet out the WAN egress interface, plus one static
+# SNAT to a fixed source address. Documentation addresses only: RFC 5737.
+#ACTION              SOURCE             DEST (egress interface)
+MASQUERADE           192.0.2.0/24       eth0
+SNAT(203.0.113.5)    198.51.100.0/24    eth0
