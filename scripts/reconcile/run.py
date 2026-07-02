@@ -125,27 +125,47 @@ def _linked_task(body: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_FRESHNESS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      headRefOid
+      reviews(last: 1) { nodes { commit { oid } submittedAt state } }
+    }
+  }
+}
+"""
 
 
-def _freshness(number: int) -> tuple[datetime, datetime | None]:
-    """Head-commit time and latest-review time — the inputs to the freshness check.
+def _parse_freshness(pull: Any) -> tuple[str, str | None]:
+    """``(head oid, reviewed oid)`` from a GraphQL ``pullRequest`` node. The reviewed oid is the
+    commit the latest review was cast against, or ``None`` when no review pins to a commit
+    (empty ``reviews.nodes``) — treated as not-current so R4 resets."""
+    head_oid = str(pull["headRefOid"])
+    nodes = pull["reviews"]["nodes"] or []
+    reviewed_oid = str(nodes[-1]["commit"]["oid"]) if nodes else None
+    return head_oid, reviewed_oid
 
-    Fetched per-PR (and only for review-passed PRs) because pulling ``commits`` in a bulk
-    ``pr list`` blows past GitHub's GraphQL node ceiling.
 
-    The latest-review time is ``max(reviews[].submittedAt)``, which is populated **only**
-    because the Code Reviewer casts its verdict via ``gh pr review`` (a COMMENTED review
-    carries a ``submittedAt``). If a reviewer used a plain ``gh pr comment`` instead,
-    ``reviews`` would be empty, ``last_review_at`` would be ``None``, and R4 would reset every
-    ``review-passed`` task back to ``status:in-review`` — nothing would ever reach
-    ``ready-to-merge``. This coupling is load-bearing; see pipeline/roles/code-reviewer.md.
+def _freshness(number: int, repo: str) -> tuple[str, str | None]:
+    """Head oid and the oid the latest review was cast against — the inputs to the freshness
+    check. Fetched per-PR (and only for review-passed PRs) via GraphQL, which — unlike
+    ``gh pr view --json reviews`` — exposes each review's ``commit.oid``.
+
+    The reviewed oid comes from ``reviews(last:1).commit.oid``, populated **only** because the
+    Code Reviewer casts its verdict via ``gh pr review`` (a COMMENTED review carries a
+    ``commit``). If a reviewer used a plain ``gh pr comment`` instead, ``reviews`` would be
+    empty, ``reviewed_oid`` would be ``None``, and R4 would reset every ``review-passed`` task
+    back to ``status:in-review`` — nothing would reach ``ready-to-merge``. This coupling is
+    load-bearing; see pipeline/roles/code-reviewer.md.
     """
-    info = _gh_json("pr", "view", str(number), "--json", "commits,reviews")
-    commits = info["commits"] or []
-    head = _dt(str(commits[-1]["committedDate"])) if commits else _EPOCH
-    times = [_dt(str(r["submittedAt"])) for r in (info["reviews"] or []) if r.get("submittedAt")]
-    return head, (max(times) if times else None)
+    owner, name = repo.split("/", 1)
+    info = _gh_json(
+        "api", "graphql",
+        "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}",
+        "-f", f"query={_FRESHNESS_QUERY}",
+    )
+    return _parse_freshness(info["data"]["repository"]["pullRequest"])
 
 
 def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
@@ -153,13 +173,14 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
         "pr", "list", "--state", "open", "--limit", "100",
         "--json", "number,baseRefName,mergeStateStatus,statusCheckRollup,body",
     )
+    repo = _repo() if review_passed else ""  # only the per-PR GraphQL fetch needs owner/name
     pulls: list[PullRequest] = []
     for item in raw:
         task = _linked_task(str(item["body"] or ""))
         if task in review_passed:  # freshness only affects R3/R4 (review-passed tasks)
-            head, last_review = _freshness(int(item["number"]))
+            head_oid, reviewed_oid = _freshness(int(item["number"]), repo)
         else:
-            head, last_review = _EPOCH, None
+            head_oid, reviewed_oid = "", None
         pulls.append(
             PullRequest(
                 number=int(item["number"]),
@@ -167,8 +188,8 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
                 base_ref=str(item["baseRefName"]),
                 ci_green=_ci_green(item["statusCheckRollup"]),
                 mergeability=_mergeability(str(item["mergeStateStatus"] or "UNKNOWN")),
-                head_committed_at=head,
-                last_review_at=last_review,
+                head_oid=head_oid,
+                reviewed_oid=reviewed_oid,
             )
         )
     return pulls

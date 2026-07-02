@@ -8,7 +8,13 @@ guarded like the core rules.
 from __future__ import annotations
 
 from reconcile.core import Mergeability
-from reconcile.run import _blocked_by, _ci_green, _linked_task, _mergeability
+from reconcile.run import (
+    _blocked_by,
+    _ci_green,
+    _linked_task,
+    _mergeability,
+    _parse_freshness,
+)
 
 # --- _linked_task: PR body -> governing task (all of GitHub's closing keywords) ------------
 
@@ -80,3 +86,24 @@ def test_mergeability_pending_for_unknown_or_draft() -> None:
     # not-yet-computed or draft must NOT read as "behind" — no false rebase nudge, re-check next.
     assert _mergeability("UNKNOWN") is Mergeability.PENDING
     assert _mergeability("DRAFT") is Mergeability.PENDING
+
+
+# --- _parse_freshness: GraphQL PR node -> (head oid, reviewed oid) --------------------------
+
+
+def test_parse_freshness_reads_head_and_reviewed_oid() -> None:
+    pull = {
+        "headRefOid": "abc123",
+        "reviews": {
+            "nodes": [
+                {"commit": {"oid": "def456"}, "submittedAt": "2026-07-01T00:00:00Z",
+                 "state": "COMMENTED"}
+            ]
+        },
+    }
+    assert _parse_freshness(pull) == ("abc123", "def456")
+
+
+def test_parse_freshness_none_when_no_review() -> None:
+    # empty reviews -> no reviewed oid -> not-current (R4 resets).
+    assert _parse_freshness({"headRefOid": "abc123", "reviews": {"nodes": []}}) == ("abc123", None)
