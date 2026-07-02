@@ -13,6 +13,12 @@ The rules mirror the judgment-free half of pipeline/roles/merge-readiness.md:
 * **R2 stale-claim reap** — return an abandoned ``in-progress`` claim to the queue and free
   its ``task/<N>`` ref.
 * **R3 ready-to-merge** — promote a ``review-passed`` PR that is green, current and on master.
+* **R3b rebase-nudge** — a green + current ``review-passed`` PR that is ``BEHIND`` or
+  ``CONFLICTING`` (not up to date) gets a one-per-head "please rebase" nudge instead of promoting.
+* **R3c conflict-escalation** — a ``review-passed`` PR that is a *true conflict* (``CONFLICTING``)
+  **and** has already been rebase-nudged for its current head (a rebase-in-place didn't clear it)
+  is reset ``review-passed`` → ``changes-requested`` so the Fixer owns the rebase/resolution. Only
+  a persistent ``CONFLICTING`` escalates — a plain ``BEHIND`` only ever gets the R3b nudge.
 * **R4 review-freshness** — reset a ``review-passed`` PR whose current head oid no longer
   equals the commit oid the latest review was cast against (``reviews(last:1).commit.oid`` via
   GraphQL) — an exact "review pins to this commit" check, not a timestamp proxy.
@@ -65,14 +71,17 @@ class BlockerState(Enum):
 class Mergeability(Enum):
     """A PR's standing relative to its base — the R3 promote gate.
 
-    The shell derives this from ``mergeStateStatus``. Only ``READY`` may promote and only
-    ``NEEDS_REBASE`` earns a rebase nudge; ``PENDING`` (mergeability not computed yet, or a
-    draft) is *indeterminate* — skipped silently and re-checked next run, so a not-yet-computed
-    state can never masquerade as "behind" and trigger a false nudge.
+    The shell derives this from ``mergeStateStatus``. Only ``READY`` may promote. ``BEHIND`` and
+    ``CONFLICTING`` both earn a rebase nudge (R3b); they are kept distinct so R3c can escalate a
+    *persistent* ``CONFLICTING`` (a true content conflict a rebase-in-place hasn't cleared) to the
+    Fixer, while a plain ``BEHIND`` is only ever nudged. ``PENDING`` (mergeability not computed
+    yet, or a draft) is *indeterminate* — skipped silently and re-checked next run, so a
+    not-yet-computed state can never masquerade as "behind" and trigger a false nudge.
     """
 
     READY = "ready"  # up to date (CLEAN / BLOCKED-on-review / UNSTABLE / HAS_HOOKS…) — promotable
-    NEEDS_REBASE = "needs_rebase"  # BEHIND or DIRTY — behind base / conflicting; nudge to rebase
+    BEHIND = "behind"  # BEHIND base — cleanly behind; nudge to rebase (R3b), never escalate
+    CONFLICTING = "conflicting"  # DIRTY — true conflict; nudge, then escalate on persistence (R3c)
     PENDING = "pending"  # UNKNOWN (not computed) or DRAFT — indeterminate; skip, re-check
 
 
@@ -112,9 +121,12 @@ class PullRequest:
     task: int | None
     base_ref: str
     ci_green: bool
-    mergeability: Mergeability  # standing vs. base — READY / NEEDS_REBASE / PENDING
+    mergeability: Mergeability  # standing vs. base — READY / BEHIND / CONFLICTING / PENDING
     head_oid: str  # current PR head commit oid
     reviewed_oid: str | None  # commit oid the latest review was cast against (None if no review)
+    #: whether a rebase nudge already exists for the *current* head (the R3c persistence signal):
+    #: a conflict that is still dirty a pass after we asked for a rebase escalates to the Fixer.
+    rebase_nudged: bool = False
 
 
 @dataclass(frozen=True)
@@ -293,9 +305,44 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
         # both silently.
         if pr.base_ref != "master" or not pr.ci_green:
             continue
-        if pr.mergeability is Mergeability.NEEDS_REBASE:
-            # R3b: green + current but behind/conflicting — nudge to rebase instead of promoting
-            # (the shell dedupes this so it fires once per stale head, not every run).
+        if pr.mergeability is Mergeability.CONFLICTING and pr.rebase_nudged:
+            # R3c: a *true conflict* (DIRTY) that's already been rebase-nudged for this exact
+            # head — a rebase-in-place hasn't cleared it, so hand it to the Fixer: swap the
+            # primary status review-passed → changes-requested (leaving status:blocked, if
+            # present, intact per #146 — though a blocked task is already held above). Idempotent:
+            # once changes-requested, _promote_and_refresh no longer touches it.
+            actions += [
+                Action(
+                    ActionKind.REMOVE_LABEL,
+                    task.number,
+                    "status:review-passed",
+                    reason="conflict",
+                ),
+                Action(
+                    ActionKind.ADD_LABEL,
+                    task.number,
+                    "status:changes-requested",
+                    reason="conflict",
+                ),
+                Action(
+                    ActionKind.COMMENT,
+                    pr.number,
+                    _sign(
+                        "This branch conflicts with `master` and the rebase nudge for its current "
+                        "head went unaddressed, so it can't be promoted. Resetting to "
+                        "`status:changes-requested` and handing it to the Fixer to rebase onto "
+                        "`master` and resolve the conflicts. (CI green, AI review passed.)"
+                    ),
+                    on_pr=True,
+                    reason="conflict",
+                ),
+            ]
+            continue
+        if pr.mergeability in (Mergeability.BEHIND, Mergeability.CONFLICTING):
+            # R3b: green + current but behind base, or a *first-observed* conflict — nudge to
+            # rebase instead of promoting (the shell dedupes this so it fires once per stale
+            # head, not every run). A persistent conflict escalates above (R3c); a plain BEHIND
+            # is only ever nudged.
             actions.append(
                 Action(
                     ActionKind.COMMENT,

@@ -35,10 +35,10 @@ _CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d
 _BLOCKED_BY_LINE = re.compile(r"blocked-by", re.IGNORECASE)
 _ISSUE_REF = re.compile(r"#(\d+)")
 _OK_CHECK = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
-# Only BEHIND/DIRTY are a definite "not up to date" that a rebase fixes. UNKNOWN (mergeability
-# not computed yet — common right after a push) and DRAFT are indeterminate: never promote on
-# them, but never nudge "you're behind" either. Everything else is up to date / promotable.
-_NEEDS_REBASE = frozenset({"BEHIND", "DIRTY"})
+# BEHIND (cleanly behind) and DIRTY (true conflict) are both a definite "not up to date" that a
+# rebase addresses — but kept distinct so R3c can escalate only a *persistent* DIRTY. UNKNOWN
+# (mergeability not computed yet — common right after a push) and DRAFT are indeterminate: never
+# promote on them, but never nudge "you're behind" either. Everything else is up to date.
 _PENDING_MERGE = frozenset({"UNKNOWN", "DRAFT"})
 
 
@@ -69,13 +69,16 @@ def _blocked_by(body: str) -> tuple[int, ...]:
 
 
 def _mergeability(merge_state: str) -> Mergeability:
-    """Map GitHub's ``mergeStateStatus`` to the R3 promote gate. Only BEHIND/DIRTY earns a
-    rebase nudge; UNKNOWN (not computed yet) and DRAFT are indeterminate → ``PENDING`` (skip,
-    re-check next run) so they never trigger a false "behind" nudge. Everything else — CLEAN,
-    BLOCKED (awaiting the human review), UNSTABLE, HAS_HOOKS… — is up to date and promotable."""
+    """Map GitHub's ``mergeStateStatus`` to the R3 promote gate. BEHIND → ``BEHIND`` and DIRTY →
+    ``CONFLICTING`` both earn a rebase nudge, kept distinct so R3c can escalate only a persistent
+    conflict. UNKNOWN (not computed yet) and DRAFT are indeterminate → ``PENDING`` (skip, re-check
+    next run) so they never trigger a false "behind" nudge. Everything else — CLEAN, BLOCKED
+    (awaiting the human review), UNSTABLE, HAS_HOOKS… — is up to date and promotable."""
     state = merge_state.upper()
-    if state in _NEEDS_REBASE:
-        return Mergeability.NEEDS_REBASE
+    if state == "BEHIND":
+        return Mergeability.BEHIND
+    if state == "DIRTY":
+        return Mergeability.CONFLICTING
     if state in _PENDING_MERGE:
         return Mergeability.PENDING
     return Mergeability.READY
@@ -153,10 +156,14 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
     pulls: list[PullRequest] = []
     for item in raw:
         task = _linked_task(str(item["body"] or ""))
-        if task in review_passed:  # freshness only affects R3/R4 (review-passed tasks)
+        if task in review_passed:  # freshness/R3c signals only affect review-passed tasks
             head_oid, reviewed_oid = _freshness(int(item["number"]))
+            # R3c persistence: is there already a rebase nudge for the current head? (reuses the
+            # per-head marker R3b writes — a timer-free "we asked once, nothing changed" signal.)
+            rebase_nudged, _ = _nudged_for_head(int(item["number"]))
         else:
             head_oid, reviewed_oid = "", None
+            rebase_nudged = False
         pulls.append(
             PullRequest(
                 number=int(item["number"]),
@@ -166,6 +173,7 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
                 mergeability=_mergeability(str(item["mergeStateStatus"] or "UNKNOWN")),
                 head_oid=head_oid,
                 reviewed_oid=reviewed_oid,
+                rebase_nudged=rebase_nudged,
             )
         )
     return pulls
