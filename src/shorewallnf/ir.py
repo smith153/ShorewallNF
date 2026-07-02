@@ -87,6 +87,10 @@ class Rule:
     ``family`` defaults to ``both``: the Generator emits such a rule once in the ``inet``
     table with no family guard. A literal address or family-specific protocol narrows it to
     ``ipv4``/``ipv6`` (inferred by the parser, not here).
+
+    ``source``/``dest`` are the raw ``zone`` or ``zone:host`` tokens; the generator splits the
+    ``zone:host`` narrowing. ``sport`` is the SOURCE PORT column and ``section`` the enclosing
+    ``?SECTION`` name (``None`` for rules before any section marker), both verbatim.
     """
 
     action: str
@@ -94,6 +98,8 @@ class Rule:
     dest: str
     proto: str | None = None
     dport: str | None = None
+    sport: str | None = None
+    section: str | None = None
     family: Family = Family.BOTH
 
 
