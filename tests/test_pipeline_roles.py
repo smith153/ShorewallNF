@@ -112,3 +112,16 @@ def test_code_reviewer_casts_verdict_via_gh_pr_review() -> None:
     assert "freshness" in text, (
         "code-reviewer.md must state the reconcile-freshness reason (only GitHub reviews are seen)"
     )
+
+
+def test_code_reviewer_rechecks_status_before_casting_verdict() -> None:
+    """Concurrent reviewers share one account and the verdict write (`gh pr review` + label swap)
+    is not atomic, so a late reviewer can stack a second primary status onto an already-advanced
+    task (#119). The reviewer MUST re-read the task status immediately before casting and no-op
+    if it is no longer `status:in-review`. Guard the step against a silent drop."""
+    text = CODE_REVIEWER.read_text()
+    lowered = text.lower()
+    assert "re-read" in lowered or "re-check" in lowered, (
+        "code-reviewer.md must tell the reviewer to re-read the task status before casting"
+    )
+    assert "#119" in text, "code-reviewer.md must cite the double-cast race (#119) it prevents"
