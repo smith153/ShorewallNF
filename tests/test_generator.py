@@ -1134,3 +1134,133 @@ def test_ipv6_dnat_matches_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "dnat_ipv6_direct_accept")
+
+
+# ---- IPv4 SNAT/MASQUERADE: nat postrouting source NAT (task #157, ADR-0009) --------------
+#
+# Source NAT is IPv4-only (ADR-0002). A MASQUERADE/SNAT `Nat` carries literal `source_nets`
+# (a comma-CIDR list) and an `out_interface`, not zones: the rule matches `oifname <out>` then
+# `ip saddr <source_nets>` (ADR-0007 order), then the source-NAT target. Unlike DNAT there is NO
+# forward accept — source NAT opens no new forward path.
+
+
+def _saddr(value: Any) -> dict[str, Any]:
+    left = {"payload": {"protocol": "ip", "field": "saddr"}}
+    return {"match": {"op": "==", "left": left, "right": value}}
+
+
+def _prefix(addr: str, length: int) -> dict[str, Any]:
+    return {"prefix": {"addr": addr, "len": length}}
+
+
+def _postrouting(rs: Ruleset) -> list[dict[str, Any]]:
+    return [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "postrouting"]
+
+
+def test_masquerade_only_emits_nat_table_and_postrouting_chain() -> None:
+    # A SNAT-only ruleset still needs the nat table (the postrouting chain hosts the rule).
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", source_nets="192.0.2.0/24",
+                           out_interface="eth0"),))
+    assert {"family": "inet", "name": "nat"} in _nat_cmds("table", "nat", rs)
+    chains = {c["name"]: c for c in _nat_cmds("chain", "nat", rs)}
+    assert set(chains) == {"prerouting", "postrouting"}
+
+
+def test_masquerade_postrouting_rule_matches_oif_saddr_then_masquerade() -> None:
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", source_nets="192.0.2.0/24",
+                           out_interface="eth0"),))
+    pr = _postrouting(rs)
+    assert len(pr) == 1
+    assert pr[0]["expr"] == [
+        _oif("eth0"),
+        _saddr(_prefix("192.0.2.0", 24)),
+        {"masquerade": None},
+    ]
+
+
+def test_explicit_snat_emits_snat_to_addr() -> None:
+    rs = Ruleset(nats=(Nat(action="SNAT", source_nets="192.0.2.0/24", out_interface="eth0",
+                           snat_to="203.0.113.5"),))
+    pr = _postrouting(rs)
+    assert pr[0]["expr"] == [
+        _oif("eth0"),
+        _saddr(_prefix("192.0.2.0", 24)),
+        {"snat": {"addr": "203.0.113.5", "family": "ip"}},
+    ]
+
+
+def test_snat_multi_cidr_source_list_is_anonymous_set() -> None:
+    rs = Ruleset(nats=(Nat(action="MASQUERADE",
+                           source_nets="192.0.2.0/24,198.51.100.0/24", out_interface="eth0"),))
+    pr = _postrouting(rs)
+    assert pr[0]["expr"][1] == _saddr(
+        {"set": [_prefix("192.0.2.0", 24), _prefix("198.51.100.0", 24)]}
+    )
+
+
+def test_snat_bare_source_address_is_scalar() -> None:
+    # A source without a prefix length passes through as a scalar (no /len → no `prefix`).
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", source_nets="192.0.2.5",
+                           out_interface="eth0"),))
+    assert _postrouting(rs)[0]["expr"][1] == _saddr("192.0.2.5")
+
+
+def test_snat_adds_no_filter_forward_rule() -> None:
+    # Source NAT opens no new forward path (contrast DNAT's forward accept).
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", source_nets="192.0.2.0/24",
+                           out_interface="eth0"),))
+    snat_forward = [r for r in _rules(rs) if r["table"] == "filter" and r["chain"] == "forward"]
+    base_forward = [
+        r for r in _rules(Ruleset()) if r["table"] == "filter" and r["chain"] == "forward"
+    ]
+    assert snat_forward == base_forward
+
+
+def test_dnat_and_snat_coexist_in_one_ruleset() -> None:
+    # The nat dispatch routes DNAT → prerouting and SNAT/MASQUERADE → postrouting, untouched.
+    rs = Ruleset(
+        zones=_NL,
+        nats=(
+            Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                dport="80", family=Family.IPV4),
+            Nat(action="MASQUERADE", source_nets="192.0.2.0/24", out_interface="eth0"),
+        ),
+    )
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    assert len(prerouting) == 1
+    assert prerouting[0]["expr"] == [_iif("eth0"), _dport("tcp", 80), _dnat("192.0.2.10")]
+    assert _postrouting(rs)[0]["expr"] == [
+        _oif("eth0"),
+        _saddr(_prefix("192.0.2.0", 24)),
+        {"masquerade": None},
+    ]
+
+
+def test_snat_masquerade_matches_golden() -> None:
+    rs = Ruleset(
+        nats=(
+            Nat(action="MASQUERADE", source_nets="192.0.2.0/24,198.51.100.0/24",
+                out_interface="eth0"),
+            Nat(action="SNAT", source_nets="203.0.113.0/24", out_interface="eth1",
+                snat_to="198.51.100.1"),
+        ),
+    )
+    assert_golden(rs, "snat_postrouting")
+
+
+def test_snat_without_out_interface_fails_fast() -> None:
+    # Fail closed (ADR-0004, ADR-0009 §7): a source-NAT entry with no egress interface has no
+    # `oifname` to match, so it must refuse rather than emit a broken postrouting rule.
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", source_nets="192.0.2.0/24"),))
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "egress interface" in str(exc.value).lower()
+
+
+def test_snat_without_source_nets_fails_fast() -> None:
+    # Fail closed (ADR-0004, ADR-0009 §7): a source-NAT entry with no source network has no
+    # `ip saddr` family guard, so it must refuse rather than masquerade every source.
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", out_interface="eth0"),))
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "source network" in str(exc.value).lower()
