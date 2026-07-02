@@ -7,7 +7,8 @@ guarded like the core rules.
 
 from __future__ import annotations
 
-from reconcile.run import _blocked_by, _ci_green, _linked_task, _up_to_date
+from reconcile.core import Mergeability
+from reconcile.run import _blocked_by, _ci_green, _linked_task, _mergeability
 
 # --- _linked_task: PR body -> governing task (all of GitHub's closing keywords) ------------
 
@@ -61,17 +62,21 @@ def test_ci_green_false_cases() -> None:
     assert _ci_green([{"status": "PENDING"}]) is False
 
 
-# --- _up_to_date: only promote on a definite not-behind state ------------------------------
+# --- _mergeability: only READY promotes; only BEHIND/DIRTY nudges; UNKNOWN/DRAFT wait -------
 
 
-def test_up_to_date_true_only_when_known_good() -> None:
-    assert _up_to_date("CLEAN") is True
-    assert _up_to_date("BLOCKED") is True  # awaiting the human review == ready to merge
-    assert _up_to_date("HAS_HOOKS") is True
+def test_mergeability_ready_when_known_good() -> None:
+    # up to date / promotable — BLOCKED just means "awaiting the human review" gate.
+    for state in ("CLEAN", "BLOCKED", "UNSTABLE", "HAS_HOOKS"):
+        assert _mergeability(state) is Mergeability.READY, state
 
 
-def test_up_to_date_false_for_behind_or_unknown() -> None:
-    assert _up_to_date("BEHIND") is False
-    assert _up_to_date("DIRTY") is False
-    assert _up_to_date("UNKNOWN") is False  # not computed yet — never promote on a guess
-    assert _up_to_date("DRAFT") is False
+def test_mergeability_needs_rebase_only_for_behind_or_dirty() -> None:
+    assert _mergeability("BEHIND") is Mergeability.NEEDS_REBASE
+    assert _mergeability("DIRTY") is Mergeability.NEEDS_REBASE
+
+
+def test_mergeability_pending_for_unknown_or_draft() -> None:
+    # not-yet-computed or draft must NOT read as "behind" — no false rebase nudge, re-check next.
+    assert _mergeability("UNKNOWN") is Mergeability.PENDING
+    assert _mergeability("DRAFT") is Mergeability.PENDING

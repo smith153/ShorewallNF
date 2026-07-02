@@ -62,6 +62,20 @@ class BlockerState(Enum):
     NOT_PLANNED = "not_planned"  # closed as not planned — do NOT release dependents
 
 
+class Mergeability(Enum):
+    """A PR's standing relative to its base — the R3 promote gate.
+
+    The shell derives this from ``mergeStateStatus``. Only ``READY`` may promote and only
+    ``NEEDS_REBASE`` earns a rebase nudge; ``PENDING`` (mergeability not computed yet, or a
+    draft) is *indeterminate* — skipped silently and re-checked next run, so a not-yet-computed
+    state can never masquerade as "behind" and trigger a false nudge.
+    """
+
+    READY = "ready"  # up to date (CLEAN / BLOCKED-on-review / UNSTABLE / HAS_HOOKS…) — promotable
+    NEEDS_REBASE = "needs_rebase"  # BEHIND or DIRTY — behind base / conflicting; nudge to rebase
+    PENDING = "pending"  # UNKNOWN (not computed) or DRAFT — indeterminate; skip, re-check
+
+
 class ActionKind(Enum):
     ADD_LABEL = "add_label"
     REMOVE_LABEL = "remove_label"
@@ -98,7 +112,7 @@ class PullRequest:
     task: int | None
     base_ref: str
     ci_green: bool
-    up_to_date: bool  # not BEHIND / DIRTY relative to base
+    mergeability: Mergeability  # standing vs. base — READY / NEEDS_REBASE / PENDING
     head_committed_at: datetime
     last_review_at: datetime | None
 
@@ -273,8 +287,8 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
         # PR isn't ready — skip both silently.
         if pr.base_ref != "master" or not pr.ci_green:
             continue
-        if not pr.up_to_date:
-            # R3b: green + current but behind base — nudge to rebase instead of promoting
+        if pr.mergeability is Mergeability.NEEDS_REBASE:
+            # R3b: green + current but behind/conflicting — nudge to rebase instead of promoting
             # (the shell dedupes this so it fires once per stale head, not every run).
             actions.append(
                 Action(
@@ -282,13 +296,18 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
                     pr.number,
                     f"{REBASE_TAG}\n"
                     + _sign(
-                        "This PR is behind `master`, so it can't be marked merge-ready yet — "
-                        "please rebase/update the branch. (CI green, AI review passed.)"
+                        "This PR isn't up to date with `master` (behind or conflicting), so it "
+                        "can't be marked merge-ready yet — please rebase/update the branch. "
+                        "(CI green, AI review passed.)"
                     ),
                     on_pr=True,
                     reason="rebase",
                 )
             )
+            continue
+        if pr.mergeability is not Mergeability.READY:
+            # PENDING: mergeability not computed yet (or draft) — don't promote and don't
+            # mistake it for "behind". Re-checked next run once GitHub settles it.
             continue
         # R3: green, current, up to date, on master — promote.
         actions += [

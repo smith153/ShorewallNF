@@ -25,6 +25,7 @@ from reconcile.core import (
     BlockerState,
     Board,
     Issue,
+    Mergeability,
     PullRequest,
     reconcile,
 )
@@ -34,9 +35,11 @@ _CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#(\d
 _BLOCKED_BY_LINE = re.compile(r"blocked-by", re.IGNORECASE)
 _ISSUE_REF = re.compile(r"#(\d+)")
 _OK_CHECK = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
-# Only these mean "not up to date". Everything else — including UNKNOWN (not yet computed) and
-# DRAFT — is treated conservatively as not-ready, so a promote never happens on a guess.
-_NOT_UP_TO_DATE = frozenset({"BEHIND", "DIRTY", "UNKNOWN", "DRAFT"})
+# Only BEHIND/DIRTY are a definite "not up to date" that a rebase fixes. UNKNOWN (mergeability
+# not computed yet — common right after a push) and DRAFT are indeterminate: never promote on
+# them, but never nudge "you're behind" either. Everything else is up to date / promotable.
+_NEEDS_REBASE = frozenset({"BEHIND", "DIRTY"})
+_PENDING_MERGE = frozenset({"UNKNOWN", "DRAFT"})
 
 
 def _gh(*args: str) -> str:
@@ -65,8 +68,17 @@ def _blocked_by(body: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(nums))
 
 
-def _up_to_date(merge_state: str) -> bool:
-    return merge_state.upper() not in _NOT_UP_TO_DATE
+def _mergeability(merge_state: str) -> Mergeability:
+    """Map GitHub's ``mergeStateStatus`` to the R3 promote gate. Only BEHIND/DIRTY earns a
+    rebase nudge; UNKNOWN (not computed yet) and DRAFT are indeterminate → ``PENDING`` (skip,
+    re-check next run) so they never trigger a false "behind" nudge. Everything else — CLEAN,
+    BLOCKED (awaiting the human review), UNSTABLE, HAS_HOOKS… — is up to date and promotable."""
+    state = merge_state.upper()
+    if state in _NEEDS_REBASE:
+        return Mergeability.NEEDS_REBASE
+    if state in _PENDING_MERGE:
+        return Mergeability.PENDING
+    return Mergeability.READY
 
 
 def _label_names(obj: Any) -> frozenset[str]:
@@ -147,7 +159,7 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
                 task=task,
                 base_ref=str(item["baseRefName"]),
                 ci_green=_ci_green(item["statusCheckRollup"]),
-                up_to_date=_up_to_date(str(item["mergeStateStatus"] or "UNKNOWN")),
+                mergeability=_mergeability(str(item["mergeStateStatus"] or "UNKNOWN")),
                 head_committed_at=head,
                 last_review_at=last_review,
             )

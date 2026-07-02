@@ -17,6 +17,7 @@ from reconcile.core import (
     BlockerState,
     Board,
     Issue,
+    Mergeability,
     PullRequest,
     reconcile,
 )
@@ -43,7 +44,7 @@ def _pr(number: int, task: int, **kw: object) -> PullRequest:
         task=task,
         base_ref=str(kw.pop("base_ref", "master")),
         ci_green=bool(kw.pop("ci_green", True)),
-        up_to_date=bool(kw.pop("up_to_date", True)),
+        mergeability=kw.pop("mergeability", Mergeability.READY),  # type: ignore[arg-type]
         head_committed_at=kw.pop("head_committed_at", NOW - timedelta(hours=2)),  # type: ignore[arg-type]
         last_review_at=kw.pop("last_review_at", NOW - timedelta(hours=1)),  # type: ignore[arg-type]
     )
@@ -188,12 +189,24 @@ def test_no_promote_when_ci_red() -> None:
 
 
 def test_behind_base_nudges_rebase_not_promote() -> None:
-    board = _board([_issue(7, {"status:review-passed"})], [_pr(20, task=7, up_to_date=False)])
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, mergeability=Mergeability.NEEDS_REBASE)],
+    )
     acts = _run(board)
     assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(acts, 7)
     nudges = [a for a in acts if a.reason == "rebase"]
     assert len(nudges) == 1
     assert nudges[0].on_pr and nudges[0].number == 20 and REBASE_TAG in nudges[0].value
+
+
+def test_pending_mergeability_skips_silently() -> None:
+    # mergeStateStatus UNKNOWN/DRAFT -> PENDING: never promote AND never a false "behind" nudge.
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, mergeability=Mergeability.PENDING)],
+    )
+    assert _run(board) == []
 
 
 def test_no_promote_when_stacked_on_non_master() -> None:
