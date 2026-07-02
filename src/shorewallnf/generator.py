@@ -338,10 +338,20 @@ def _nat_base(ruleset: Ruleset) -> list[_Command]:
 
 
 def _nat_rules(ruleset: Ruleset) -> list[_Command]:
-    """Per DNAT, a nat ``prerouting`` dnat rule and the matching filter ``forward`` accept."""
+    """Compile each NAT entry by action: DNAT → prerouting dnat + forward accept (ADR-0008);
+    SNAT/MASQUERADE → a postrouting source-NAT rule (ADR-0009)."""
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = {zone.name for zone in ruleset.zones if zone.is_firewall}
-    return [cmd for nat in ruleset.nats for cmd in _dnat(nat, interfaces, firewalls)]
+    return [cmd for nat in ruleset.nats for cmd in _nat_entry(nat, interfaces, firewalls)]
+
+
+def _nat_entry(
+    nat: Nat, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
+) -> list[_Command]:
+    """Route one ``Nat`` to its generator path; source NAT (ADR-0009) needs no zone context."""
+    if nat.action in ("SNAT", "MASQUERADE"):
+        return [_snat(nat)]
+    return _dnat(nat, interfaces, firewalls)
 
 
 def _dnat(
@@ -450,6 +460,54 @@ def _dnat_target(host: str, remap_port: str | None) -> _Command:
     if remap_port is not None:
         target["port"] = _port_value(remap_port)
     return {"dnat": target}
+
+
+# ---- IPv4 SNAT/MASQUERADE: nat postrouting source NAT (ADR-0009) -------------------------
+
+
+def _snat(nat: Nat) -> _Command:
+    """One ``inet nat postrouting`` source-NAT rule for a MASQUERADE/explicit SNAT (ADR-0009).
+
+    Matches ``oifname <out_interface>`` then ``ip saddr <source_nets>`` (ADR-0007 order), then the
+    source-NAT target: ``masquerade`` (dynamic, to the egress interface's address) or
+    ``snat to <addr>`` for an explicit ``SNAT(<addr>)``. Source NAT is IPv4 by construction
+    (ADR-0002), so the ``ip saddr`` match is the family guard — no ``meta nfproto``. Unlike DNAT
+    there is **no** forward accept: source NAT does not open a new forward path.
+    """
+    ctx = f"{nat.action} {nat.source_nets!r} {nat.out_interface!r}"
+    if not nat.out_interface:
+        raise ConfigError(f"{ctx}: source NAT needs an egress interface")
+    if not nat.source_nets:
+        raise ConfigError(f"{ctx}: source NAT needs a source network")
+    expr: list[_Command] = [
+        _ifname("oifname", nat.out_interface),
+        _saddr_match(nat.source_nets),
+        _snat_target(nat.snat_to),
+    ]
+    return _rule("postrouting", expr, table=_NAT_TABLE)
+
+
+def _saddr_match(source_nets: str) -> _Command:
+    """``ip saddr`` over the source-net list: a scalar/prefix, or an anonymous set for a list.
+
+    ``source_nets`` is IPv4 by construction (ADR-0002); each comma-separated element reuses the
+    ADR-0007 ``_addr_value`` prefix handling.
+    """
+    elems = [_addr_value(net.strip()) for net in source_nets.split(",")]
+    right = elems[0] if len(elems) == 1 else {"set": elems}
+    return {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                      "right": right}}
+
+
+def _snat_target(snat_to: str | None) -> _Command:
+    """``masquerade`` when ``snat_to`` is ``None``, else ``snat to <addr>``.
+
+    ``masquerade`` translates to the egress interface's own (dynamic) address; the explicit form
+    pins a fixed source address (family ``ip``, matching the ADR-0008 ``dnat`` target).
+    """
+    if snat_to is None:
+        return {"masquerade": None}
+    return {"snat": {"addr": snat_to, "family": "ip"}}
 
 
 def _nat_table() -> _Command:
