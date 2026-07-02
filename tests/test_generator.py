@@ -673,3 +673,134 @@ def test_sectioned_rules_match_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "rule_sections")
+
+
+# ---- ICMP rules, family-correct icmp/ipv6-icmp (task #122, ADR-0007) --------------------
+
+
+def _icmp_type(proto: str, value: Any) -> dict[str, Any]:
+    left = {"payload": {"protocol": proto, "field": "type"}}
+    return {"match": {"op": "==", "left": left, "right": value}}
+
+
+def test_ipv4_icmp_proto_only_matches_l4proto() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="icmp", family=Family.IPV4),),
+    )
+    added = _added_rules(rs, _LN)
+    assert len(added) == 1
+    assert added[0]["expr"] == [_iif("eth1"), _oif("eth0"), _l4proto("icmp"), {"accept": None}]
+
+
+def test_ipv6_icmp_proto_only_matches_l4proto() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="ACCEPT", source="loc", dest="net", proto="ipv6-icmp", family=Family.IPV6),
+        ),
+    )
+    assert _l4proto("ipv6-icmp") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_ipv4_icmp_type_uses_icmp_payload() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="icmp",
+                dport="echo-request", family=Family.IPV4,
+            ),
+        ),
+    )
+    assert _icmp_type("icmp", "echo-request") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_ipv6_icmp_type_uses_icmpv6_payload() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="ipv6-icmp",
+                dport="128", family=Family.IPV6,
+            ),
+        ),
+    )
+    assert _icmp_type("icmpv6", 128) in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_both_family_icmp_splits_into_two_family_rules() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="icmp", family=Family.BOTH),),
+    )
+    added = _added_rules(rs, _LN)
+    assert len(added) == 2
+    assert _l4proto("icmp") in added[0]["expr"]
+    assert _l4proto("ipv6-icmp") in added[1]["expr"]
+
+
+def test_both_family_icmp_with_type_splits_both_payloads() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="icmp",
+                dport="8", family=Family.BOTH,
+            ),
+        ),
+    )
+    added = _added_rules(rs, _LN)
+    assert _icmp_type("icmp", 8) in added[0]["expr"]
+    assert _icmp_type("icmpv6", 8) in added[1]["expr"]
+
+
+def test_icmp_match_after_interfaces_before_verdict() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="icmp",
+                dport="echo-request", family=Family.IPV4,
+            ),
+        ),
+    )
+    assert _added_rules(rs, _LN)[0]["expr"] == [
+        _iif("eth1"),
+        _oif("eth0"),
+        _icmp_type("icmp", "echo-request"),
+        {"accept": None},
+    ]
+
+
+def test_icmp_with_source_port_fails_fast() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="icmp",
+                sport="1024", family=Family.IPV4,
+            ),
+        ),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "icmp" in str(exc.value).lower()
+
+
+def test_icmp_rules_match_golden() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="net", dest="fw", proto="icmp",
+                dport="echo-request", family=Family.IPV4,
+            ),
+            Rule(
+                action="ACCEPT", source="net", dest="fw", proto="ipv6-icmp",
+                dport="echo-request", family=Family.IPV6,
+            ),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "rule_icmp")
