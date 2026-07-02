@@ -4,13 +4,14 @@ from pathlib import Path
 import pytest
 
 from shorewallnf import cli
-from shorewallnf.ir import Family, Policy, ZoneMember
+from shorewallnf.ir import Family, Policy, Rule, ZoneMember
 from shorewallnf.parser import parse_config
 from shorewallnf.preprocessor import SourceLine, to_source_lines
 from tests.golden_harness import assert_golden
 
 FIXTURE = Path(__file__).parent / "fixtures" / "compile_dir"
 POLICY_FIXTURE = Path(__file__).parent / "fixtures" / "policy_compile_dir"
+RULES_FIXTURE = Path(__file__).parent / "fixtures" / "rules_compile_dir"
 GOLDEN = Path(__file__).parent / "golden" / "base_skeleton.json"
 
 
@@ -110,4 +111,40 @@ def test_policy_compile_emits_ordered_inter_zone_rules() -> None:
     # loc(eth0) -> net(eth1) ACCEPT is emitted as a forward rule...
     assert any(iif_loc in r["expr"] and r["expr"][-1] == {"accept": None} for r in forward)
     # ...and the wildcard `all all REJECT info` is the final forward rule (fail-closed order).
+    assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]
+
+
+# --- rules end-to-end (#125) -------------------------------------------------
+
+
+def test_parse_config_parses_the_rules_file() -> None:
+    ruleset = parse_config(
+        _streams(
+            zones="fw firewall\nnet ipv4\nloc ipv4\n",
+            interfaces="net eth1 detect\nloc eth0 detect\n",
+            rules="ACCEPT net fw tcp 22\nACCEPT loc net udp 53\n",
+        )
+    )
+    assert ruleset.rules == (
+        Rule(action="ACCEPT", source="net", dest="fw", proto="tcp", dport="22"),
+        Rule(action="ACCEPT", source="loc", dest="net", proto="udp", dport="53"),
+    )
+
+
+def test_rules_compile_end_to_end_matches_golden() -> None:
+    # Full path: preprocess (I/O) -> parse_config (rules wired in) -> generate. The golden
+    # harness also dry-run validates the output with nft -c where python3-nftables is available.
+    assert_golden(parse_config(cli.preprocess(RULES_FIXTURE)), "rules_compile")
+
+
+def test_rules_compile_places_feature_rules_before_policy_defaults() -> None:
+    compiled = cli.compile_config(RULES_FIXTURE)
+    rules = [c["add"]["rule"] for c in compiled["nftables"] if "rule" in c["add"]]
+    input_rules = [r for r in rules if r["chain"] == "input"]
+    # the explicit `net fw tcp 22 ACCEPT` reaches the input chain as a dport-22 accept...
+    left = {"payload": {"protocol": "tcp", "field": "dport"}}
+    dport22 = {"match": {"op": "==", "left": left, "right": 22}}
+    assert any(dport22 in r["expr"] and r["expr"][-1] == {"accept": None} for r in input_rules)
+    # ...and the wildcard `all all REJECT info` is the final forward rule (fail-closed order).
+    forward = [r for r in rules if r["chain"] == "forward"]
     assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]

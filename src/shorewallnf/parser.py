@@ -385,6 +385,7 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
     zones: tuple[Zone, ...] = ()
     interfaces: tuple[Interface, ...] = ()
     policies: tuple[Policy, ...] = ()
+    rules: tuple[Rule, ...] = ()
     if "zones" in streams:
         zones = parse_zones(parse(streams["zones"]))
     if "interfaces" in streams:
@@ -392,4 +393,6 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         zones, interfaces = parsed.zones, parsed.interfaces
     if "policy" in streams:
         policies = parse_policies(parse(streams["policy"]), zones)
-    return Ruleset(zones=zones, interfaces=interfaces, policies=policies)
+    if "rules" in streams:
+        rules = parse_rules(parse(streams["rules"]), zones)
+    return Ruleset(zones=zones, interfaces=interfaces, policies=policies, rules=rules)
