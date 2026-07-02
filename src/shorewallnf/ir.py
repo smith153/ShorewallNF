@@ -5,9 +5,11 @@ ADR-0001 (frozen stdlib ``dataclasses`` — immutable, no I/O) and ADR-0002 (a s
 family-aware model; family is data on the IR, scoped as ``both``/``ipv4``/``ipv6``).
 
 This module holds the datatypes — the :class:`Family` scoping enum, :class:`Zone` (with its
-:class:`ZoneMember` records), and the :class:`Interface`, :class:`Policy`, :class:`Rule` and
-:class:`Nat` records the Generator consumes. These are datatype **shapes**; each feature epic
-owns the deep per-file semantics (which options/actions are valid, how fields are populated).
+:class:`ZoneMember` records), the :class:`Interface`, :class:`Policy`, :class:`Rule` and
+:class:`Nat` records the Generator consumes, and the :class:`MacroDef`/:class:`MacroRule`
+records a rule's ``action`` name resolves to (ADR-0020). These are datatype **shapes**; each
+feature epic owns the deep per-file semantics (which options/actions are valid, how fields are
+populated).
 """
 
 from __future__ import annotations
@@ -100,6 +102,39 @@ class Rule:
     dport: str | None = None
     sport: str | None = None
     section: str | None = None
+    family: Family = Family.BOTH
+
+
+@dataclass(frozen=True, slots=True)
+class MacroRule:
+    """One line of a macro/custom-action body: a verdict plus optional narrowing (ADR-0020).
+
+    The body of a :class:`MacroDef` is an ordered tuple of these. ``action`` is a built-in
+    verdict (``ACCEPT``/``DROP``/``REJECT`` — the subset epic #176 scopes). ``proto``/``dport``/
+    ``sport`` are the protocol/port constraints this body line adds; the resolver intersects
+    them with the invoking rule's constraints (source/dest come from the call site, so they are
+    not modeled here). ``family`` scopes the line per ADR-0002.
+    """
+
+    action: str
+    proto: str | None = None
+    dport: str | None = None
+    sport: str | None = None
+    family: Family = Family.BOTH
+
+
+@dataclass(frozen=True, slots=True)
+class MacroDef:
+    """A named macro/custom-action definition — an ordered body of verdict templates (ADR-0020).
+
+    Both a Shorewall macro and a custom action are, for the scoped subset, a name plus a body
+    that expands to built-in verdicts; they share this one type (ADR-0020 fixes the resolution
+    model). A rule whose ``action`` names a ``MacroDef`` is replaced by its :class:`MacroRule`
+    body, in order, by the resolver stage. ``family`` scopes the whole definition per ADR-0002.
+    """
+
+    name: str
+    body: tuple[MacroRule, ...] = ()
     family: Family = Family.BOTH
 
 

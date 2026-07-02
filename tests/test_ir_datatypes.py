@@ -2,7 +2,16 @@ import dataclasses
 
 import pytest
 
-from shorewallnf.ir import Family, Interface, Nat, Policy, Rule, Ruleset
+from shorewallnf.ir import (
+    Family,
+    Interface,
+    MacroDef,
+    MacroRule,
+    Nat,
+    Policy,
+    Rule,
+    Ruleset,
+)
 
 # --- Interface ---------------------------------------------------------------
 
@@ -64,6 +73,67 @@ def test_nat_is_ipv4_by_construction() -> None:
     assert Nat(action="MASQUERADE", source="loc", dest="net").family is Family.IPV4
 
 
+# --- MacroDef / MacroRule (macro & custom-action definitions, ADR-0020) ------
+
+
+def test_macro_rule_shape() -> None:
+    body = MacroRule(action="ACCEPT", proto="tcp", dport="22", sport="1024:")
+    assert (body.action, body.proto, body.dport, body.sport) == (
+        "ACCEPT",
+        "tcp",
+        "22",
+        "1024:",
+    )
+
+
+def test_macro_rule_defaults() -> None:
+    body = MacroRule(action="DROP")
+    assert (body.proto, body.dport, body.sport) == (None, None, None)
+    assert body.family is Family.BOTH
+
+
+def test_macro_rule_can_be_scoped_to_a_single_family() -> None:
+    assert MacroRule(action="REJECT", family=Family.IPV6).family is Family.IPV6
+
+
+def test_macro_def_shape() -> None:
+    macro = MacroDef(
+        name="Ping",
+        body=(MacroRule(action="ACCEPT", proto="icmp"),),
+    )
+    assert macro.name == "Ping"
+    assert macro.body == (MacroRule(action="ACCEPT", proto="icmp"),)
+    assert macro.family is Family.BOTH
+
+
+def test_macro_def_body_defaults_empty() -> None:
+    assert MacroDef(name="Empty").body == ()
+
+
+def test_macro_def_body_is_an_ordered_tuple() -> None:
+    macro = MacroDef(
+        name="DropInvalid",
+        body=(MacroRule(action="DROP"), MacroRule(action="ACCEPT")),
+    )
+    assert isinstance(macro.body, tuple)
+    assert [b.action for b in macro.body] == ["DROP", "ACCEPT"]
+
+
+# --- Rule.action carries a macro/action name (ADR-0020) ----------------------
+
+
+def test_rule_action_still_accepts_a_builtin_verdict() -> None:
+    # Regression: existing verdict rules keep constructing unchanged.
+    assert Rule(action="ACCEPT", source="net", dest="fw").action == "ACCEPT"
+
+
+def test_rule_action_can_carry_a_macro_or_action_name() -> None:
+    # ADR-0020: a name in the ACTION column is a plain str, indistinguishable at the
+    # type level from a verdict; the resolver stage tells them apart by lookup.
+    rule = Rule(action="Ping", source="net", dest="fw")
+    assert rule.action == "Ping"
+
+
 # --- frozen + Ruleset container ----------------------------------------------
 
 
@@ -74,6 +144,8 @@ def test_nat_is_ipv4_by_construction() -> None:
         (Policy(source="net", dest="fw", action="DROP"), "action"),
         (Rule(action="ACCEPT", source="net", dest="fw"), "action"),
         (Nat(action="DNAT", source="net", dest="fw"), "action"),
+        (MacroRule(action="ACCEPT"), "action"),
+        (MacroDef(name="Ping"), "name"),
     ],
 )
 def test_datatypes_are_frozen(instance: object, field: str) -> None:
