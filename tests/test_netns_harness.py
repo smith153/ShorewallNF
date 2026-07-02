@@ -151,6 +151,7 @@ _ZONES = (
 )
 
 
+@pytest.mark.netns
 @pytest.mark.skipif(
     not nh.netns_available(), reason="netns behavioral tier needs root + ip/nft (epics #77/#78)"
 )
