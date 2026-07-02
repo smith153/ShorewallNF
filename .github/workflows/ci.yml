@@ -18,11 +18,30 @@ jobs:
       - run: python -m mypy
       - run: python -m pytest -v
 
-  # Behavioral (network-namespace) tier — enabled once the test-harness epic
-  # lands golden configs + netns assertions. Requires CAP_NET_ADMIN.
+  # Behavioral (network-namespace) tier: builds a throwaway `ip netns` sandbox, loads a
+  # generated ruleset via the `nft` binary, and drives real packets to catch packet-path
+  # regressions. Needs root + iproute2 + nftables (the `nft` binary, not python3-nftables);
+  # GitHub-hosted ubuntu runners are full VMs, so `sudo ip netns` works without a self-hosted runner.
   netns-integration:
     runs-on: ubuntu-latest
-    if: false # TODO(epic:test-harness): flip on when netns tests exist
     steps:
       - uses: actions/checkout@v4
-      - run: echo "netns integration placeholder"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install netns tooling (nft binary + iproute2)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables iproute2
+      - run: python -m pip install -e ".[dev]"
+      - name: Run behavioral netns tier as root
+        run: |
+          set -eo pipefail
+          sudo -E env "PATH=$PATH" python -m pytest -m netns -v -o addopts= | tee netns.log
+          # We are root with ip/nft here, so netns_available() is true and the marked test must
+          # actually execute — fail if it was skipped so a silent all-skip cannot pass as green.
+          if grep -qE '[0-9]+ skipped' netns.log; then
+            echo "::error::netns behavioral test was skipped; expected it to run as root"
+            exit 1
+          fi
+          grep -qE '1 passed' netns.log
