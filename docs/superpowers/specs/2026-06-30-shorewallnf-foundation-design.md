@@ -20,7 +20,7 @@ This session produces the repository scaffolding, the pipeline's role definition
 - A repository foundation: `README.md`, `CLAUDE.md`, `STATUS.md`, `LICENSE` (GPLv2), `pyproject.toml`, `.gitignore`, `docs/`.
 - A complete, provider-agnostic **AI pipeline**: role prompts, label taxonomy, lifecycle/workflow doc, GitHub issue/PR templates, CODEOWNERS, CI skeleton, label-sync tooling.
 - A thin **Claude Code adapter** (slash commands / subagents) over the canonical role prompts.
-- The **seed backlog** documented (epics derived from `my_shorewall/`), created as *files/docs* — not yet pushed to the GitHub tracker.
+- The **seed backlog** documented (epics derived from the reference config), created as *files/docs* — not yet pushed to the GitHub tracker.
 
 **Non-goals of this session**
 - Writing the compiler (parser, IR, generator, applier). That is produced *by* the pipeline.
@@ -29,11 +29,11 @@ This session produces the repository scaffolding, the pipeline's role definition
 
 ## 3. Definition of "done" for the product (MVP)
 
-**MVP = basic, stateful, dual-stack (IPv4 + IPv6) routing and port-forwarding**, modeled on a documented subset of the real `my_shorewall/` config.
+**MVP = basic, stateful, dual-stack (IPv4 + IPv6) routing and port-forwarding**, modeled on a documented subset of the reference config.
 
 - **In scope:** zones, interfaces (+ basic/family-appropriate options), inter-zone policy, basic rules (`ACCEPT`/`DROP`/`REJECT` with proto/ports/port-ranges and `zone:host` qualifiers), stateful base (`ct state established,related accept` and Shorewall `?SECTION`s), DNAT/port-forwarding (v4), SNAT/`MASQUERADE` (v4), and the v6 equivalent (direct-accept to global addresses, no NAT).
 - **Out of scope (post-MVP backlog):** macros & custom actions (`Ping`, `Invalid`, `AwsDrop`), conntrack *helpers* (the `conntrack` file), mangle/`TPROXY`/`DIVERT`, providers/policy-routing, QoS/traffic-shaping (`tc*`), advanced interface hardening options.
-- **Success criterion:** the generated ruleset is **functionally equivalent** to what `my_shorewall/` produces, **verified behaviorally** (see §7). Byte-identical output is explicitly *not* a goal — the original emits iptables, we emit nftables.
+- **Success criterion:** the generated ruleset is **functionally equivalent** to what the reference config produces, **verified behaviorally** (see §7). Byte-identical output is explicitly *not* a goal — the original emits iptables, we emit nftables.
 
 ### 3.1 IPv4/IPv6 reconciliation (the interesting part)
 
@@ -90,7 +90,7 @@ Two phases: an upstream **Refinement** pipeline that grooms work to `implementat
 
 | # | Role | Phase | Reads | Produces | Guardrails |
 |---|------|-------|-------|----------|------------|
-| 1 | **Epic Author** | Refine | `STATUS.md`, `docs/`, `my_shorewall/`, open epics | `type:epic` issues as `status:proposed` | Human approves before decomposition |
+| 1 | **Epic Author** | Refine | `STATUS.md`, `docs/`, reference config, open epics | `type:epic` issues as `status:proposed` | Human approves before decomposition |
 | 2 | **Epic Decomposer** | Refine | one approved epic | child `type:task` issues, `status:proposed`, native sub-issues + `blocked-by` links | Tasks must have acceptance criteria |
 | 3 | **Task Groomer** | Refine | `status:proposed` tasks | `implementation-ready` \| request-changes \| reject-with-reason | Necessity/YAGNI check; **max 2 churn rounds** then escalate `needs-human` |
 | 4 | **Implementer** | Deliver | unblocked `implementation-ready` | worktree + PR (`Closes #N`), TDD | Claims via assignee + `status:in-progress`; work in own worktree |
@@ -126,7 +126,7 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 Testing pyramid (→ `docs/ARCHITECTURE.md` + CI):
 
 1. **Base — golden-file snapshots + `nft -c`** (every PR, no root). For a given config, assert generated nft ruleset matches a checked-in expected file; `nft -c` validates syntax. This is the TDD workhorse.
-2. **Middle — network-namespace integration** (privileged CI job). Load the ruleset into `ip netns`, assert packet-path behavior for policy DROP, DNAT, SNAT, dual-stack ICMP. Proves "equivalent to `my_shorewall/`."
+2. **Middle — network-namespace integration** (privileged CI job). Load the ruleset into `ip netns`, assert packet-path behavior for policy DROP, DNAT, SNAT, dual-stack ICMP. Proves "equivalent to the reference config."
 3. **Aspirational — Shorewall-corpus comparison spike.** The nft↔iptables comparison idea, tracked as its own epic/spike; non-blocking; may only ever cover a subset.
 
 **CI (`.github/workflows/ci.yml`):** `ruff` + `mypy` + `pytest` on every PR; a separate privileged job for the netns tier.
@@ -155,7 +155,7 @@ scripts/sync-labels           (create/update GH labels from labels.yml)
 
 `.gitignore` excludes `my_shorewall/` and `orig_source/`.
 
-## 9. Seed backlog (epics derived from `my_shorewall/`)
+## 9. Seed backlog (epics derived from the reference config)
 
 Documented in `STATUS.md`; created on the tracker later by the Epic Author (human-approved). Ordered by dependency.
 
