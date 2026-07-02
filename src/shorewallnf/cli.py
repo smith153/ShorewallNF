@@ -20,6 +20,7 @@ from .errors import ShorewallNFError
 from .generator import generate
 from .parser import parse_config
 from .preprocessor import SourceLine, parse_params, preprocess_file
+from .validator import validate
 
 _VERB_HELP = {
     "check": "preprocess and validate the config; emit no ruleset",
@@ -49,10 +50,10 @@ def compile_config(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
     """Compile a config directory into the base ``inet`` nftables ruleset (JSON).
 
     The shell seam composing the whole pipeline: preprocess (I/O) → parse into the IR →
-    generate. Returns the ``python3-nftables`` JSON the compile verb emits and the applier
-    can dry-run load.
+    validate → generate. Returns the ``python3-nftables`` JSON the compile verb emits and the
+    applier can dry-run load.
     """
-    return generate(parse_config(preprocess(config_dir)))
+    return generate(validate(parse_config(preprocess(config_dir))))
 
 
 def _build_parser() -> argparse.ArgumentParser:

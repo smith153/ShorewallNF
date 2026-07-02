@@ -52,6 +52,16 @@ Forces:
 - **Follow-up:** epic #7 (policy) turns the drop defaults into policy-file-driven last rules;
   epics #74/#75/#76 add the rules/NAT chains; epic #6's compile task validates the emitted ruleset
   with `nft -c` once the netns test tier (#77/#78) is available.
+- **Limitation — ESTABLISHED/RELATED sections are accept-only (#138).** Because rule 3 accepts
+  `ct state {established, related}` at the *top* of `input`/`forward`, any `rules`-file rule in the
+  `?SECTION ESTABLISHED` or `?SECTION RELATED` block (which the generator gates on the same state,
+  [ADR-0007](0007-rules-compilation.md)) is emitted *after* that accept: an `ACCEPT` there is a
+  redundant no-op, and a `DROP`/`REJECT` is unreachable. The Validator
+  ([module-layout](../module-layout.md)) fails fast on the dead `DROP`/`REJECT` case (fail-closed,
+  [ADR-0004](0004-error-handling.md)) rather than emit a rule that can never match; INVALID and NEW
+  are unaffected (their states are not in this accept). Making the base accept *conditional* (a
+  FASTACCEPT-off mode, so mid-connection policy could apply) is deliberately **out of scope** here —
+  a future ADR if a real need arrives.
 
 ## Alternatives considered
 

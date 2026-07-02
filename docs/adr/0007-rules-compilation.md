@@ -66,6 +66,12 @@ Forces:
 - **Trade-off:** an ICMP rule fed through the generic proto path would emit `meta l4proto icmp`
   rather than the family-correct `icmp`/`ipv6-icmp`; #122 specialises it. No end-to-end path emits
   rules until #125, so nothing relies on that interim shape.
+- **Limitation — ESTABLISHED/RELATED are accept-only (#138).** The `?SECTION` state gate this ADR
+  hosts sits *after* [ADR-0005](0005-nftables-base-chain-layout.md)'s top-of-chain
+  `ct state {established, related} accept`, so a `DROP`/`REJECT` in those two sections is
+  unreachable. The Validator rejects that dead case up front (fail-closed); an `ACCEPT` there is a
+  redundant no-op. INVALID/NEW are unaffected. A conditional base accept (FASTACCEPT-off) is a
+  future ADR, not built here.
 
 ## Alternatives considered
 
