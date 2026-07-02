@@ -7,13 +7,14 @@ import pytest
 from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate
 from shorewallnf.ir import Family, Policy, Ruleset, Zone, ZoneMember
+from tests.golden_harness import assert_golden
 
-GOLDEN = Path(__file__).parent / "golden" / "base_skeleton.json"
 POLICY_GOLDEN = Path(__file__).parent / "golden" / "policy_default_rules.json"
 
 
 def test_base_skeleton_matches_golden() -> None:
-    assert generate(Ruleset()) == json.loads(GOLDEN.read_text())
+    # Dogfoods the golden-file harness against the real committed fixture (nft -c where available).
+    assert_golden(Ruleset(), "base_skeleton")
 
 
 def test_output_is_json_serializable() -> None:
