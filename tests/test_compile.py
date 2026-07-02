@@ -4,11 +4,13 @@ from pathlib import Path
 import pytest
 
 from shorewallnf import cli
-from shorewallnf.ir import Family, ZoneMember
+from shorewallnf.ir import Family, Policy, ZoneMember
 from shorewallnf.parser import parse_config
 from shorewallnf.preprocessor import SourceLine, to_source_lines
+from tests.golden_harness import assert_golden
 
 FIXTURE = Path(__file__).parent / "fixtures" / "compile_dir"
+POLICY_FIXTURE = Path(__file__).parent / "fixtures" / "policy_compile_dir"
 GOLDEN = Path(__file__).parent / "golden" / "base_skeleton.json"
 
 
@@ -75,3 +77,37 @@ def test_generated_ruleset_passes_nft_check() -> None:
     from shorewallnf.applier import check_ruleset
 
     check_ruleset(cli.compile_config(FIXTURE))  # must not raise
+
+
+# --- policies end-to-end (#91) -----------------------------------------------
+
+
+def test_parse_config_parses_the_policy_file() -> None:
+    ruleset = parse_config(
+        _streams(
+            zones="fw firewall\nnet ipv4\nloc ipv4\n",
+            interfaces="net eth1 detect\nloc eth0 detect\n",
+            policy="loc net ACCEPT\nall all REJECT info\n",
+        )
+    )
+    assert ruleset.policies == (
+        Policy(source="loc", dest="net", action="ACCEPT"),
+        Policy(source="all", dest="all", action="REJECT", log_level="info"),
+    )
+
+
+def test_policy_compile_end_to_end_matches_golden() -> None:
+    # Full path: preprocess (I/O) -> parse_config (policy wired in) -> generate. The golden
+    # harness also dry-run validates the output with nft -c where python3-nftables is available.
+    assert_golden(parse_config(cli.preprocess(POLICY_FIXTURE)), "policy_compile")
+
+
+def test_policy_compile_emits_ordered_inter_zone_rules() -> None:
+    compiled = cli.compile_config(POLICY_FIXTURE)
+    rules = [c["add"]["rule"] for c in compiled["nftables"] if "rule" in c["add"]]
+    forward = [r for r in rules if r["chain"] == "forward"]
+    iif_loc = {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}}
+    # loc(eth0) -> net(eth1) ACCEPT is emitted as a forward rule...
+    assert any(iif_loc in r["expr"] and r["expr"][-1] == {"accept": None} for r in forward)
+    # ...and the wildcard `all all REJECT info` is the final forward rule (fail-closed order).
+    assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]
