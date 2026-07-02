@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import ConfigError
-from .ir import Policy, Rule, Ruleset, Zone
+from .ir import Family, Policy, Rule, Ruleset, Zone
 
 _FAMILY = "inet"
 _TABLE = "filter"
@@ -122,21 +122,23 @@ def _feature_rules(ruleset: Ruleset) -> list[_Command]:
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = {zone.name for zone in ruleset.zones if zone.is_firewall}
     ordered = sorted(ruleset.rules, key=lambda rule: _SECTION_ORDER[_section_of(rule)])
-    return [_feature_rule(rule, interfaces, firewalls) for rule in ordered]
+    return [cmd for rule in ordered for cmd in _feature_rule(rule, interfaces, firewalls)]
 
 
 def _feature_rule(
     rule: Rule, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
-) -> _Command:
+) -> list[_Command]:
+    """The nft rule(s) for one ``Rule``; a both-family ICMP rule splits into one per family."""
     ctx = f"rule {rule.action} {rule.source!r} {rule.dest!r}"
-    chain, expr = _chain_and_zone_matches(
+    chain, prefix = _chain_and_zone_matches(
         _zone_of(rule.source), _zone_of(rule.dest), interfaces, firewalls, ctx
     )
-    expr += _host_matches(rule)
-    expr += _ct_matches(rule)
-    expr += _l4_matches(rule, ctx)
-    expr.append(_verdict(rule.action))
-    return _rule(chain, expr)
+    prefix += _host_matches(rule)
+    prefix += _ct_matches(rule)
+    verdict = _verdict(rule.action)
+    if rule.proto in _ICMP_PROTOS:
+        return [_rule(chain, [*prefix, match, verdict]) for match in _icmp_matches(rule, ctx)]
+    return [_rule(chain, [*prefix, *_l4_matches(rule, ctx), verdict])]
 
 
 # ?SECTION connection-state gating & ordering (ADR-0007). ESTABLISHED/RELATED/INVALID gate on
@@ -165,6 +167,33 @@ def _ct_matches(rule: Rule) -> list[_Command]:
 
 def _ct_state(state: str) -> _Command:
     return {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": state}}
+
+
+# ICMP is family-correct: ``icmp`` (IPv4) / ``ipv6-icmp`` (IPv6) as the l4proto, ``icmp``/``icmpv6``
+# as the payload protocol for a type match. The match itself is the family guard (ADR-0007), so a
+# both-family rule splits into one rule per family (ADR-0002) rather than adding a meta nfproto.
+_ICMP_PROTOS = ("icmp", "ipv6-icmp")
+
+
+def _icmp_matches(rule: Rule, ctx: str) -> list[_Command]:
+    """One ICMP match per family the rule scopes to.
+
+    ICMP has no source port; the DEST PORT column carries an optional ICMP type. A both-family
+    rule yields a v4 ``icmp`` and a v6 ``icmpv6`` match; a family-pinned rule yields only its own.
+    """
+    if rule.sport is not None:
+        raise ConfigError(f"{ctx}: an ICMP rule has no source port")
+    v6_flags: tuple[bool, ...] = (
+        (False, True) if rule.family is Family.BOTH else (rule.family is Family.IPV6,)
+    )
+    return [_icmp_match(v6, rule.dport) for v6 in v6_flags]
+
+
+def _icmp_match(v6: bool, icmp_type: str | None) -> _Command:
+    if icmp_type is None:
+        return _l4proto("ipv6-icmp" if v6 else "icmp")
+    left = {"payload": {"protocol": "icmpv6" if v6 else "icmp", "field": "type"}}
+    return {"match": {"op": "==", "left": left, "right": _port_value(icmp_type)}}
 
 
 def _zone_of(token: str) -> str:
