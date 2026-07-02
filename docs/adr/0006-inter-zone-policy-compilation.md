@@ -35,6 +35,11 @@ Forces:
    - `output` when the **source** is `$FW` — traffic from the firewall host.
 
    Source-`$FW` takes precedence, so a degenerate `$FW $FW` policy lands in `output`.
+
+   An `all all` policy has neither side a firewall zone, so it lands in `forward` **only** — it is
+   the inter-zone catch-all, not a universal default. Traffic to/from the firewall host keeps the
+   ADR-0005 base-chain policies (`input` drop, `output` accept); `all all` deliberately does **not**
+   seed `input`/`output` defaults (see Consequences).
 2. **Zone matching by interface.** The source zone matches on `iifname`, the dest zone on
    `oifname`, against the zone's interface(s): a scalar `iifname "eth0"` for a single interface,
    an anonymous set `iifname { "eth0", "eth1" }` for several. `$FW` contributes no interface match
@@ -58,6 +63,12 @@ Forces:
 - **Trade-off:** interface-only matching means host/CIDR-scoped zones are not yet narrowed
   (`ip saddr @zone` deferred until zone host-membership lands, ADR-0002); wildcard-interface
   (`eth+`) matching is likewise deferred (YAGNI).
+- **Trade-off (`all all` scoping):** because `all all` compiles to a `forward` rule only, it does
+  not govern firewall-host traffic. `all all DROP` is harmless (the `input` base policy already
+  drops); but `all all REJECT` leaves firewall-bound traffic *dropped* rather than rejected, and
+  `all all ACCEPT` does **not** open the firewall host (`input` stays `drop`). This diverges from
+  Shorewall's universal `all all` and is accepted for now (YAGNI): a config wanting firewall-host
+  defaults writes explicit `$FW`/`*→$FW` policies. Revisit if a real config needs it (#118).
 - **Follow-up:** task #91 wires the `policy` file through the end-to-end compile path and validates
   the emitted ruleset with `nft -c`; the rules engine (#74) adds per-rule accepts *before* these
   defaults in the same chains.
