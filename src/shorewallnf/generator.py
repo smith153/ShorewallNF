@@ -113,10 +113,16 @@ def _iface_value(
 
 
 def _feature_rules(ruleset: Ruleset) -> list[_Command]:
-    """One nft rule per ``Rule``, in file order, placed before the policy fall-through defaults."""
+    """One nft rule per ``Rule``, ordered by ``?SECTION`` then file order, before the defaults.
+
+    Rules are grouped by connection-state section (ADR-0007): the state-gated
+    ESTABLISHED → RELATED → INVALID fast-path first, then the ungated NEW rules, stably within
+    each. Sorting before the policy fall-through keeps explicit verdicts ahead of the defaults.
+    """
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = {zone.name for zone in ruleset.zones if zone.is_firewall}
-    return [_feature_rule(rule, interfaces, firewalls) for rule in ruleset.rules]
+    ordered = sorted(ruleset.rules, key=lambda rule: _SECTION_ORDER[_section_of(rule)])
+    return [_feature_rule(rule, interfaces, firewalls) for rule in ordered]
 
 
 def _feature_rule(
@@ -127,9 +133,38 @@ def _feature_rule(
         _zone_of(rule.source), _zone_of(rule.dest), interfaces, firewalls, ctx
     )
     expr += _host_matches(rule)
+    expr += _ct_matches(rule)
     expr += _l4_matches(rule, ctx)
     expr.append(_verdict(rule.action))
     return _rule(chain, expr)
+
+
+# ?SECTION connection-state gating & ordering (ADR-0007). ESTABLISHED/RELATED/INVALID gate on
+# ``ct state`` and form the fast-path; NEW (the default for an unsectioned rule) is ungated —
+# the ADR-0005 base rules already fast-path established/related, so NEW rules only see new packets.
+_SECTION_ORDER = {"ESTABLISHED": 0, "RELATED": 1, "INVALID": 2, "NEW": 3}
+_SECTION_STATE = {"ESTABLISHED": "established", "RELATED": "related", "INVALID": "invalid"}
+
+
+def _section_of(rule: Rule) -> str:
+    """The rule's section upper-cased; unsectioned defaults to ``NEW`` (fail fast otherwise)."""
+    section = (rule.section or "NEW").upper()
+    if section not in _SECTION_ORDER:
+        raise ConfigError(
+            f"rule {rule.action} {rule.source!r} {rule.dest!r}: unsupported ?SECTION "
+            f"{rule.section!r} (ESTABLISHED/RELATED/INVALID/NEW)"
+        )
+    return section
+
+
+def _ct_matches(rule: Rule) -> list[_Command]:
+    """A ``ct state`` match for a state-gated section; NEW rules add none."""
+    state = _SECTION_STATE.get(_section_of(rule))
+    return [_ct_state(state)] if state is not None else []
+
+
+def _ct_state(state: str) -> _Command:
+    return {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": state}}
 
 
 def _zone_of(token: str) -> str:
