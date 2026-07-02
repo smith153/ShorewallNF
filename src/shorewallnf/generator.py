@@ -15,10 +15,11 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import ConfigError
-from .ir import Family, Policy, Rule, Ruleset, Zone
+from .ir import Family, Nat, Policy, Rule, Ruleset, Zone
 
 _FAMILY = "inet"
 _TABLE = "filter"
+_NAT_TABLE = "nat"
 
 # (chain name == hook name, base-chain policy). Input/forward fail closed; output accepts.
 _BASE_CHAINS = (("input", "drop"), ("forward", "drop"), ("output", "accept"))
@@ -36,7 +37,9 @@ def generate(ruleset: Ruleset) -> dict[str, list[_Command]]:
     commands.append(_rule("input", [_ct_established_related(), _accept()]))
     commands.append(_rule("input", [_ifname("iifname", "lo"), _accept()]))
     commands.append(_rule("forward", [_ct_established_related(), _accept()]))
+    commands += _nat_base(ruleset)
     commands += _feature_rules(ruleset)
+    commands += _nat_rules(ruleset)
     commands += _policy_rules(ruleset)
     return {"nftables": commands}
 
@@ -300,6 +303,133 @@ def _verdict(action: str) -> _Command:
     return {_VERDICTS[action]: None}
 
 
+# ---- IPv4 DNAT: nat prerouting + forward accept (ADR-0008) -------------------------------
+
+# nftables standard NAT hook priorities: dstnat for prerouting, srcnat for postrouting.
+_DSTNAT_PRIO = -100
+_SRCNAT_PRIO = 100
+
+
+def _nat_base(ruleset: Ruleset) -> list[_Command]:
+    """The nat skeleton — ``inet nat`` table + prerouting/postrouting chains — if NAT is used.
+
+    Unlike the always-present ADR-0005 filter skeleton, the nat plumbing is emitted only when the
+    ruleset carries NAT entries (ADR-0008). ``postrouting`` is part of the fixed pair even for a
+    DNAT-only config, ready for the SNAT/MASQUERADE sibling.
+    """
+    if not ruleset.nats:
+        return []
+    return [
+        _nat_table(),
+        _nat_chain("prerouting", _DSTNAT_PRIO),
+        _nat_chain("postrouting", _SRCNAT_PRIO),
+    ]
+
+
+def _nat_rules(ruleset: Ruleset) -> list[_Command]:
+    """Per DNAT, a nat ``prerouting`` dnat rule and the matching filter ``forward`` accept."""
+    interfaces = _zone_interfaces(ruleset.zones)
+    firewalls = {zone.name for zone in ruleset.zones if zone.is_firewall}
+    return [cmd for nat in ruleset.nats for cmd in _dnat(nat, interfaces, firewalls)]
+
+
+def _dnat(
+    nat: Nat, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
+) -> list[_Command]:
+    """The prerouting dnat rule + forward accept for one v4 ``DNAT`` (ADR-0008)."""
+    ctx = f"DNAT {nat.source!r} {nat.dest!r}"
+    if nat.action != "DNAT" or nat.family is not Family.IPV4:
+        raise ConfigError(
+            f"{ctx}: unsupported NAT {nat.action} (family {nat.family.value}) — "
+            "only IPv4 DNAT is compiled here (IPv6 direct-accept #144, SNAT/MASQUERADE #76)"
+        )
+    host, _, remap = (nat.to or "").partition(":")
+    if not host:
+        raise ConfigError(f"{ctx}: DNAT target has no host")
+    remap_port = remap or None
+    return [
+        _prerouting_rule(nat, host, remap_port, interfaces, firewalls, ctx),
+        _forward_accept(nat, host, remap_port, interfaces, firewalls, ctx),
+    ]
+
+
+def _prerouting_rule(
+    nat: Nat,
+    host: str,
+    remap_port: str | None,
+    interfaces: dict[str, tuple[str, ...]],
+    firewalls: set[str],
+    ctx: str,
+) -> _Command:
+    """``iifname <source> <proto> dport <ext-port> dnat to <host>[:<remap>]`` in nat prerouting."""
+    expr: list[_Command] = []
+    if nat.source != "all" and nat.source not in firewalls:
+        expr.append(_ifname("iifname", _iface_value(ctx, nat.source, interfaces)))
+    expr += _nat_l4_matches(nat.proto, nat.dport, ctx)
+    expr.append(_dnat_target(host, remap_port))
+    return _rule("prerouting", expr, table=_NAT_TABLE)
+
+
+def _forward_accept(
+    nat: Nat,
+    host: str,
+    remap_port: str | None,
+    interfaces: dict[str, tuple[str, ...]],
+    firewalls: set[str],
+    ctx: str,
+) -> _Command:
+    """The filter forward accept admitting the post-DNAT connection to the internal host.
+
+    Reuses the ADR-0006/0007 zone matching (iifname source, oifname dest), narrows on the internal
+    ``ip daddr``, and matches the effective (remapped, else external) destination port.
+    """
+    chain, expr = _chain_and_zone_matches(nat.source, nat.dest, interfaces, firewalls, ctx)
+    expr.append(_addr_match("daddr", host))
+    effective_dport = remap_port if remap_port is not None else nat.dport
+    expr += _nat_l4_matches(nat.proto, effective_dport, ctx)
+    expr.append(_accept())
+    return _rule(chain, expr)
+
+
+def _nat_l4_matches(proto: str | None, dport: str | None, ctx: str) -> list[_Command]:
+    """A ``<proto> dport`` match, a bare ``l4proto`` when portless, or []; a lone port fails."""
+    if proto is None:
+        if dport is not None:
+            raise ConfigError(f"{ctx}: a port match needs a protocol")
+        return []
+    if dport is None:
+        return [_l4proto(proto)]
+    return [_port_match(proto, "dport", dport)]
+
+
+def _dnat_target(host: str, remap_port: str | None) -> _Command:
+    """``dnat to <host>[:<port>]``; ``family`` pins it to IPv4 without a ``meta nfproto`` guard."""
+    target: dict[str, Any] = {"addr": host, "family": "ip"}
+    if remap_port is not None:
+        target["port"] = _port_value(remap_port)
+    return {"dnat": target}
+
+
+def _nat_table() -> _Command:
+    return {"add": {"table": {"family": _FAMILY, "name": _NAT_TABLE}}}
+
+
+def _nat_chain(name: str, prio: int) -> _Command:
+    return {
+        "add": {
+            "chain": {
+                "family": _FAMILY,
+                "table": _NAT_TABLE,
+                "name": name,
+                "type": "nat",
+                "hook": name,
+                "prio": prio,
+                "policy": "accept",
+            }
+        }
+    }
+
+
 # ---- base skeleton (ADR-0005) -----------------------------------------------------------
 
 
@@ -323,8 +453,8 @@ def _chain(name: str, policy: str) -> _Command:
     }
 
 
-def _rule(chain: str, expr: list[_Command]) -> _Command:
-    return {"add": {"rule": {"family": _FAMILY, "table": _TABLE, "chain": chain, "expr": expr}}}
+def _rule(chain: str, expr: list[_Command], table: str = _TABLE) -> _Command:
+    return {"add": {"rule": {"family": _FAMILY, "table": table, "chain": chain, "expr": expr}}}
 
 
 def _ct_established_related() -> _Command:
