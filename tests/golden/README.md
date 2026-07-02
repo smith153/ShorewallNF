@@ -1,8 +1,8 @@
 # Golden fixtures
 
 Expected nftables-JSON snapshots for the golden-file harness (`tests/golden_harness.py`,
-epic #77). Each `<name>.json` is the `python3-nftables` JSON that `generate()` emits for a
-given IR `Ruleset` — the hermetic, no-root check every feature epic uses.
+epic #77). Each `<name>.json` is the nftables JSON that `generate()` emits for a given IR
+`Ruleset` — the hermetic, no-root diff every feature epic uses.
 
 ## Usage
 
@@ -14,8 +14,9 @@ def test_my_feature() -> None:
 ```
 
 `assert_golden` renders the ruleset, diffs it against `<name>.json` (a readable unified diff on
-mismatch), and — where `python3-nftables` is installed — dry-run validates the output with
-`nft -c` (skipped cleanly when absent; pass `check_nft=False` to opt out).
+mismatch), and — where the `nft` binary can run — dry-run validates the output with `nft --check`
+(pass `check_nft=False` to opt out). `nft --check` needs CAP_NET_ADMIN, so the non-vacuous CI
+validation runs in a dedicated privileged step via the `require_nft`-gated tests (see #165).
 
 ## Conventions
 

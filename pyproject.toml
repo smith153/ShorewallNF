@@ -39,4 +39,5 @@ testpaths = ["tests"]
 pythonpath = ["src", "scripts"]
 markers = [
     "netns: behavioral tier requiring root + ip/nft in a network namespace (select with -m netns)",
+    "nft: dry-run validation that shells out to `nft --check` (needs CAP_NET_ADMIN; runs in a privileged CI step)",
 ]

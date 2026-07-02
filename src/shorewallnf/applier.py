@@ -1,26 +1,33 @@
 """Applier — the imperative shell that validates/loads a ruleset with nftables.
 
 All ``nft`` invocation lives here (ADR-0003 imperative shell). :func:`check_ruleset` dry-run
-loads the generated JSON ruleset — the equivalent of ``nft -c`` — via the system
-``python3-nftables``, raising :class:`~shorewallnf.errors.ConfigError` if nft rejects it.
+validates the generated JSON ruleset by shelling out to the system ``nft`` binary in check mode
+(``nft --check --json --file -``, the equivalent of ``nft -c``), raising
+:class:`~shorewallnf.errors.ConfigError` if nft rejects it.
 
-``python3-nftables`` is a system dependency absent from CI tiers without it (the behavioral
-netns tier, epics #77/#78); callers gate on its availability until that tier is enabled.
+The generator emits the ruleset JSON with the stdlib ``json`` module, so generation needs no
+nftables tooling. ``nft --check`` reads the kernel ruleset cache, so it needs CAP_NET_ADMIN
+(root); test tiers that lack it gate on availability — see ``tests/golden_harness.py``.
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
 from typing import Any
 
 from .errors import ConfigError
 
+NFT = "nft"
+
 
 def check_ruleset(ruleset: dict[str, Any]) -> None:
-    """Dry-run load the nftables JSON ``ruleset`` (like ``nft -c``); raise on rejection."""
-    import nftables  # type: ignore[import-not-found]  # optional system dep (python3-nftables)
-
-    nft = nftables.Nftables()
-    nft.set_dry_run(True)
-    rc, _output, error = nft.json_cmd(ruleset)
-    if rc != 0:
-        raise ConfigError(f"generated ruleset rejected by nft: {error}")
+    """Dry-run validate the nftables JSON ``ruleset`` (like ``nft -c``); raise on rejection."""
+    result = subprocess.run(
+        [NFT, "--check", "--json", "--file", "-"],
+        input=json.dumps(ruleset),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(f"generated ruleset rejected by nft: {result.stderr.strip()}")

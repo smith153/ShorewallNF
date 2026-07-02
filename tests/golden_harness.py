@@ -1,10 +1,17 @@
 """Golden-file snapshot harness (task #114, epic #77).
 
-The hermetic, no-root TDD workhorse: render an IR :class:`~shorewallnf.ir.Ruleset` to
-nftables JSON, diff it against a checked-in fixture under ``tests/golden/``, and — where
-``python3-nftables`` is installed — assert the same output passes an ``nft -c`` dry-run
-(:func:`shorewallnf.applier.check_ruleset`). The nft step is skipped cleanly where the
-system dependency is absent, so the tier stays green without root (see epics #77/#78).
+The hermetic TDD workhorse: render an IR :class:`~shorewallnf.ir.Ruleset` to nftables JSON,
+diff it against a checked-in fixture under ``tests/golden/``, and — where the ``nft`` binary
+can run — assert the same output passes an ``nft --check`` dry-run
+(:func:`shorewallnf.applier.check_ruleset`).
+
+The generator emits the JSON with the stdlib ``json`` module, so the diff always runs with no
+nftables tooling. Validation shells out to the ``nft`` binary; ``nft --check`` reads the kernel
+ruleset cache and so needs CAP_NET_ADMIN (root), which the fast CI tier's unprivileged user
+lacks. :func:`nft_available` probes whether nft can actually validate here, and
+:func:`require_nft` turns a missing/broken nft into a HARD failure under CI (``GITHUB_ACTIONS``)
+so the dry-run can never silently skip there, while still skipping locally for dev convenience
+(task #165).
 
 Regenerate a fixture on purpose with ``UPDATE_GOLDEN=1`` (or ``update=True``); a normal run
 never rewrites it. See ``tests/golden/README.md`` for conventions.
@@ -13,24 +20,65 @@ never rewrites it. See ``tests/golden/README.md`` for conventions.
 from __future__ import annotations
 
 import difflib
+import functools
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from shorewallnf.applier import NFT
 from shorewallnf.generator import generate
 from shorewallnf.ir import Ruleset
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
+# A minimal, self-contained ruleset whose ``add table`` forces nft to initialise its kernel
+# ruleset cache — the step that needs CAP_NET_ADMIN. Validating it is a faithful probe of
+# "can ``nft --check`` actually run here", distinguishing root from an unprivileged shell.
+_PROBE_RULESET: dict[str, Any] = {
+    "nftables": [{"add": {"table": {"family": "inet", "name": "snf_nft_probe"}}}]
+}
 
+
+@functools.cache
 def nft_available() -> bool:
-    """True when ``python3-nftables`` is importable (the ``nft -c`` dry-run can run)."""
-    try:
-        import nftables  # type: ignore[import-not-found]  # noqa: F401  # optional system dep
-    except ImportError:
+    """True when ``nft --check`` can actually validate a ruleset here — the binary is present
+    *and* usable (it needs CAP_NET_ADMIN). Cached; the probe is a side-effect-free dry-run."""
+    if shutil.which(NFT) is None:
         return False
-    return True
+    result = subprocess.run(
+        [NFT, "--check", "--json", "--file", "-"],
+        input=json.dumps(_PROBE_RULESET),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def in_ci() -> bool:
+    """True when running under GitHub Actions (``GITHUB_ACTIONS`` set)."""
+    return bool(os.environ.get("GITHUB_ACTIONS"))
+
+
+def require_nft() -> None:
+    """Gate an nft-dependent test on the ``nft --check`` dry-run being able to run.
+
+    In CI a missing/broken nft is a HARD failure — the golden dry-run must never silently skip
+    there (that silent skip was the whole defect, #165). Locally it skips for dev convenience,
+    since ``nft --check`` needs root that a developer's test run usually lacks.
+    """
+    if nft_available():
+        return
+    if in_ci():
+        raise AssertionError(
+            "nft --check must run in CI but the `nft` binary is unavailable or lacks "
+            "CAP_NET_ADMIN — install `nftables` and run the step privileged; refusing to skip"
+        )
+    pytest.skip("nft --check cannot run here (no binary / no CAP_NET_ADMIN); skipped for local dev")
 
 
 def _update_requested() -> bool:
@@ -48,9 +96,10 @@ def assert_golden(
     """Render ``ruleset`` and assert it matches ``<golden_dir>/<name>.json``.
 
     On mismatch raise ``AssertionError`` with a unified diff. With ``update`` (defaulting to
-    the ``UPDATE_GOLDEN`` env var) the fixture is rewritten instead of compared. Where
-    ``python3-nftables`` is installed the rendered output is also dry-run validated (``nft -c``)
-    unless ``check_nft`` is false. Returns the rendered ruleset.
+    the ``UPDATE_GOLDEN`` env var) the fixture is rewritten instead of compared. Where ``nft``
+    can run the rendered output is also dry-run validated (``nft --check``) unless ``check_nft``
+    is false; where it cannot the diff still runs (the non-vacuous CI guarantee comes from the
+    ``require_nft``-gated tests, task #165). Returns the rendered ruleset.
     """
     actual = generate(ruleset)
     path = golden_dir / f"{name}.json"
