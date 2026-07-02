@@ -100,8 +100,8 @@ CODE_REVIEWER = ROOT / "pipeline" / "roles" / "code-reviewer.md"
 
 def test_code_reviewer_casts_verdict_via_gh_pr_review() -> None:
     """The reconcile Action's freshness check (scripts/reconcile/run.py::_freshness) only sees
-    GitHub reviews (`reviews[].submittedAt`), so the reviewer MUST cast its verdict via
-    `gh pr review`, never a plain `gh pr comment` — otherwise `last_review_at` stays null and R4
+    GitHub reviews (`reviews[].commit.oid`), so the reviewer MUST cast its verdict via
+    `gh pr review`, never a plain `gh pr comment` — otherwise `reviewed_oid` stays `None` and R4
     strands the PR in `status:in-review`. Guard the command and its rationale against a silent
     drop by a future edit."""
     text = CODE_REVIEWER.read_text()

@@ -125,47 +125,24 @@ def _linked_task(body: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-_FRESHNESS_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      headRefOid
-      reviews(last: 1) { nodes { commit { oid } submittedAt state } }
-    }
-  }
-}
-"""
-
-
-def _parse_freshness(pull: Any) -> tuple[str, str | None]:
-    """``(head oid, reviewed oid)`` from a GraphQL ``pullRequest`` node. The reviewed oid is the
-    commit the latest review was cast against, or ``None`` when no review pins to a commit
-    (empty ``reviews.nodes``) — treated as not-current so R4 resets."""
-    head_oid = str(pull["headRefOid"])
-    nodes = pull["reviews"]["nodes"] or []
-    reviewed_oid = str(nodes[-1]["commit"]["oid"]) if nodes else None
-    return head_oid, reviewed_oid
-
-
-def _freshness(number: int, repo: str) -> tuple[str, str | None]:
+def _freshness(number: int) -> tuple[str, str | None]:
     """Head oid and the oid the latest review was cast against — the inputs to the freshness
-    check. Fetched per-PR (and only for review-passed PRs) via GraphQL, which — unlike
-    ``gh pr view --json reviews`` — exposes each review's ``commit.oid``.
+    check. Fetched per-PR (and only for review-passed PRs) with a single
+    ``gh pr view <PR> --json reviews,headRefOid``: the CLI's ``reviews`` list exposes each
+    review's ``commit.oid``, so no GraphQL (or owner/name plumbing) is needed.
 
-    The reviewed oid comes from ``reviews(last:1).commit.oid``, populated **only** because the
-    Code Reviewer casts its verdict via ``gh pr review`` (a COMMENTED review carries a
-    ``commit``). If a reviewer used a plain ``gh pr comment`` instead, ``reviews`` would be
-    empty, ``reviewed_oid`` would be ``None``, and R4 would reset every ``review-passed`` task
-    back to ``status:in-review`` — nothing would reach ``ready-to-merge``. This coupling is
-    load-bearing; see pipeline/roles/code-reviewer.md.
+    The reviewed oid is ``reviews[-1].commit.oid`` — populated **only** because the Code Reviewer
+    casts its verdict via ``gh pr review`` (a COMMENTED review carries a ``commit``). If a
+    reviewer used a plain ``gh pr comment`` instead, ``reviews`` would be empty, ``reviewed_oid``
+    would be ``None``, and R4 would reset every ``review-passed`` task back to ``status:in-review``
+    — nothing would reach ``ready-to-merge``. This coupling is load-bearing; see
+    pipeline/roles/code-reviewer.md.
     """
-    owner, name = repo.split("/", 1)
-    info = _gh_json(
-        "api", "graphql",
-        "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}",
-        "-f", f"query={_FRESHNESS_QUERY}",
-    )
-    return _parse_freshness(info["data"]["repository"]["pullRequest"])
+    info = _gh_json("pr", "view", str(number), "--json", "reviews,headRefOid")
+    head_oid = str(info["headRefOid"])
+    reviews = info["reviews"] or []
+    reviewed_oid = str(reviews[-1]["commit"]["oid"]) if reviews else None
+    return head_oid, reviewed_oid
 
 
 def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
@@ -173,12 +150,11 @@ def _fetch_pulls(review_passed: set[int]) -> list[PullRequest]:
         "pr", "list", "--state", "open", "--limit", "100",
         "--json", "number,baseRefName,mergeStateStatus,statusCheckRollup,body",
     )
-    repo = _repo() if review_passed else ""  # only the per-PR GraphQL fetch needs owner/name
     pulls: list[PullRequest] = []
     for item in raw:
         task = _linked_task(str(item["body"] or ""))
         if task in review_passed:  # freshness only affects R3/R4 (review-passed tasks)
-            head_oid, reviewed_oid = _freshness(int(item["number"]), repo)
+            head_oid, reviewed_oid = _freshness(int(item["number"]))
         else:
             head_oid, reviewed_oid = "", None
         pulls.append(
