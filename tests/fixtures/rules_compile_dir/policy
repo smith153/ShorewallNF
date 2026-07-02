@@ -1,0 +1,4 @@
+# Inter-zone default policies (fall-through after the feature rules).
+loc     net     ACCEPT
+net     all     DROP        info
+all     all     REJECT      info
