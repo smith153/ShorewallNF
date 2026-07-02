@@ -1246,3 +1246,21 @@ def test_snat_masquerade_matches_golden() -> None:
         ),
     )
     assert_golden(rs, "snat_postrouting")
+
+
+def test_snat_without_out_interface_fails_fast() -> None:
+    # Fail closed (ADR-0004, ADR-0009 §7): a source-NAT entry with no egress interface has no
+    # `oifname` to match, so it must refuse rather than emit a broken postrouting rule.
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", source_nets="192.0.2.0/24"),))
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "egress interface" in str(exc.value).lower()
+
+
+def test_snat_without_source_nets_fails_fast() -> None:
+    # Fail closed (ADR-0004, ADR-0009 §7): a source-NAT entry with no source network has no
+    # `ip saddr` family guard, so it must refuse rather than masquerade every source.
+    rs = Ruleset(nats=(Nat(action="MASQUERADE", out_interface="eth0"),))
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "source network" in str(exc.value).lower()
