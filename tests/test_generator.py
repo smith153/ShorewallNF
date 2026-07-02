@@ -6,7 +6,7 @@ import pytest
 
 from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate
-from shorewallnf.ir import Family, Policy, Ruleset, Zone, ZoneMember
+from shorewallnf.ir import Family, Policy, Rule, Ruleset, Zone, ZoneMember
 from tests.golden_harness import assert_golden
 
 POLICY_GOLDEN = Path(__file__).parent / "golden" / "policy_default_rules.json"
@@ -221,3 +221,197 @@ def test_policy_default_rules_match_golden() -> None:
         ),
     )
     assert generate(rs) == json.loads(POLICY_GOLDEN.read_text())
+
+
+# ---- per-connection feature rules (ADR-0007) --------------------------------------------
+
+def _port(field: str, proto: str, value: Any) -> dict[str, Any]:
+    left = {"payload": {"protocol": proto, "field": field}}
+    return {"match": {"op": "==", "left": left, "right": value}}
+
+
+def _dport(proto: str, value: Any) -> dict[str, Any]:
+    return _port("dport", proto, value)
+
+
+def _sport(proto: str, value: Any) -> dict[str, Any]:
+    return _port("sport", proto, value)
+
+
+def _l4proto(value: str) -> dict[str, Any]:
+    return {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": value}}
+
+
+def _added_rules(rs: Ruleset, zones: tuple[Zone, ...]) -> list[dict[str, Any]]:
+    """The rules `rs` adds beyond the base skeleton for the same zones."""
+    base = _rules(Ruleset(zones=zones))
+    return _rules(rs)[len(base) :]
+
+
+@pytest.mark.parametrize(
+    "action, verdict", [("ACCEPT", "accept"), ("DROP", "drop"), ("REJECT", "reject")]
+)
+def test_rule_action_maps_to_verdict(action: str, verdict: str) -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(zones=zones, rules=(Rule(action=action, source="loc", dest="net"),))
+    added = _added_rules(rs, zones)
+    assert len(added) == 1
+    assert added[0]["chain"] == "forward"
+    assert added[0]["expr"] == [_iif("eth1"), _oif("eth0"), {verdict: None}]
+
+
+def test_rule_tcp_single_dest_port() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22"),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"] == [_iif("eth1"), _oif("eth0"), _dport("tcp", 22), {"accept": None}]
+
+
+def test_rule_udp_comma_list_dest_port_is_anonymous_set() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="udp", dport="53,853"),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"][2] == _dport("udp", {"set": [53, 853]})
+
+
+def test_rule_dest_port_range() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="1024:2048"),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"][2] == _dport("tcp", {"range": [1024, 2048]})
+
+
+def test_rule_source_port_uses_sport_field() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", sport="1024:65535"),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"][2] == _sport("tcp", {"range": [1024, 65535]})
+
+
+def test_rule_both_ports_dest_before_source() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(
+            Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="80", sport="1024"),
+        ),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"] == [
+        _iif("eth1"),
+        _oif("eth0"),
+        _dport("tcp", 80),
+        _sport("tcp", 1024),
+        {"accept": None},
+    ]
+
+
+def test_rule_proto_only_matches_l4proto() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones, rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="udp"),)
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"] == [_iif("eth1"), _oif("eth0"), _l4proto("udp"), {"accept": None}]
+
+
+def test_rule_to_firewall_lands_in_input_chain() -> None:
+    zones = (_FW, _zone("loc", "eth1"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="fw", proto="tcp", dport="22"),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["chain"] == "input"
+    assert added[0]["expr"] == [_iif("eth1"), _dport("tcp", 22), {"accept": None}]
+
+
+def test_rule_from_firewall_lands_in_output_chain() -> None:
+    zones = (_FW, _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="fw", dest="net", proto="tcp", dport="53"),),
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["chain"] == "output"
+    assert added[0]["expr"] == [_oif("eth0"), _dport("tcp", 53), {"accept": None}]
+
+
+def test_feature_rule_precedes_policy_default_in_same_chain() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22"),),
+        policies=(Policy(source="loc", dest="net", action="DROP"),),
+    )
+    added = _added_rules(rs, zones)
+    # The explicit ACCEPT rule is emitted before the zone-pair DROP default, so it wins.
+    assert added[0]["expr"][-1] == {"accept": None}
+    assert added[1]["expr"][-1] == {"drop": None}
+
+
+def test_rules_preserve_input_order() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(
+            Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22"),
+            Rule(action="DROP", source="loc", dest="net", proto="tcp", dport="23"),
+        ),
+    )
+    added = _added_rules(rs, zones)
+    assert [r["expr"][2] for r in added] == [_dport("tcp", 22), _dport("tcp", 23)]
+
+
+def test_rule_all_source_omits_iifname() -> None:
+    zones = (_FW, _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones, rules=(Rule(action="DROP", source="all", dest="net", proto="tcp", dport="22"),)
+    )
+    added = _added_rules(rs, zones)
+    assert added[0]["expr"] == [_oif("eth0"), _dport("tcp", 22), {"drop": None}]
+
+
+def test_rule_port_without_proto_fails_fast() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", dport="22"),),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "proto" in str(exc.value).lower()
+
+
+def test_rule_zone_without_interfaces_fails_fast() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc"), _zone("net", "eth0")),
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22"),),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "loc" in str(exc.value)
+
+
+def test_rules_match_golden() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        rules=(
+            Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="80,443"),
+            Rule(action="ACCEPT", source="loc", dest="fw", proto="tcp", dport="22"),
+            Rule(action="REJECT", source="net", dest="loc", proto="udp", dport="1024:2048"),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "rule_verdicts_ports")
