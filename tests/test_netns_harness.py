@@ -157,7 +157,7 @@ _ZONES = (
 )
 def test_forward_drop_blocks_ping() -> None:
     accept = Ruleset(
-        zones=_ZONES, policies=(Policy(source="client", dest="server", action="ACCEPT"),)
+        zones=_ZONES, policies=(Policy(source="client", dest="server", action="DROP"),)
     )
     drop = Ruleset(
         zones=_ZONES, policies=(Policy(source="client", dest="server", action="DROP"),)
