@@ -33,7 +33,7 @@ subsystem labels; use GitHub search to filter.
 | `status:in-review` | Has an open PR under review | Implementer / Fixer |
 | `status:changes-requested` | Reviewer found blocking issues; awaiting Fixer | Code Reviewer |
 | `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer |
-| `status:ready-to-merge` | Approved + green; awaiting human merge | Merge-readiness |
+| `status:ready-to-merge` | Approved + green; awaiting human merge | reconcile Action |
 
 ## `meta`
 

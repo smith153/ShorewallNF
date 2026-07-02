@@ -2,10 +2,15 @@
 
 ## Mission
 
+> **Fallback runbook — not an active session role.** These sweeps are run automatically by the
+> `pipeline-reconcile` GitHub Action (`.github/workflows/reconcile.yml`, #106). Run this by hand
+> only when the Action is disabled or broken. Epic-closing moved to the
+> [Epic Author](epic-author.md).
+
 Keep the delivery queue accurate for the next picker: (1) surface the PRs that are genuinely
-ready to merge and label them, (2) un-block tasks whose dependencies have all merged, (3) reclaim
-stale `in-progress` claims back to the queue, and (4) close epics whose child tasks have all
-merged. You never merge — that is the human's final gate.
+ready to merge and label them, (2) un-block tasks whose dependencies have all merged, and (3)
+reclaim stale `in-progress` claims back to the queue. You never merge — that is the human's final
+gate.
 
 ## Inputs
 
@@ -38,13 +43,15 @@ gh issue list --label status:in-progress --state open --limit 100
    gh pr view <PR> --json body -q .body | grep -ioE 'clos(e|es|ed) +#[0-9]+'   # the linked task
    gh issue view <TASK> --json labels -q '.labels[].name'   # expect status:review-passed
    ```
-3. **Review is current:** the commit the review was cast against is still the PR head — no
-   commits landed since. If they differ the `review-passed` label is **stale**: reset the task
-   to `status:in-review` (do **not** promote) so it gets re-reviewed, then move on.
+3. **Review is current:** the latest review was cast at or after the current head commit — no
+   commits landed since. `gh` exposes **no per-review commit**, so compare timestamps: the
+   latest review's `submittedAt` vs. the head commit's `committedDate`. If the head is newer the
+   `review-passed` label is **stale**: reset the task to `status:in-review` (do **not** promote)
+   so it gets re-reviewed, then move on.
    ```bash
-   gh pr view <PR> --json headRefOid -q .headRefOid
-   gh pr view <PR> --json reviews -q '.reviews[-1].commit.oid'   # commit the latest review saw
-   # if they differ:
+   gh pr view <PR> --json commits -q '.commits[-1].committedDate'   # head commit time
+   gh pr view <PR> --json reviews -q '.reviews[-1].submittedAt'     # latest review time
+   # if the head commit is newer than the latest review:
    gh issue edit <TASK> --remove-label status:review-passed --add-label status:in-review
    ```
 4. **Up to date with base:** `gh pr view <PR> --json mergeStateStatus` is not `BEHIND`/`DIRTY`
@@ -72,17 +79,6 @@ gh issue list --label status:in-progress --state open --json number,updatedAt,as
   -q '.[] | "#\(.number)\t\(.updatedAt)\t\(.assignees|map(.login)|join(","))"'
 # for each: skip if a PR already closes it; else if updatedAt is older than N days, reclaim it.
 gh pr list --state open --search "<TASK> in:body"   # any open PR for this task? -> skip
-```
-
-**Epic-completion sweep** — for each open `type:epic`, close it once every child task has merged.
-Nothing else closes a completed epic, so it lingers open and skews the backlog (e.g. #5 had to be
-closed by hand). Children link back with `Parent epic: #<EPIC>` in their body:
-
-```bash
-gh issue list --label type:epic --state open --json number -q '.[].number'
-# for each EPIC, list its child tasks and check they all closed:
-gh issue list --state all --search "\"Parent epic: #<EPIC>\" in:body" --json number,state
-# close iff >=1 child AND every child is CLOSED (see Outputs).
 ```
 
 ## Outputs
@@ -114,13 +110,6 @@ gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/task/<TASK>   # relea
 gh issue comment <TASK> --body "Reclaimed: stale claim — no PR and no activity for N days. Back to the queue."
 ```
 
-When an epic has **≥1 child task and every child is closed**, close the epic (bookkeeping — the
-delivered work already cleared the merge human-gate, so this is not a new gate):
-
-```bash
-gh issue close <EPIC> --comment "All child tasks merged (#<list>). Epic complete."
-```
-
 ## Guardrails
 
 - **Never merge** and never bypass branch protection — a human clicks merge.
@@ -129,12 +118,8 @@ gh issue close <EPIC> --comment "All child tasks merged (#<list>). Epic complete
 - Only reclaim a claim that has **no open PR and** is stale — never yank an actively-worked task;
   reclaim is non-destructive (it just returns the task to the Implementer queue). Reclaiming also
   **deletes the `task/<N>` claim ref** so the task can be re-claimed.
-- Only close an epic that has **≥1 child task and every child closed**. **Never** close a
-  childless/undecomposed epic (e.g. an approved-but-not-yet-decomposed epic like #74–#78) — that
-  would discard real work. The close is reversible: if the epic turns out under-decomposed, reopen
-  it and file a follow-up task rather than holding it open speculatively.
 
 ## Stop conditions
 
-Stop when no open PR can be marked ready, no blocked task can be un-blocked, no stale claim can be
-reclaimed, and no completed epic can be closed.
+Stop when no open PR can be marked ready, no blocked task can be un-blocked, and no stale claim
+can be reclaimed.

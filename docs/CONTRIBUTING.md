@@ -12,7 +12,7 @@ Work flows through two phases (full detail in [`../pipeline/workflow.md`](../pip
    Decomposer** breaks each into tasks; a **Task Groomer** validates tasks to
    `implementation-ready`.
 2. **Delivery** — an **Implementer** picks up a ready task, an open PR gets a **Code Review**,
-   a **Fixer** addresses feedback, and **Merge-readiness** flags green + approved PRs for a
+   a **Fixer** addresses feedback, and the **reconcile Action** flags green + approved PRs for a
    human to merge.
 
 Labels track type and status — see [`../pipeline/labels.md`](../pipeline/labels.md).

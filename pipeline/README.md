@@ -32,7 +32,12 @@ is designed so many people's agents can work concurrently without colliding.
 | Implementer | [`roles/implementer.md`](roles/implementer.md) | `type:task`/`type:pipeline`/`type:bug`, `status:implementation-ready`, unassigned, unblocked |
 | Code Reviewer | [`roles/code-reviewer.md`](roles/code-reviewer.md) | open PRs whose linked task is `status:in-review` |
 | Fixer | [`roles/fixer.md`](roles/fixer.md) | open PRs whose linked task is `status:changes-requested` |
-| Merge-readiness | [`roles/merge-readiness.md`](roles/merge-readiness.md) | `gh pr list --state open` |
+
+The delivery-side **mechanical sweeps** — promoting approved + green PRs to `ready-to-merge`,
+un-blocking dependents, reaping stale claims, resetting stale reviews, and nudging behind PRs to
+rebase — are automated by the `pipeline-reconcile` GitHub Action, not a volunteer role.
+[`roles/merge-readiness.md`](roles/merge-readiness.md) is kept as a **manual fallback** for when
+that Action is disabled, not an active session role.
 
 ## Why provider-agnostic?
 

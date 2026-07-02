@@ -21,7 +21,11 @@ account can't cast `--approve`/`--request-changes` on its own PR, so review stat
 4. **Implementer** — implements one task via TDD and opens a PR.
 5. **Code Reviewer** — reviews open PRs (cannot authorize merge).
 6. **Fixer** — addresses requested changes on a PR.
-7. **Merge-readiness** — flags approved + green PRs for a human to merge.
+
+The delivery-side **mechanical sweeps** (promote → `ready-to-merge`, un-block, reap stale claims,
+reset stale reviews, nudge behind PRs to rebase) are run by the `pipeline-reconcile` GitHub Action
+(see [Automation](#automation)), not a volunteer role; the former Merge-readiness role is kept as a
+manual fallback ([`roles/merge-readiness.md`](roles/merge-readiness.md)).
 
 ## Lifecycle
 
@@ -30,7 +34,7 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
      ─► Groomer ──(≤2 rounds)──► implementation-ready
      ─► Implementer (assignee + in-progress) ─► PR (Closes #N) ─► in-review
      ─► Code Reviewer ─► review-passed  (issues → changes-requested ⇄ Fixer → in-review)
-     ─► Merge-readiness (review-passed + green CI) ─► ready-to-merge ─►(human merge)─► closed
+     ─► reconcile Action (review-passed + green CI) ─► ready-to-merge ─►(human merge)─► closed
 ```
 
 ## Status transitions
@@ -40,12 +44,12 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 | `status:proposed` | Awaiting refinement/approval | Epic Author (epics), Decomposer (tasks) | Human approves epic / Groomer accepts task |
 | `status:needs-refinement` | Groomer requested changes | Task Groomer | Decomposer/author revises → back to `proposed` |
 | `status:implementation-ready` | Groomed & startable (epics: approved for decomposition) | Human (epics), Task Groomer (tasks) | Implementer claims it |
-| `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened; or reclaimed to `implementation-ready` if the claim goes stale (Merge-readiness) |
-| `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → Merge-readiness un-block sweep clears it |
+| `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened; or reclaimed to `implementation-ready` if the claim goes stale (reconcile Action) |
+| `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → the reconcile Action un-block sweep clears it |
 | `status:in-review` | Has an open PR awaiting (re-)review | Implementer / Fixer | Reviewer sets `review-passed` or `changes-requested` |
 | `status:changes-requested` | Reviewer found blocking issues | Code Reviewer | Fixer pushes a fix → back to `in-review` |
-| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | Merge-readiness sets `ready-to-merge` (CI green, up to date, review still current); new commits → back to `in-review` |
-| `status:ready-to-merge` | Approved + green; awaiting human merge | Merge-readiness | Human merges |
+| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | the reconcile Action sets `ready-to-merge` (CI green, up to date, review still current); new commits → back to `in-review` |
+| `status:ready-to-merge` | Approved + green; awaiting human merge | reconcile Action | Human merges |
 
 ## Status label invariants
 
@@ -57,9 +61,24 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
   −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; commits after
   review = −`review-passed` +`in-review`; merge-ready = −`review-passed` +`ready-to-merge`. Merging
   closes the issue, so its final `status:*` is moot.
-- **Un-blocking.** When a blocker's PR merges (its issue closes), the Merge-readiness un-block
+- **Un-blocking.** When a blocker's PR merges (its issue closes), the reconcile Action un-block
   sweep removes `status:blocked` from each dependent once **all** its `blocked-by` blockers are
   closed, returning it to the queue.
+
+## Automation
+
+The judgment-free transitions — un-blocking dependents, reaping stale claims, promoting
+`review-passed`→`ready-to-merge`, resetting stale reviews, nudging behind PRs to rebase, and
+flagging one-status-invariant violations — are run by the `pipeline-reconcile` GitHub Action
+(`.github/workflows/reconcile.yml`, #106). It **replaces the delivery-side sweeps of the former
+Merge-readiness role**, which is kept only as a manual fallback
+([`roles/merge-readiness.md`](roles/merge-readiness.md)). It is an idempotent, **level-triggered**
+reconcile: a cron pass guarantees liveness and the whole board is re-derived each run, so a missed
+event self-heals. It ships **dry-run** (mutates only when the `RECONCILE_APPLY` repo variable is
+`true`); enable it when you retire the manual role so the sweeps never pause. Its comments carry
+the `snf-agent:reconcile` signature like any other role. Epic-closing is a considered judgment
+(acceptance criteria, not just "all tasks closed"), so it stays with the Epic Author, not the
+Action.
 
 ## Collision avoidance
 
@@ -75,7 +94,7 @@ atomic on the **shared remote** — a local worktree or branch can't lock across
   and self-assign — that's human-visible status, **not** the lock (assignee can't be a lock under
   one shared account). Agents still only consider tasks that are `implementation-ready` and not
   `status:blocked`.
-- A claim is released by **deleting the ref**: the Implementer on abort, or Merge-readiness when it
+- A claim is released by **deleting the ref**: the Implementer on abort, or the reconcile Action when it
   reclaims a stale claim. (Enable *automatically delete head branches* so a merged `task/<N>` also
   frees the ref and can't cause a false `422` on a later re-claim.)
 - The **Epic Decomposer** claims an epic the same way — atomically creating `refs/heads/epic/<N>`
@@ -83,7 +102,7 @@ atomic on the **shared remote** — a local worktree or branch can't lock across
   done, so two decomposers can't duplicate the same epic.
 - If two in-flight PRs would conflict (overlapping changes), the later one may be **stacked** —
   opened against the other's branch instead of `master` — rather than serialized or hand-merged.
-  Merge-readiness holds a stacked PR until its base merges and GitHub retargets it to `master`.
+  The reconcile Action holds a stacked PR (skips promoting it) until its base merges and GitHub retargets it to `master`.
 - One task per PR; one PR per branch. **All code work happens in a per-task git worktree —
   never in the primary checkout or on `master`** (that isolation is what lets agents run
   concurrently).
