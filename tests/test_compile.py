@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from shorewallnf import cli
-from shorewallnf.ir import Family, Policy, Rule, ZoneMember
+from shorewallnf.ir import Family, Nat, Policy, Rule, ZoneMember
 from shorewallnf.parser import parse_config
 from shorewallnf.preprocessor import SourceLine, to_source_lines
 from tests.golden_harness import assert_golden
@@ -148,3 +148,22 @@ def test_rules_compile_places_feature_rules_before_policy_defaults() -> None:
     # ...and the wildcard `all all REJECT info` is the final forward rule (fail-closed order).
     forward = [r for r in rules if r["chain"] == "forward"]
     assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]
+
+
+def test_parse_config_parses_dnat_rules_into_nats() -> None:
+    ruleset = parse_config(
+        _streams(
+            zones="fw firewall\nnet ipv4\nloc ipv4\n",
+            interfaces="net eth1 detect\nloc eth0 detect\n",
+            rules="ACCEPT net fw tcp 22\nDNAT net loc:10.0.0.5:8022 tcp 22\n",
+        )
+    )
+    assert ruleset.rules == (
+        Rule(action="ACCEPT", source="net", dest="fw", proto="tcp", dport="22"),
+    )
+    assert ruleset.nats == (
+        Nat(
+            action="DNAT", source="net", dest="loc", to="10.0.0.5:8022",
+            proto="tcp", dport="22", family=Family.IPV4,
+        ),
+    )

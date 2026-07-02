@@ -105,20 +105,22 @@ class Rule:
 
 @dataclass(frozen=True, slots=True)
 class Nat:
-    """A NAT entry (``DNAT``/``SNAT``/``MASQUERADE``).
+    """A NAT entry (``DNAT``/``SNAT``/``MASQUERADE``), e.g. a ``DNAT`` from the ``rules`` file.
 
-    IPv4 by construction (ADR-0002): IPv6 does no NAT — its equivalent is a direct
-    ``ACCEPT``. Hence ``family`` is a fixed :data:`Family.IPV4`, not a field.
+    ``source`` is the source zone; ``dest`` the target zone and ``to`` its ``host[:port]`` (the
+    DNAT target, port an optional remap); ``proto``/``dport`` the matched protocol and external
+    destination port(s). ``family`` is IPv4 for true NAT (ADR-0002: IPv6 does no NAT) — the
+    default — but a ``DNAT`` whose target is an IPv6 literal is scoped :data:`Family.IPV6` and
+    compiles to a plain ``ACCEPT`` to the global address instead of NAT.
     """
 
     action: str
     source: str
     dest: str
     to: str | None = None
-
-    @property
-    def family(self) -> Family:
-        return Family.IPV4
+    proto: str | None = None
+    dport: str | None = None
+    family: Family = Family.IPV4
 
 
 @dataclass(frozen=True, slots=True)
