@@ -91,3 +91,24 @@ def test_status_decomposing_label_retired() -> None:
         if "status:decomposing" in src.read_text()
     ]
     assert not lingering, "retired status:decomposing still referenced in:\n" + "\n".join(lingering)
+
+
+# --- reconcile freshness depends on the reviewer casting a GitHub review (#109) -----
+
+CODE_REVIEWER = ROOT / "pipeline" / "roles" / "code-reviewer.md"
+
+
+def test_code_reviewer_casts_verdict_via_gh_pr_review() -> None:
+    """The reconcile Action's freshness check (scripts/reconcile/run.py::_freshness) only sees
+    GitHub reviews (`reviews[].submittedAt`), so the reviewer MUST cast its verdict via
+    `gh pr review`, never a plain `gh pr comment` — otherwise `last_review_at` stays null and R4
+    strands the PR in `status:in-review`. Guard the command and its rationale against a silent
+    drop by a future edit."""
+    text = CODE_REVIEWER.read_text()
+    assert "gh pr review" in text, "code-reviewer.md must cast the verdict via `gh pr review`"
+    assert "gh pr comment" in text, (
+        "code-reviewer.md must warn against a plain `gh pr comment` for the verdict"
+    )
+    assert "freshness" in text, (
+        "code-reviewer.md must state the reconcile-freshness reason (only GitHub reviews are seen)"
+    )
