@@ -85,6 +85,10 @@ rebase if needed. Prefer this over hand-resolving conflicts or forcing the work 
 - **One task per PR**; one PR per branch. Never commit to `master`. Target `master` — unless the
   change would conflict with another open PR, in which case base it on that PR's branch (Outputs).
 - Tests are required (TDD) — no implementation without a failing test first.
+- **Never remove `status:blocked`.** Swap only the primary `status:*` label (e.g.
+  `implementation-ready` → `in-progress`, `in-progress` → `in-review`) — a stacked task can
+  legitimately carry `status:blocked` alongside its primary status. Only the reconcile un-block
+  sweep (R1) clears `status:blocked`, once every `blocked-by` blocker has closed.
 - Respect the Global Constraints in the plan/CLAUDE.md (Python ≥3.11, type hints, minimal deps).
 - Follow the **code philosophy** ([CLAUDE.md](../../CLAUDE.md)): YAGNI (no speculative code),
   fail-fast with a clear error over defensive `if`s, and brief comments/PR summaries.

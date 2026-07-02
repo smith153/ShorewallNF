@@ -54,6 +54,10 @@ gh issue edit <TASK> --remove-label status:changes-requested --add-label status:
 ## Guardrails
 
 - Stay **within the PR's scope** — do not add unrelated changes or new features.
+- **Never remove `status:blocked`.** Swap only the primary `status:*` label
+  (`changes-requested` → `in-review`) — a stacked task can legitimately carry `status:blocked`
+  alongside its primary status. Only the reconcile un-block sweep (R1) clears `status:blocked`,
+  once every `blocked-by` blocker has closed.
 - Keep the change on-architecture and tested.
 - If a review comment is wrong or unclear, respond in-thread rather than silently ignoring
   it; escalate with `needs-human` on the issue if it's a genuine judgment call.

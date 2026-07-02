@@ -218,6 +218,23 @@ def test_no_promote_when_stacked_on_non_master() -> None:
     assert _run(board) == []
 
 
+def test_no_promote_when_task_still_blocked() -> None:
+    # Defense-in-depth (#146): a still-blocked task must NOT be marked merge-ready even when its
+    # PR is green, current, on master and mergeable. Only R1 (un-block) clears status:blocked.
+    board = _board(
+        [_issue(7, {"status:review-passed", "status:blocked"}, blocked_by=(8,))],
+        [_pr(20, task=7)],
+        blocker_state={8: BlockerState.OPEN},
+    )
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(_run(board), 7)
+
+
+def test_promote_same_task_once_unblocked() -> None:
+    # The identical task WITHOUT status:blocked IS promoted — proving the block is what holds it.
+    board = _board([_issue(7, {"status:review-passed"})], [_pr(20, task=7)])
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") in _kinds(_run(board), 7)
+
+
 # --- R4: review-freshness (reviewed commit oid vs. head oid, not timestamps) ---------------
 
 

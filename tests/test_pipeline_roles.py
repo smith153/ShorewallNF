@@ -125,3 +125,30 @@ def test_code_reviewer_rechecks_status_before_casting_verdict() -> None:
         "code-reviewer.md must tell the reviewer to re-read the task status before casting"
     )
     assert "#119" in text, "code-reviewer.md must cite the double-cast race (#119) it prevents"
+
+
+# --- roles never strip status:blocked; only reconcile R1 clears it (#146) ----------
+
+BLOCKED_INVARIANT_ROLES = [
+    ROOT / "pipeline" / "roles" / "code-reviewer.md",
+    ROOT / "pipeline" / "roles" / "implementer.md",
+    ROOT / "pipeline" / "roles" / "fixer.md",
+]
+
+
+def test_roles_preserve_status_blocked() -> None:
+    """A role swaps only the primary `status:*` label and never removes `status:blocked` — that
+    dependency gate is cleared solely by the reconcile un-block sweep (R1). Stripping it erased
+    the dependency signal in the #125/#142 incident (#146). Guard the invariant in every role
+    that swaps status against a silent drop by a future edit."""
+    missing = []
+    for role in BLOCKED_INVARIANT_ROLES:
+        text = role.read_text()
+        lowered = text.lower()
+        if "status:blocked" not in text:
+            missing.append(f"{role.name}: must reference status:blocked")
+        if "never remove" not in lowered and "never strip" not in lowered:
+            missing.append(f"{role.name}: must state it never removes/strips status:blocked")
+    assert not missing, (
+        "role docs missing the blocked-preservation invariant:\n" + "\n".join(missing)
+    )

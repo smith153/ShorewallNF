@@ -284,8 +284,13 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
                 ),
             ]
             continue
-        # Review is current. A stacked PR (base ≠ master) is held until it retargets; a red
-        # PR isn't ready — skip both silently.
+        # Review is current. A still-blocked task never advances past review, even when its PR
+        # is green/current/on-master/mergeable: R1 (un-block) is the sole remover of
+        # status:blocked, so hold here until it clears (#146).
+        if BLOCKED in task.labels:
+            continue
+        # A stacked PR (base ≠ master) is held until it retargets; a red PR isn't ready — skip
+        # both silently.
         if pr.base_ref != "master" or not pr.ci_green:
             continue
         if pr.mergeability is Mergeability.NEEDS_REBASE:
