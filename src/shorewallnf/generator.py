@@ -310,14 +310,25 @@ _DSTNAT_PRIO = -100
 _SRCNAT_PRIO = 100
 
 
+def _needs_nat_table(nat: Nat) -> bool:
+    """True for a NAT entry compiled into the ``inet nat`` table.
+
+    Every NAT kind uses it **except** an IPv6 DNAT, which does no NAT (ADR-0002) and compiles to a
+    direct forward ``ACCEPT`` (#144) — no nat table / prerouting.
+    """
+    return nat.family is not Family.IPV6
+
+
 def _nat_base(ruleset: Ruleset) -> list[_Command]:
     """The nat skeleton — ``inet nat`` table + prerouting/postrouting chains — if NAT is used.
 
-    Unlike the always-present ADR-0005 filter skeleton, the nat plumbing is emitted only when the
-    ruleset carries NAT entries (ADR-0008). ``postrouting`` is part of the fixed pair even for a
-    DNAT-only config, ready for the SNAT/MASQUERADE sibling.
+    Unlike the always-present ADR-0005 filter skeleton, the nat plumbing is emitted only when a
+    NAT entry actually needs the nat table (ADR-0008); a config whose only NAT entries are IPv6
+    DNATs (direct-accept, no NAT) carries no nat table, as does one with no NAT at all.
+    ``postrouting`` is part of the fixed pair even for a DNAT-only config, ready for the
+    SNAT/MASQUERADE sibling.
     """
-    if not ruleset.nats:
+    if not any(_needs_nat_table(nat) for nat in ruleset.nats):
         return []
     return [
         _nat_table(),
@@ -336,13 +347,24 @@ def _nat_rules(ruleset: Ruleset) -> list[_Command]:
 def _dnat(
     nat: Nat, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
 ) -> list[_Command]:
-    """The prerouting dnat rule + forward accept for one v4 ``DNAT`` (ADR-0008)."""
+    """Compile one ``DNAT`` by family: v4 NAT (ADR-0008) or v6 direct-accept (ADR-0002, #144)."""
     ctx = f"DNAT {nat.source!r} {nat.dest!r}"
-    if nat.action != "DNAT" or nat.family is not Family.IPV4:
+    if nat.action != "DNAT":
         raise ConfigError(
-            f"{ctx}: unsupported NAT {nat.action} (family {nat.family.value}) — "
-            "only IPv4 DNAT is compiled here (IPv6 direct-accept #144, SNAT/MASQUERADE #76)"
+            f"{ctx}: unsupported NAT {nat.action} — only DNAT is compiled here "
+            "(SNAT/MASQUERADE #76)"
         )
+    if nat.family is Family.IPV4:
+        return _dnat_v4(nat, interfaces, firewalls, ctx)
+    if nat.family is Family.IPV6:
+        return [_dnat_v6_accept(nat, interfaces, firewalls, ctx)]
+    raise ConfigError(f"{ctx}: a DNAT must scope to IPv4 or IPv6, not {nat.family.value}")
+
+
+def _dnat_v4(
+    nat: Nat, interfaces: dict[str, tuple[str, ...]], firewalls: set[str], ctx: str
+) -> list[_Command]:
+    """The nat prerouting dnat rule + filter forward accept for one v4 ``DNAT`` (ADR-0008)."""
     host, _, remap = (nat.to or "").partition(":")
     if not host:
         raise ConfigError(f"{ctx}: DNAT target has no host")
@@ -351,6 +373,26 @@ def _dnat(
         _prerouting_rule(nat, host, remap_port, interfaces, firewalls, ctx),
         _forward_accept(nat, host, remap_port, interfaces, firewalls, ctx),
     ]
+
+
+def _dnat_v6_accept(
+    nat: Nat, interfaces: dict[str, tuple[str, ...]], firewalls: set[str], ctx: str
+) -> _Command:
+    """IPv6 service exposure: a plain forward ``ACCEPT`` to the v6 address, no NAT (ADR-0002).
+
+    IPv6 does no NAT, so there is no prerouting rewrite and no nat table (#144): the connection
+    already carries its final destination, and we simply admit it through the fail-closed forward
+    chain. Reuses the ADR-0006/0007 zone matching; the ``ip6 daddr`` match is the family guard, and
+    proto/dest-port match as for a normal v6 rule (ADR-0007). Emitted before the policy defaults
+    (as the v4 forward accept is) so the fall-through cannot shadow it.
+    """
+    if not nat.to:
+        raise ConfigError(f"{ctx}: DNAT target has no host")
+    chain, expr = _chain_and_zone_matches(nat.source, nat.dest, interfaces, firewalls, ctx)
+    expr.append(_addr_match("daddr", nat.to))
+    expr += _nat_l4_matches(nat.proto, nat.dport, ctx)
+    expr.append(_accept())
+    return _rule(chain, expr)
 
 
 def _prerouting_rule(

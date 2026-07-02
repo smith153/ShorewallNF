@@ -990,17 +990,6 @@ def test_dnat_zone_without_interfaces_fails_fast() -> None:
     assert "net" in str(exc.value)
 
 
-def test_ipv6_dnat_not_yet_supported_fails_fast() -> None:
-    # IPv6 exposes a service by a plain ACCEPT (no NAT) — task #144, out of scope here.
-    rs = Ruleset(
-        zones=_NL,
-        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
-                  dport="443", family=Family.IPV6),),
-    )
-    with pytest.raises(ConfigError):
-        generate(rs)
-
-
 def test_dnat_matches_golden() -> None:
     rs = Ruleset(
         zones=_NL,
@@ -1013,3 +1002,135 @@ def test_dnat_matches_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "dnat_prerouting_forward")
+
+
+# ---- IPv6 DNAT: direct forward accept, no NAT (task #144, ADR-0002) ----------------------
+#
+# IPv6 does no NAT (ADR-0002): a DNAT whose target is a global v6 address compiles to a plain
+# forward ACCEPT to that address — no nat table / prerouting. net(eth0) → loc(eth1), as above.
+
+
+def test_ipv6_dnat_emits_no_nat_table_or_prerouting() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                  dport="443", family=Family.IPV6),),
+    )
+    assert _nat_cmds("table", "nat", rs) == []
+    assert _nat_cmds("chain", "nat", rs) == []
+    assert _nat_cmds("rule", "nat", rs) == []
+
+
+def test_ipv6_dnat_emits_direct_forward_accept_to_v6_address() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                  dport="443", family=Family.IPV6),),
+    )
+    forward = [r for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    assert len(forward) == 1
+    assert forward[0]["expr"] == [
+        _iif("eth0"),
+        _oif("eth1"),
+        _daddr("ip6", "2001:db8::5"),
+        _dport("tcp", 443),
+        {"accept": None},
+    ]
+
+
+def test_ipv6_dnat_comma_list_dest_port_is_anonymous_set() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                  dport="80,443", family=Family.IPV6),),
+    )
+    forward = [r for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    assert _dport("tcp", {"set": [80, 443]}) in forward[0]["expr"]
+
+
+def test_ipv6_dnat_proto_only_matches_l4proto() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                  family=Family.IPV6),),
+    )
+    forward = [r for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    assert forward[0]["expr"] == [
+        _iif("eth0"),
+        _oif("eth1"),
+        _daddr("ip6", "2001:db8::5"),
+        _l4proto("tcp"),
+        {"accept": None},
+    ]
+
+
+def test_ipv6_dnat_forward_accept_precedes_policy_default() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                  dport="443", family=Family.IPV6),),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    # the v6 accept is reached before the `all all DROP` fall-through.
+    assert forward[-2]["expr"][-1] == {"accept": None}
+    assert forward[-1]["expr"] == [{"drop": None}]
+
+
+def test_ipv6_dnat_all_source_omits_iifname() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="all", dest="loc", to="2001:db8::5", proto="tcp",
+                  dport="443", family=Family.IPV6),),
+    )
+    forward = [r for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    assert forward[0]["expr"] == [
+        _oif("eth1"),
+        _daddr("ip6", "2001:db8::5"),
+        _dport("tcp", 443),
+        {"accept": None},
+    ]
+
+
+def test_ipv6_dnat_port_without_proto_fails_fast() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", dport="443",
+                  family=Family.IPV6),),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "proto" in str(exc.value).lower()
+
+
+def test_dual_stack_dnat_yields_v4_nat_and_v6_direct_accept() -> None:
+    # One service-exposure intent, dual-stack: v4 DNAT (nat prerouting + forward) AND v6
+    # direct-accept (no NAT), in the one inet ruleset.
+    rs = Ruleset(
+        zones=_NL,
+        nats=(
+            Nat(action="DNAT", source="net", dest="loc", to="192.0.2.10", proto="tcp",
+                dport="443", family=Family.IPV4),
+            Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                dport="443", family=Family.IPV6),
+        ),
+    )
+    # v4 goes through the nat table (a prerouting dnat); v6 does not.
+    prerouting = [r for r in _nat_cmds("rule", "nat", rs) if r["chain"] == "prerouting"]
+    assert len(prerouting) == 1
+    # both forward accepts coexist in the one inet filter forward chain — ip4 and ip6 daddr.
+    forward_exprs = [r["expr"] for r in _added_rules(rs, _NL) if r["chain"] == "forward"]
+    assert any(_daddr("ip", "192.0.2.10") in expr for expr in forward_exprs)
+    assert any(_daddr("ip6", "2001:db8::5") in expr for expr in forward_exprs)
+
+
+def test_ipv6_dnat_matches_golden() -> None:
+    rs = Ruleset(
+        zones=_NL,
+        nats=(
+            Nat(action="DNAT", source="net", dest="loc", to="2001:db8::5", proto="tcp",
+                dport="80,443", family=Family.IPV6),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "dnat_ipv6_direct_accept")
