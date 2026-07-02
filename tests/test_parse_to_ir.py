@@ -66,13 +66,13 @@ def _reject_family_mix(rule: Rule, record: Record) -> None:
 
 def test_representative_rules_parse_into_typed_ir() -> None:
     rules = build_records(
-        _records("ACCEPT net fw tcp", "ACCEPT 10.0.0.0/8 fw", "ACCEPT 2001:db8::/32 fw"),
+        _records("ACCEPT net fw tcp", "ACCEPT 203.0.113.0/24 fw", "ACCEPT 2001:db8::/32 fw"),
         _build_rule,
         _reject_family_mix,
     )
     assert [(r.action, r.source, r.dest, r.proto) for r in rules] == [
         ("ACCEPT", "net", "fw", "tcp"),
-        ("ACCEPT", "10.0.0.0/8", "fw", None),
+        ("ACCEPT", "203.0.113.0/24", "fw", None),
         ("ACCEPT", "2001:db8::/32", "fw", None),
     ]
 
@@ -80,7 +80,7 @@ def test_representative_rules_parse_into_typed_ir() -> None:
 def test_validation_hook_fails_fast_on_family_mix_with_location() -> None:
     with pytest.raises(ConfigError) as exc:
         build_records(
-            _records("ok net fw", "ACCEPT 10.0.0.0/8 2001:db8::/32"),
+            _records("ok net fw", "ACCEPT 203.0.113.0/24 2001:db8::/32"),
             _build_rule,
             _reject_family_mix,
         )

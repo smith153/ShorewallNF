@@ -155,7 +155,7 @@ def test_parse_config_parses_dnat_rules_into_nats() -> None:
         _streams(
             zones="fw firewall\nnet ipv4\nloc ipv4\n",
             interfaces="net eth1 detect\nloc eth0 detect\n",
-            rules="ACCEPT net fw tcp 22\nDNAT net loc:10.0.0.5:8022 tcp 22\n",
+            rules="ACCEPT net fw tcp 22\nDNAT net loc:192.0.2.5:8022 tcp 22\n",
         )
     )
     assert ruleset.rules == (
@@ -163,7 +163,7 @@ def test_parse_config_parses_dnat_rules_into_nats() -> None:
     )
     assert ruleset.nats == (
         Nat(
-            action="DNAT", source="net", dest="loc", to="10.0.0.5:8022",
+            action="DNAT", source="net", dest="loc", to="192.0.2.5:8022",
             proto="tcp", dport="22", family=Family.IPV4,
         ),
     )

@@ -28,8 +28,8 @@ def test_interface_membership_is_dual_by_default() -> None:
 
 
 def test_host_membership_carries_a_single_family() -> None:
-    member = ZoneMember(interface="eth0", host="10.0.0.0/8", family=Family.IPV4)
-    assert member.host == "10.0.0.0/8"
+    member = ZoneMember(interface="eth0", host="203.0.113.0/24", family=Family.IPV4)
+    assert member.host == "203.0.113.0/24"
     assert member.family is Family.IPV4
 
 

@@ -93,13 +93,13 @@ def test_bare_zones_infer_family_both() -> None:
 
 
 def test_ipv4_host_pins_ipv4_and_is_stored_verbatim() -> None:
-    rule = _one("ACCEPT loc:10.36.36.166 fw tcp 22")
-    assert rule.source == "loc:10.36.36.166"
+    rule = _one("ACCEPT loc:198.51.100.166 fw tcp 22")
+    assert rule.source == "loc:198.51.100.166"
     assert rule.family is Family.IPV4
 
 
 def test_firewall_host_narrowing() -> None:
-    assert _one("ACCEPT net fw:10.36.36.1 tcp 22").family is Family.IPV4
+    assert _one("ACCEPT net fw:198.51.100.1 tcp 22").family is Family.IPV4
 
 
 def test_ipv6_host_pins_ipv6_split_on_first_colon() -> None:
@@ -109,7 +109,7 @@ def test_ipv6_host_pins_ipv6_split_on_first_colon() -> None:
 
 
 def test_ipv4_cidr_host() -> None:
-    assert _one("ACCEPT loc:10.36.36.0/24 net").family is Family.IPV4
+    assert _one("ACCEPT loc:198.51.100.0/24 net").family is Family.IPV4
 
 
 def test_icmp_proto_pins_ipv4() -> None:
@@ -122,12 +122,12 @@ def test_ipv6_icmp_proto_pins_ipv6() -> None:
 
 def test_mixed_family_literals_fail_fast() -> None:
     with pytest.raises(ConfigError, match="famil"):
-        _one("ACCEPT loc:10.0.0.1 net:2001:db8::1")
+        _one("ACCEPT loc:192.0.2.1 net:2001:db8::1")
 
 
 def test_host_family_conflicts_with_proto_family() -> None:
     with pytest.raises(ConfigError, match="famil"):
-        _one("ACCEPT loc:10.0.0.1 net ipv6-icmp")
+        _one("ACCEPT loc:192.0.2.1 net ipv6-icmp")
 
 
 # --- ?SECTION attachment ------------------------------------------------------
@@ -169,7 +169,7 @@ def test_unknown_zone_fails_fast() -> None:
 def test_unsupported_trailing_columns_fail_fast() -> None:
     # A 7th column (ORIGINAL DEST / RATE LIMIT / USER / MARK ...) is not supported yet.
     with pytest.raises(ConfigError, match="unsupported"):
-        _one("ACCEPT loc net tcp 22 - 10.0.0.9")
+        _one("ACCEPT loc net tcp 22 - 192.0.2.9")
 
 
 def test_unsupported_host_form_fails_fast() -> None:
@@ -191,23 +191,23 @@ def _nats(*texts: str) -> tuple[Nat, ...]:
 
 
 def test_dnat_action_builds_a_nat_entry_not_a_rule() -> None:
-    parsed = parse_rules(_records("DNAT net loc:10.0.0.5 tcp 22"), _ZONES)
+    parsed = parse_rules(_records("DNAT net loc:192.0.2.5 tcp 22"), _ZONES)
     assert parsed.rules == ()
     assert parsed.nats == (
         Nat(
-            action="DNAT", source="net", dest="loc", to="10.0.0.5",
+            action="DNAT", source="net", dest="loc", to="192.0.2.5",
             proto="tcp", dport="22", family=Family.IPV4,
         ),
     )
 
 
 def test_dnat_target_port_remap_is_captured_in_to() -> None:
-    (nat,) = _nats("DNAT net loc:10.0.0.5:8022 tcp 22")
-    assert (nat.to, nat.dport) == ("10.0.0.5:8022", "22")
+    (nat,) = _nats("DNAT net loc:192.0.2.5:8022 tcp 22")
+    assert (nat.to, nat.dport) == ("192.0.2.5:8022", "22")
 
 
 def test_dnat_port_range() -> None:
-    assert _nats("DNAT net loc:10.0.0.5 tcp 49160:49300")[0].dport == "49160:49300"
+    assert _nats("DNAT net loc:192.0.2.5 tcp 49160:49300")[0].dport == "49160:49300"
 
 
 def test_dnat_v6_target_infers_ipv6() -> None:
@@ -217,12 +217,12 @@ def test_dnat_v6_target_infers_ipv6() -> None:
 
 
 def test_dnat_proto_is_lowercased() -> None:
-    assert _nats("DNAT net loc:10.0.0.5 TCP 80")[0].proto == "tcp"
+    assert _nats("DNAT net loc:192.0.2.5 TCP 80")[0].proto == "tcp"
 
 
 def test_filter_rules_and_dnat_are_separated() -> None:
     parsed = parse_rules(
-        _records("ACCEPT loc net tcp 22", "DNAT net loc:10.0.0.5 tcp 80"), _ZONES
+        _records("ACCEPT loc net tcp 22", "DNAT net loc:192.0.2.5 tcp 80"), _ZONES
     )
     assert len(parsed.rules) == 1 and parsed.rules[0].action == "ACCEPT"
     assert len(parsed.nats) == 1 and parsed.nats[0].action == "DNAT"
@@ -235,4 +235,4 @@ def test_dnat_without_target_host_fails_fast() -> None:
 
 def test_dnat_unknown_target_zone_fails_fast() -> None:
     with pytest.raises(ConfigError, match="zone"):
-        _nats("DNAT net bogus:10.0.0.5 tcp 22")
+        _nats("DNAT net bogus:192.0.2.5 tcp 22")
