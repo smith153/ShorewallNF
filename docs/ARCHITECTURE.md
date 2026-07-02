@@ -84,9 +84,14 @@ in [ADR-0002](adr/0002-unified-inet-dual-stack.md#resolution-2026-07-01-family-s
 1. **Golden-file snapshots + `nft -c`** — the fast, hermetic base run on every PR (no root):
    assert the generated ruleset matches a checked-in expected file, and that `nft -c` accepts
    it. This is the TDD workhorse.
-2. **Network-namespace integration** — a smaller, privileged CI tier: load the ruleset into an
-   `ip netns` sandbox and assert packet-path behavior (policy DROP, DNAT, SNAT, dual-stack
-   ICMP). This is what proves "functionally equivalent."
+2. **Network-namespace integration** — a smaller, privileged tier that runs as a live CI job
+   (`netns-integration` in [`ci.yml`](../.github/workflows/ci.yml)): it loads the ruleset into an
+   `ip netns` sandbox and drives real packets to assert packet-path behavior (policy DROP, DNAT,
+   SNAT, dual-stack ICMP). This is what proves "functionally equivalent." It needs root
+   (CAP_NET_ADMIN) plus the `nft` (nftables) and `ip` (iproute2) binaries, so it is selected by
+   the `netns` marker and skips cleanly where those are absent; run it locally with
+   `sudo -E python -m pytest -m netns` (see
+   [CONTRIBUTING.md](CONTRIBUTING.md#running-the-behavioral-netns-tier)).
 3. **Shorewall-corpus comparison (spike)** — a non-blocking research track: compare our output
    against the original Shorewall test corpus via nft↔iptables translation. May only ever
    cover a subset.
