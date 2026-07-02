@@ -34,11 +34,39 @@ one role for a session:
   python -m pip install -e ".[dev]"
   python -m ruff check . && python -m mypy && python -m pytest -v
   ```
+  That is the fast, hermetic tier (golden-file snapshots + `nft -c`, no root); it runs on every
+  PR as the `lint-type-test` CI job. A second, privileged **netns** tier also runs in CI — see
+  [Running the behavioral netns tier](#running-the-behavioral-netns-tier).
 - **Standards:** Python ≥ 3.11, full type hints, `mypy --strict`, `ruff`, TDD. Minimal runtime
   deps (an ADR is required to add one). See [`../CLAUDE.md`](../CLAUDE.md).
 - **Workflow:** **all code work happens in its own git worktree — never on the local `master`
   checkout** (many agents share the repo, so each task is isolated). Branch → PR, one task per
   PR, referenced with `Closes #NN`. Conventional Commit messages.
+
+### Running the behavioral netns tier
+
+CI runs a second, privileged tier alongside the hermetic run above — the `netns-integration`
+job in [`../.github/workflows/ci.yml`](../.github/workflows/ci.yml) — which loads a generated
+ruleset into a throwaway Linux network namespace and drives real packets to prove packet-path
+behavior (policy DROP, DNAT/SNAT, dual-stack ICMP). These tests carry the `netns` marker and
+skip cleanly when their requirements are absent, so the hermetic run stays green without
+privileges.
+
+To reproduce it locally you need:
+
+- **root / `CAP_NET_ADMIN`** — to create network namespaces and load nftables rules;
+- the **`nft`** binary (nftables) and the **`ip`** binary (iproute2); and
+- a **Linux** host (network namespaces are Linux-only).
+
+Then run just the behavioral tier:
+
+```bash
+sudo -E python -m pytest -m netns
+```
+
+`-E` preserves your environment so the editable install and the `nft`/`ip` binaries stay on
+`PATH`; if `sudo`'s `secure_path` strips them, prefix the command with `env "PATH=$PATH"` (as
+the CI job does).
 
 ## Human gates
 
