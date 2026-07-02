@@ -49,6 +49,7 @@ def _pr(number: int, task: int, **kw: object) -> PullRequest:
         head_oid=head_oid,
         # default: the review pins to the current head (current → promotable)
         reviewed_oid=kw.pop("reviewed_oid", head_oid),  # type: ignore[arg-type]
+        rebase_nudged=bool(kw.pop("rebase_nudged", False)),
     )
 
 
@@ -193,7 +194,7 @@ def test_no_promote_when_ci_red() -> None:
 def test_behind_base_nudges_rebase_not_promote() -> None:
     board = _board(
         [_issue(7, {"status:review-passed"})],
-        [_pr(20, task=7, mergeability=Mergeability.NEEDS_REBASE)],
+        [_pr(20, task=7, mergeability=Mergeability.BEHIND)],
     )
     acts = _run(board)
     assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(acts, 7)
@@ -273,6 +274,133 @@ def test_promote_and_refresh_are_mutually_exclusive() -> None:
     promoted = (ActionKind.ADD_LABEL, "status:ready-to-merge") in labels
     reset = (ActionKind.ADD_LABEL, "status:in-review") in labels
     assert promoted and not reset
+
+
+# --- R3c: persistent conflict escalates review-passed -> changes-requested (Fixer owns it) --
+
+
+def test_dirty_and_already_nudged_escalates_to_changes_requested() -> None:
+    # DIRTY (true conflict) AND already rebase-nudged for this head -> hand to the Fixer.
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, mergeability=Mergeability.CONFLICTING, rebase_nudged=True)],
+    )
+    acts = _run(board)
+    k = _kinds(acts, 7)
+    assert (ActionKind.REMOVE_LABEL, "status:review-passed") in k
+    assert (ActionKind.ADD_LABEL, "status:changes-requested") in k
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in k
+    escalations = [a for a in acts if a.reason == "conflict" and a.kind is ActionKind.COMMENT]
+    assert len(escalations) == 1
+    assert escalations[0].on_pr and escalations[0].number == 20
+    assert AGENT_SIGN in escalations[0].value
+    # escalation replaces the nudge — it does not also nudge on this pass
+    assert not any(a.reason == "rebase" for a in acts)
+
+
+def test_dirty_but_not_yet_nudged_only_nudges_no_escalation() -> None:
+    # First dirty observation for this head: keep R3b behavior (nudge only), do NOT escalate.
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, mergeability=Mergeability.CONFLICTING, rebase_nudged=False)],
+    )
+    acts = _run(board)
+    assert (ActionKind.ADD_LABEL, "status:changes-requested") not in _kinds(acts, 7)
+    nudges = [a for a in acts if a.reason == "rebase"]
+    assert len(nudges) == 1 and nudges[0].on_pr and REBASE_TAG in nudges[0].value
+
+
+def test_behind_not_dirty_never_escalates_even_when_nudged() -> None:
+    # A merely-BEHIND (non-conflicting) PR is never escalated, even after being nudged.
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, mergeability=Mergeability.BEHIND, rebase_nudged=True)],
+    )
+    acts = _run(board)
+    assert (ActionKind.ADD_LABEL, "status:changes-requested") not in _kinds(acts, 7)
+    assert [a for a in acts if a.reason == "rebase"]  # still just nudges
+
+
+def test_conflict_escalation_is_idempotent_once_changes_requested() -> None:
+    # After escalation the task is changes-requested; _promote_and_refresh no longer touches it.
+    board = _board(
+        [_issue(7, {"status:changes-requested"})],
+        [_pr(20, task=7, mergeability=Mergeability.CONFLICTING, rebase_nudged=True)],
+    )
+    assert _run(board) == []
+
+
+def test_freshness_reset_takes_precedence_over_conflict() -> None:
+    # R4 (head moved past review) runs first — R3c only handles the head-unchanged case.
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [
+            _pr(
+                20,
+                task=7,
+                head_oid="new",
+                reviewed_oid="old",
+                mergeability=Mergeability.CONFLICTING,
+                rebase_nudged=True,
+            )
+        ],
+    )
+    k = _kinds(_run(board), 7)
+    assert (ActionKind.ADD_LABEL, "status:in-review") in k
+    assert (ActionKind.ADD_LABEL, "status:changes-requested") not in k
+
+
+def test_conflict_not_escalated_when_task_blocked() -> None:
+    # A blocked task is held before mergeability; status:blocked is left intact (#146).
+    board = _board(
+        [_issue(7, {"status:review-passed", "status:blocked"}, blocked_by=(8,))],
+        [_pr(20, task=7, mergeability=Mergeability.CONFLICTING, rebase_nudged=True)],
+        blocker_state={8: BlockerState.OPEN},
+    )
+    k = _kinds(_run(board), 7)
+    assert (ActionKind.ADD_LABEL, "status:changes-requested") not in k
+    assert (ActionKind.REMOVE_LABEL, "status:blocked") not in k
+
+
+def test_conflict_not_escalated_when_stacked() -> None:
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [
+            _pr(
+                20,
+                task=7,
+                base_ref="task/6",
+                mergeability=Mergeability.CONFLICTING,
+                rebase_nudged=True,
+            )
+        ],
+    )
+    assert _run(board) == []
+
+
+def test_conflict_not_escalated_when_ci_red() -> None:
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [
+            _pr(
+                20,
+                task=7,
+                ci_green=False,
+                mergeability=Mergeability.CONFLICTING,
+                rebase_nudged=True,
+            )
+        ],
+    )
+    assert _run(board) == []
+
+
+def test_pending_not_escalated_even_when_nudged() -> None:
+    # PENDING mergeability is indeterminate — never escalate (and never a false nudge).
+    board = _board(
+        [_issue(7, {"status:review-passed"})],
+        [_pr(20, task=7, mergeability=Mergeability.PENDING, rebase_nudged=True)],
+    )
+    assert _run(board) == []
 
 
 # --- R5: one-status invariant flag ---------------------------------------------------------

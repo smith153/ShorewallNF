@@ -15,6 +15,8 @@ from reconcile.run import (
     _freshness,
     _linked_task,
     _mergeability,
+    _nudged_for_head,
+    _rebase_marker,
 )
 
 # --- _linked_task: PR body -> governing task (all of GitHub's closing keywords) ------------
@@ -69,7 +71,7 @@ def test_ci_green_false_cases() -> None:
     assert _ci_green([{"status": "PENDING"}]) is False
 
 
-# --- _mergeability: only READY promotes; only BEHIND/DIRTY nudges; UNKNOWN/DRAFT wait -------
+# --- _mergeability: only READY promotes; BEHIND/CONFLICTING nudge; UNKNOWN/DRAFT wait -------
 
 
 def test_mergeability_ready_when_known_good() -> None:
@@ -78,15 +80,43 @@ def test_mergeability_ready_when_known_good() -> None:
         assert _mergeability(state) is Mergeability.READY, state
 
 
-def test_mergeability_needs_rebase_only_for_behind_or_dirty() -> None:
-    assert _mergeability("BEHIND") is Mergeability.NEEDS_REBASE
-    assert _mergeability("DIRTY") is Mergeability.NEEDS_REBASE
+def test_mergeability_distinguishes_behind_from_conflicting() -> None:
+    # BEHIND (cleanly behind) and DIRTY (true conflict) map to distinct states so R3c can
+    # escalate only a persistent conflict, while a plain BEHIND is only ever nudged.
+    assert _mergeability("BEHIND") is Mergeability.BEHIND
+    assert _mergeability("DIRTY") is Mergeability.CONFLICTING
 
 
 def test_mergeability_pending_for_unknown_or_draft() -> None:
     # not-yet-computed or draft must NOT read as "behind" — no false rebase nudge, re-check next.
     assert _mergeability("UNKNOWN") is Mergeability.PENDING
     assert _mergeability("DRAFT") is Mergeability.PENDING
+
+
+# --- _nudged_for_head: per-head rebase-marker detection (the R3c persistence signal) --------
+
+
+def test_nudged_for_head_true_when_marker_for_current_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_gh_json(*args: str) -> object:
+        body = f"please rebase {_rebase_marker('abc123')}"
+        return {"headRefOid": "abc123", "comments": [{"body": body}]}
+
+    monkeypatch.setattr("reconcile.run._gh_json", fake_gh_json)
+    assert _nudged_for_head(20) == (True, "abc123")
+
+
+def test_nudged_for_head_false_when_marker_for_other_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a marker keyed on a *previous* head must not count as nudged for the current head.
+    def fake_gh_json(*args: str) -> object:
+        body = f"please rebase {_rebase_marker('OLD-oid')}"
+        return {"headRefOid": "abc123", "comments": [{"body": body}]}
+
+    monkeypatch.setattr("reconcile.run._gh_json", fake_gh_json)
+    assert _nudged_for_head(20) == (False, "abc123")
 
 
 # --- _freshness: `gh pr view --json reviews,headRefOid` -> (head oid, reviewed oid) ---------

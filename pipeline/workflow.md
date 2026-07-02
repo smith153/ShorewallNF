@@ -23,9 +23,10 @@ account can't cast `--approve`/`--request-changes` on its own PR, so review stat
 6. **Fixer** — addresses requested changes on a PR.
 
 The delivery-side **mechanical sweeps** (promote → `ready-to-merge`, un-block, reap stale claims,
-reset stale reviews, nudge behind PRs to rebase) are run by the `pipeline-reconcile` GitHub Action
-(see [Automation](#automation)), not a volunteer role; the former Merge-readiness role is kept as a
-manual fallback ([`roles/merge-readiness.md`](roles/merge-readiness.md)).
+reset stale reviews, nudge behind PRs to rebase, hand a persistently-conflicting PR back to the
+Fixer) are run by the `pipeline-reconcile` GitHub Action (see [Automation](#automation)), not a
+volunteer role; the former Merge-readiness role is kept as a manual fallback
+([`roles/merge-readiness.md`](roles/merge-readiness.md)).
 
 ## Lifecycle
 
@@ -47,8 +48,8 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 | `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) | PR opened; or reclaimed to `implementation-ready` if the claim goes stale (reconcile Action) |
 | `status:blocked` | Has unmet dependencies (`blocked-by`) | Decomposer/Groomer | All blockers closed → the reconcile Action un-block sweep clears it |
 | `status:in-review` | Has an open PR awaiting (re-)review | Implementer / Fixer | Reviewer sets `review-passed` or `changes-requested` |
-| `status:changes-requested` | Reviewer found blocking issues | Code Reviewer | Fixer pushes a fix → back to `in-review` |
-| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | the reconcile Action sets `ready-to-merge` (CI green, up to date, review still current); new commits → back to `in-review` |
+| `status:changes-requested` | Reviewer found blocking issues, or a `review-passed` PR persistently conflicts with `master` | Code Reviewer / reconcile Action (R3c) | Fixer pushes a fix (or rebases/resolves conflicts) → back to `in-review` |
+| `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer | the reconcile Action sets `ready-to-merge` (CI green, up to date, review still current); new commits → back to `in-review`; a persistent conflict → `changes-requested` (R3c) |
 | `status:ready-to-merge` | Approved + green; awaiting human merge | reconcile Action | Human merges |
 
 ## Status label invariants
@@ -68,8 +69,9 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 ## Automation
 
 The judgment-free transitions — un-blocking dependents, reaping stale claims, promoting
-`review-passed`→`ready-to-merge`, resetting stale reviews, nudging behind PRs to rebase, and
-flagging one-status-invariant violations — are run by the `pipeline-reconcile` GitHub Action
+`review-passed`→`ready-to-merge`, resetting stale reviews, nudging behind PRs to rebase, resetting a
+persistently-conflicting `review-passed` PR to `changes-requested` for the Fixer, and flagging
+one-status-invariant violations — are run by the `pipeline-reconcile` GitHub Action
 (`.github/workflows/reconcile.yml`, #106). It **replaces the delivery-side sweeps of the former
 Merge-readiness role**, which is kept only as a manual fallback
 ([`roles/merge-readiness.md`](roles/merge-readiness.md)). It is an idempotent, **level-triggered**

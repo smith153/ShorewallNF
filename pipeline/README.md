@@ -34,8 +34,9 @@ is designed so many people's agents can work concurrently without colliding.
 | Fixer | [`roles/fixer.md`](roles/fixer.md) | open PRs whose linked task is `status:changes-requested` |
 
 The delivery-side **mechanical sweeps** — promoting approved + green PRs to `ready-to-merge`,
-un-blocking dependents, reaping stale claims, resetting stale reviews, and nudging behind PRs to
-rebase — are automated by the `pipeline-reconcile` GitHub Action, not a volunteer role.
+un-blocking dependents, reaping stale claims, resetting stale reviews, nudging behind PRs to
+rebase, and handing a persistently-conflicting PR back to the Fixer — are automated by the
+`pipeline-reconcile` GitHub Action, not a volunteer role.
 [`roles/merge-readiness.md`](roles/merge-readiness.md) is kept as a **manual fallback** for when
 that Action is disabled, not an active session role.
 

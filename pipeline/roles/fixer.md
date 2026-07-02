@@ -23,6 +23,13 @@ gh issue view <TASK> --json labels -q '.labels[].name'
 
 Work a PR only when its linked task is `status:changes-requested`.
 
+Most `changes-requested` tasks carry a Code Reviewer's requested changes. Some are instead an
+**auto-reset by the reconcile Action (R3c)**: a `review-passed` PR that went `DIRTY` (conflicts
+with `master`) and stayed dirty a pass after being rebase-nudged is reset here so this queue owns
+it. For those the requested change is simply **"rebase onto `master` and resolve the conflicts"** —
+no new test is needed for a pure rebase; still run the full gate and push, then swap back to
+`in-review` as usual. The queue itself is unchanged (still `changes-requested`).
+
 ## Procedure
 
 > **Comment protocol.** Heed human input first: any comment without an `<!-- snf-agent:<role> -->`

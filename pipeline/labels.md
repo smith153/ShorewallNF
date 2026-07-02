@@ -31,7 +31,7 @@ subsystem labels; use GitHub search to filter.
 | `status:in-progress` | Claimed by an implementer | Implementer (with self-assign) |
 | `status:blocked` | Has unmet dependencies | Decomposer / Groomer |
 | `status:in-review` | Has an open PR under review | Implementer / Fixer |
-| `status:changes-requested` | Reviewer found blocking issues; awaiting Fixer | Code Reviewer |
+| `status:changes-requested` | Reviewer found blocking issues, or a `review-passed` PR persistently conflicts with `master`; awaiting Fixer | Code Reviewer / reconcile Action |
 | `status:review-passed` | AI review clean; awaiting human merge | Code Reviewer |
 | `status:ready-to-merge` | Approved + green; awaiting human merge | reconcile Action |
 
