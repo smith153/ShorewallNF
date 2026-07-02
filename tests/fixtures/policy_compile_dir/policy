@@ -1,0 +1,9 @@
+# Inter-zone default policies exercised by the compiler.
+loc     net     ACCEPT
+loc     fw      ACCEPT
+fw      net     ACCEPT
+fw      dmz     ACCEPT
+dmz     net     ACCEPT
+dmz     loc     REJECT      info
+net     all     DROP        info
+all     all     REJECT      info

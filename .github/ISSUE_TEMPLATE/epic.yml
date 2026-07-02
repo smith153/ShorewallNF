@@ -27,4 +27,4 @@ body:
     id: refs
     attributes:
       label: References
-      description: Relevant my_shorewall/ files, docs, ADRs, prior issues.
+      description: Relevant docs, ADRs, and prior issues. Do not paste private reference-config contents.

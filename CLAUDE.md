@@ -64,6 +64,19 @@ core ([ADR-0003](docs/adr/0003-design-approach.md)), and error handling
   it's unrelated to what you're working on. File it and move on; don't fix out-of-scope things
   inline.
 
+## Handling `my_shorewall/` (private reference config)
+
+`my_shorewall/` is a gitignored, private reference — used **only** to decide *which* features
+to build. It is never part of the public record:
+
+- **Never** reproduce its addresses, hostnames, interface names, or config lines verbatim in
+  any public artifact — issues, PR/commit text, comments, code, docs, or test fixtures.
+- **Never** describe it as anyone's personal or production firewall. Refer to it neutrally as
+  "the reference config."
+- Describe capabilities abstractly ("port-forward a TCP service to an internal host"), and use
+  RFC 5737 / RFC 3849 documentation ranges in tests and examples: `192.0.2.0/24`,
+  `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`.
+
 ## Where project state lives
 
 - [`STATUS.md`](STATUS.md) — current snapshot + the seed backlog (read this first).

@@ -16,12 +16,13 @@ family consistency). The concrete builders live in the feature epics.
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import NamedTuple, TypeVar
 
 from .errors import ConfigError
-from .ir import Family, Interface, Policy, Ruleset, Zone, ZoneMember
+from .ir import Family, Interface, Nat, Policy, Rule, Ruleset, Zone, ZoneMember
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -208,6 +209,12 @@ def _interfaces_options_field(directive: Record) -> int:
 
 
 _POLICY_ACTIONS = frozenset({"ACCEPT", "DROP", "REJECT"})
+# nft `log level` keywords (plus `audit`). Shorewall's syslog spellings (`warning`/`error`/
+# `panic`), numeric levels, and NFLOG/ULOG targets are not these; reject them (#117, fail-fast)
+# rather than emit a ruleset nft rejects. Translating them is deferred (YAGNI).
+_LOG_LEVELS = frozenset(
+    {"emerg", "alert", "crit", "err", "warn", "notice", "info", "debug", "audit"}
+)
 
 
 def parse_policies(records: Iterable[Record], zones: tuple[Zone, ...]) -> tuple[Policy, ...]:
@@ -246,22 +253,200 @@ def _build_policy(record: Record) -> Policy:
             line=record.line,
         )
     log_level = record.fields[3] if len(record.fields) > 3 else None
+    if log_level is not None and log_level not in _LOG_LEVELS:
+        raise ConfigError(
+            f"unsupported log level {log_level!r} (expected one of {sorted(_LOG_LEVELS)})",
+            path=record.path,
+            line=record.line,
+        )
     return Policy(source=source, dest=dest, action=action, log_level=log_level)
+
+
+_RULE_ACTIONS = frozenset({"ACCEPT", "DROP", "REJECT"})
+_NAT_ACTIONS = frozenset({"DNAT"})  # SNAT/MASQUERADE are epic #76
+_UNSET = "-"  # Shorewall's "column not specified" placeholder
+
+
+class ParsedRules(NamedTuple):
+    """The two IR streams a ``rules`` file yields: filter rules and ``DNAT`` nat entries."""
+
+    rules: tuple[Rule, ...]
+    nats: tuple[Nat, ...]
+
+
+def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRules:
+    """Parse ``rules``-file records into filter :class:`~shorewallnf.ir.Rule`s and ``DNAT``
+    :class:`~shorewallnf.ir.Nat`s (epic #74 / #75).
+
+    A filter row is ``<ACTION> <SOURCE> <DEST> [PROTO] [DEST PORT] [SOURCE PORT]``; a ``DNAT`` row
+    is ``DNAT <SOURCE> <ZONE:HOST[:PORT]> [PROTO] [DEST PORT]``. ``-`` marks an unspecified column.
+    SOURCE/DEST are a bare ``zone`` or ``zone:host`` (host an IPv4/IPv6 address or CIDR literal).
+    ``?SECTION`` rows set the section attached to the filter rules that follow (``None`` before the
+    first marker; sections don't apply to ``DNAT``). Family is inferred per ADR-0002 — a host
+    literal or ``icmp``/``ipv6-icmp`` pins it; mixed families, an unknown action/zone, an
+    unsupported host form, or trailing (unsupported) columns fail fast with a located
+    :class:`ConfigError`.
+    """
+    zone_names = {zone.name for zone in zones}
+    rules: list[Rule] = []
+    nats: list[Nat] = []
+    section: str | None = None
+    for record in records:
+        if record.fields[0].startswith("?"):
+            if record.fields[0].lower() == "?section":
+                section = require_field(record, 1, "section name")
+            continue  # other directives configure parsing; they are not rule rows
+        if record.fields[0] in _NAT_ACTIONS:
+            nats.append(_build_nat(record, zone_names))
+        else:
+            rules.append(_build_rule(record, section, zone_names))
+    return ParsedRules(tuple(rules), tuple(nats))
+
+
+def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Rule:
+    action = require_field(record, 0, "rule action")
+    if action not in _RULE_ACTIONS:
+        raise ConfigError(
+            f"unknown rule action {action!r} (only ACCEPT/DROP/REJECT supported)",
+            path=record.path,
+            line=record.line,
+        )
+    source = require_field(record, 1, "source")
+    dest = require_field(record, 2, "dest")
+    if len(record.fields) > 6:
+        # ORIGINAL DEST / RATE LIMIT / USER-GROUP / MARK columns aren't supported yet — reject
+        # rather than silently drop them (fail-fast, ADR-0004).
+        raise ConfigError(
+            f"unsupported trailing rule columns {record.fields[6:]!r} "
+            "(only action, source, dest, proto, dest-port, source-port are supported)",
+            path=record.path,
+            line=record.line,
+        )
+    proto = _optional(record, 3)
+    if proto is not None:
+        proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase (#134)
+    _check_zones(source, dest, zone_names, record)
+    return Rule(
+        action=action,
+        source=source,
+        dest=dest,
+        proto=proto,
+        dport=_optional(record, 4),
+        sport=_optional(record, 5),
+        section=section,
+        family=_infer_family(source, dest, proto, record),
+    )
+
+
+def _build_nat(record: Record, zone_names: set[str]) -> Nat:
+    """Build a ``DNAT`` :class:`~shorewallnf.ir.Nat` from a ``DNAT <src> <zone:host[:port]>`` row.
+
+    The target column is ``zone:host[:port]`` — ``zone`` the internal zone, ``host[:port]`` the DNAT
+    target (an optional ``:port`` remaps the destination port), stored verbatim in ``to`` for the
+    generator to split. Family is inferred structurally from the target literal (two or more colons
+    ⇒ an IPv6 literal ⇒ :data:`Family.IPV6`, the direct-accept case #144), per ADR-0002.
+    """
+    action = require_field(record, 0, "rule action")
+    source = require_field(record, 1, "source")
+    target = require_field(record, 2, "DNAT target")
+    if len(record.fields) > 5:
+        raise ConfigError(
+            f"unsupported trailing DNAT columns {record.fields[5:]!r} "
+            "(only action, source, target, proto, dest-port are supported)",
+            path=record.path,
+            line=record.line,
+        )
+    zone, sep, host = target.partition(":")
+    if not sep or not host:
+        raise ConfigError(
+            f"DNAT target {target!r} needs a host (zone:host[:port])",
+            path=record.path,
+            line=record.line,
+        )
+    for name in (source, zone):
+        if name != "all" and name not in zone_names:
+            raise ConfigError(f"unknown zone {name!r}", path=record.path, line=record.line)
+    proto = _optional(record, 3)
+    if proto is not None:
+        proto = proto.lower()
+    family = Family.IPV6 if host.count(":") >= 2 else Family.IPV4
+    return Nat(
+        action=action, source=source, dest=zone, to=host, proto=proto,
+        dport=_optional(record, 4), family=family,
+    )
+
+
+def _optional(record: Record, index: int) -> str | None:
+    """Field ``index`` if present and not the ``-`` placeholder, else ``None``."""
+    if index >= len(record.fields):
+        return None
+    value = record.fields[index]
+    return None if value == _UNSET else value
+
+
+def _check_zones(source: str, dest: str, zone_names: set[str], record: Record) -> None:
+    for token in (source, dest):
+        zone = token.split(":", 1)[0]
+        if zone != "all" and zone not in zone_names:
+            raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
+
+
+def _infer_family(source: str, dest: str, proto: str | None, record: Record) -> Family:
+    """Infer a rule's family (ADR-0002); mixed IPv4/IPv6 hints fail fast."""
+    families: set[Family] = set()
+    for token in (source, dest):
+        _, sep, host = token.partition(":")
+        if sep:
+            families.add(_family_of_literal(host, record))
+    if proto is not None:
+        if proto.lower() == "icmp":
+            families.add(Family.IPV4)
+        elif proto.lower() == "ipv6-icmp":
+            families.add(Family.IPV6)
+    if not families:
+        return Family.BOTH
+    if len(families) > 1:
+        raise ConfigError(
+            f"rule mixes address families {sorted(f.value for f in families)}",
+            path=record.path,
+            line=record.line,
+        )
+    return families.pop()
+
+
+def _family_of_literal(host: str, record: Record) -> Family:
+    try:
+        network = ipaddress.ip_network(host, strict=False)
+    except ValueError:
+        raise ConfigError(
+            f"unsupported host {host!r} (expected an IPv4/IPv6 address or CIDR)",
+            path=record.path,
+            line=record.line,
+        ) from None
+    return Family.IPV4 if network.version == 4 else Family.IPV6
 
 
 def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
     """Assemble a :class:`~shorewallnf.ir.Ruleset` from the preprocessed per-file streams.
 
     Dispatches each known config file to its per-file parser and combines the results. Zones
-    are parsed first so ``interfaces`` can validate references and attach membership (the
-    ``interfaces`` result carries the zones with their members populated). Files absent from
-    ``streams`` are simply skipped.
+    are parsed first so ``interfaces`` can validate references and attach membership, then
+    ``policy`` is validated against the populated zones (the ``interfaces`` result carries the
+    zones with their members populated). Files absent from ``streams`` are simply skipped.
     """
     zones: tuple[Zone, ...] = ()
     interfaces: tuple[Interface, ...] = ()
+    policies: tuple[Policy, ...] = ()
+    rules: tuple[Rule, ...] = ()
     if "zones" in streams:
         zones = parse_zones(parse(streams["zones"]))
     if "interfaces" in streams:
         parsed = parse_interfaces(parse(streams["interfaces"]), zones)
         zones, interfaces = parsed.zones, parsed.interfaces
-    return Ruleset(zones=zones, interfaces=interfaces)
+    if "policy" in streams:
+        policies = parse_policies(parse(streams["policy"]), zones)
+    nats: tuple[Nat, ...] = ()
+    if "rules" in streams:
+        parsed_rules = parse_rules(parse(streams["rules"]), zones)
+        rules, nats = parsed_rules.rules, parsed_rules.nats
+    return Ruleset(zones=zones, interfaces=interfaces, policies=policies, rules=rules, nats=nats)

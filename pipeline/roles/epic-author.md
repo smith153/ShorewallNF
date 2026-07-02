@@ -15,7 +15,9 @@ Read, in order:
 - [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) and [`docs/adr/`](../../docs/adr/) — where the design is going.
 - Existing open epics (see Queue) — so you do not duplicate, and their child-task state, to
   spot completed epics to close.
-- `my_shorewall/` (if present) — the concrete features the MVP must eventually reproduce.
+- `my_shorewall/` (if present) — the reference config; the concrete features the MVP must
+  eventually reproduce. It is **private**: use it only to decide *what* to build; never quote
+  its addresses, hostnames, or config lines in epics or comments (see [CLAUDE.md](../../CLAUDE.md)).
 
 ## Queue
 
@@ -33,7 +35,7 @@ Use this to see what epics already exist (any status) and avoid duplicates.
 > with the same trailer. See [Comment attribution](../workflow.md#comment-attribution).
 
 1. Build a mental list of capabilities the project still needs, from `STATUS.md`'s backlog
-   and any gaps you see in `my_shorewall/` vs. what epics already exist.
+   and any gaps you see in the reference config vs. what epics already exist.
 2. Discard anything already covered by an open epic.
 3. For each genuinely new capability, draft an epic with: a one-paragraph **Summary**,
    **In/Out of scope**, **Acceptance criteria** (observable outcomes), and **References**.
@@ -82,6 +84,8 @@ gh issue close <EPIC> --comment "All child tasks merged (#<list>) and acceptance
 ## Guardrails
 
 - One capability per epic; correct altitude (≈ "SNAT support").
+- The reference config is private: describe features abstractly; never put its addresses,
+  hostnames, or verbatim config lines in epics or comments (see [CLAUDE.md](../../CLAUDE.md)).
 - Never remove `status:proposed` or add `status:implementation-ready` — that is the human
   approval gate.
 - Cap proposals at **5 per run** to keep the human review queue manageable.

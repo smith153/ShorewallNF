@@ -1,0 +1,11 @@
+# Per-connection feature rules exercising the rules engine:
+# verdicts, tcp/udp ports (single/list), zone:host narrowing, family-correct ICMP, ?SECTION.
+#ACTION         SOURCE           DEST    PROTO       DPORT
+ACCEPT          net              fw      tcp         22
+ACCEPT          loc              net     tcp         80,443
+ACCEPT          loc:10.0.0.0/24  net     udp         53
+ACCEPT          net              fw      icmp        echo-request
+ACCEPT          net              fw      ipv6-icmp   echo-request
+
+?SECTION INVALID
+DROP            net              all
