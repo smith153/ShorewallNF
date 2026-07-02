@@ -384,7 +384,7 @@ body:
     validations: { required: true }
   - type: textarea
     id: refs
-    attributes: { label: References, description: Relevant my_shorewall/ files, docs, ADRs. }
+    attributes: { label: References, description: Relevant docs, ADRs, and prior issues. Do not paste private reference-config contents. }
 ```
 
 - [ ] **Step 2: Write `.github/ISSUE_TEMPLATE/task.yml`**
@@ -501,7 +501,7 @@ git commit -m "docs: pipeline overview + lifecycle/workflow"
 
 - [ ] **Step 1: Write `pipeline/roles/epic-author.md`** with, concretely:
   - **Mission:** survey project state and propose the next epics (altitude ≈ "SNAT support"), not too abstract, not too granular.
-  - **Inputs:** `STATUS.md`, `docs/ARCHITECTURE.md`, `docs/adr/`, existing open epics, and (if present) `my_shorewall/`.
+  - **Inputs:** `STATUS.md`, `docs/ARCHITECTURE.md`, `docs/adr/`, existing open epics, and (if present) the reference config.
   - **Queue:** `gh issue list --label type:epic --state open` (to avoid duplicates).
   - **Procedure:** identify gaps vs the seed backlog in `STATUS.md`; for each proposed epic, draft summary/scope/acceptance/refs.
   - **Outputs:** create issues via the epic form → they land as `type:epic status:proposed`; do NOT decompose (human approves first). Example: `gh issue create --label type:epic,status:proposed --title "..." --body "..."`.

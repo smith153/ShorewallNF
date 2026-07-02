@@ -1,4 +1,4 @@
-# Inter-zone default policies (mirrors my_shorewall intent).
+# Inter-zone default policies exercised by the compiler.
 loc     net     ACCEPT
 loc     fw      ACCEPT
 fw      net     ACCEPT
