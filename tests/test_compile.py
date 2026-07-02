@@ -200,3 +200,57 @@ def test_parse_config_combines_dnat_and_snat_nats() -> None:
         )
     )
     assert [nat.action for nat in ruleset.nats] == ["DNAT", "MASQUERADE"]
+
+
+# --- NAT (DNAT) end-to-end (#145) --------------------------------------------
+#
+# A committed dual-stack fixture mirroring the reference config's DNAT intent with RFC 5737 /
+# RFC 3849 documentation addresses only: a port-forward, a port range, a `:port` remap, and an
+# IPv6 global-address ACCEPT (no NAT, ADR-0002). Kept in its own region so it doesn't interleave
+# with the tests above.
+
+NAT_FIXTURE = Path(__file__).parent / "fixtures" / "nat_compile_dir"
+
+
+def test_nat_compile_end_to_end_matches_golden() -> None:
+    # Full path: preprocess (I/O) -> parse_config (nats wired in) -> generate. The golden harness
+    # also dry-run validates the output with nft -c where python3-nftables is available.
+    assert_golden(parse_config(cli.preprocess(NAT_FIXTURE)), "nat_compile")
+
+
+def test_nat_compile_config_carries_dnat_and_v6_accept_through() -> None:
+    # compile_config runs the whole pipeline (preprocess -> parse -> validate -> generate); the
+    # DNAT `Nat` entries must surface as v4 nat + forward-accept rules and a v6 direct ACCEPT,
+    # alongside the base skeleton, the filter rule, and the policy defaults.
+    compiled = cli.compile_config(NAT_FIXTURE)
+    adds = compiled["nftables"]
+    # The nat table skeleton is present (the v4 DNATs need it, ADR-0008)...
+    assert {"add": {"table": {"family": "inet", "name": "nat"}}} in adds
+    rules = [c["add"]["rule"] for c in adds if "rule" in c["add"]]
+    # ...the three v4 DNATs compile to nat prerouting `dnat` rules (single, range, remap)...
+    prerouting = [r for r in rules if r["table"] == "nat" and r["chain"] == "prerouting"]
+    dnats = [e["dnat"] for r in prerouting for e in r["expr"] if "dnat" in e]
+    assert len(dnats) == 3
+    assert {"addr": "203.0.113.30", "family": "ip", "port": 8022} in dnats  # the :port remap
+    # ...and the IPv6 DNAT is a plain forward ACCEPT to the global v6 address (no NAT, ADR-0002).
+    forward = [r for r in rules if r["table"] == "filter" and r["chain"] == "forward"]
+    v6_daddr = {
+        "match": {
+            "op": "==",
+            "left": {"payload": {"protocol": "ip6", "field": "daddr"}},
+            "right": "2001:db8::5",
+        }
+    }
+    assert any(v6_daddr in r["expr"] and r["expr"][-1] == {"accept": None} for r in forward)
+    # The v6 address never leaks into the nat table (IPv6 does no NAT).
+    assert not any(r["table"] == "nat" and "2001:db8::5" in json.dumps(r) for r in rules)
+
+
+@pytest.mark.skipif(
+    not _nft_available(),
+    reason="python3-nftables not installed (behavioral netns tier, #77/#78)",
+)
+def test_nat_compiled_ruleset_passes_nft_check() -> None:
+    from shorewallnf.applier import check_ruleset
+
+    check_ruleset(cli.compile_config(NAT_FIXTURE))  # must not raise
