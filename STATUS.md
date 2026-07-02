@@ -3,7 +3,7 @@
 > The living snapshot of where ShorewallNF is. The **Epic Author** reads this first. Keep it
 > current: when an epic is completed or the direction shifts, update this file in the same PR.
 
-_Last updated: 2026-07-01 (compiler front-end merged: Reader, preprocessor, parser, IR; base generator underway)._
+_Last updated: 2026-07-02 (compiler front-end merged: Reader, preprocessor, parser, IR; base generator underway; behavioral netns CI tier enabled)._
 
 ## Where we are
 
@@ -23,7 +23,8 @@ Present:
   a full family-aware `ir.py`, and the base-skeleton `generator.py` (landing) — pure functional
   core / imperative shell per [ADR-0003](docs/adr/0003-design-approach.md).
 - Python package skeleton with `ruff`/`mypy`/`pytest` and a CI workflow (lint/type/test).
-  The behavioral **netns CI tier is stubbed** (`if: false`) pending the test-harness epic.
+  The behavioral **netns CI tier is enabled** (`netns-integration` job): it installs
+  iproute2 + nftables, runs the `-m netns` tier as root, and fails on a packet-path regression.
 - The pipeline: role prompts (`pipeline/roles/`), labels, workflow, issue/PR templates,
   CODEOWNERS, Claude Code adapter, and a `pipeline-reconcile` GitHub Action (dry-run) that
   automates the judgment-free state transitions (#106).
