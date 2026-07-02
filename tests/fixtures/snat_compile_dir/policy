@@ -1,0 +1,5 @@
+# Inter-zone default policies. The LAN is allowed out; everything else falls through
+# to the fail-closed defaults (the source-NAT rules only rewrite already-admitted traffic).
+loc     net     ACCEPT
+net     all     DROP        info
+all     all     REJECT      info
