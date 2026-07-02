@@ -345,7 +345,7 @@ def test_snat_compile_config_carries_masquerade_and_snat_through() -> None:
 
 
 @pytest.mark.skipif(
-    not _nft_available(),
+    not gh.nft_available(),
     reason="python3-nftables not installed (behavioral netns tier, #77/#78)",
 )
 def test_snat_compiled_ruleset_passes_nft_check() -> None:
