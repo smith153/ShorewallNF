@@ -7,13 +7,14 @@ guarded like the core rules.
 
 from __future__ import annotations
 
+import pytest
 from reconcile.core import Mergeability
 from reconcile.run import (
     _blocked_by,
     _ci_green,
+    _freshness,
     _linked_task,
     _mergeability,
-    _parse_freshness,
 )
 
 # --- _linked_task: PR body -> governing task (all of GitHub's closing keywords) ------------
@@ -88,22 +89,27 @@ def test_mergeability_pending_for_unknown_or_draft() -> None:
     assert _mergeability("DRAFT") is Mergeability.PENDING
 
 
-# --- _parse_freshness: GraphQL PR node -> (head oid, reviewed oid) --------------------------
+# --- _freshness: `gh pr view --json reviews,headRefOid` -> (head oid, reviewed oid) ---------
 
 
-def test_parse_freshness_reads_head_and_reviewed_oid() -> None:
-    pull = {
-        "headRefOid": "abc123",
-        "reviews": {
-            "nodes": [
-                {"commit": {"oid": "def456"}, "submittedAt": "2026-07-01T00:00:00Z",
-                 "state": "COMMENTED"}
-            ]
-        },
-    }
-    assert _parse_freshness(pull) == ("abc123", "def456")
+def test_freshness_reads_head_and_reviewed_oid(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh_json(*args: str) -> object:
+        calls.append(args)
+        # `gh pr view --json reviews` returns a plain list; the latest is reviews[-1].
+        return {"headRefOid": "abc123", "reviews": [{"commit": {"oid": "def456"}}]}
+
+    monkeypatch.setattr("reconcile.run._gh_json", fake_gh_json)
+    assert _freshness(20) == ("abc123", "def456")
+    # a single `gh pr view <PR> --json reviews,headRefOid` — no GraphQL, no owner/name plumbing.
+    assert calls == [("pr", "view", "20", "--json", "reviews,headRefOid")]
 
 
-def test_parse_freshness_none_when_no_review() -> None:
-    # empty reviews -> no reviewed oid -> not-current (R4 resets).
-    assert _parse_freshness({"headRefOid": "abc123", "reviews": {"nodes": []}}) == ("abc123", None)
+def test_freshness_none_when_no_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    # empty reviews list -> no reviewed oid -> not-current (R4 resets).
+    def fake_gh_json(*args: str) -> object:
+        return {"headRefOid": "abc123", "reviews": []}
+
+    monkeypatch.setattr("reconcile.run._gh_json", fake_gh_json)
+    assert _freshness(20) == ("abc123", None)
