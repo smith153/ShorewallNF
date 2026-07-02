@@ -148,6 +148,21 @@ def test_all_all_policy_is_a_bare_final_rule() -> None:
     assert rules[-1]["expr"] == [{"reject": None}]
 
 
+@pytest.mark.parametrize(
+    "action, verdict", [("ACCEPT", "accept"), ("DROP", "drop"), ("REJECT", "reject")]
+)
+def test_all_all_is_forward_only_and_never_opens_the_firewall(action: str, verdict: str) -> None:
+    # ADR-0006 (intentional, #118): `all all` is the inter-zone forward catch-all only — it seeds
+    # no input/output rule, so even `all all ACCEPT` does not open the firewall host (input stays
+    # drop, output stays accept via the ADR-0005 base policies). Lock that for every verdict.
+    zones = (_FW, _zone("net", "eth0"))
+    base = _rules(Ruleset(zones=zones))
+    added = _rules(
+        Ruleset(zones=zones, policies=(Policy(source="all", dest="all", action=action),))
+    )[len(base) :]
+    assert [(r["chain"], r["expr"]) for r in added] == [("forward", [{verdict: None}])]
+
+
 def test_log_level_emits_log_statement_before_verdict() -> None:
     rs = Ruleset(
         zones=(_FW, _zone("net", "eth0")),
