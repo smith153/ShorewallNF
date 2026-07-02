@@ -1,0 +1,8 @@
+# DNAT service-exposure mirroring the reference config's port-forward intent, dual-stack.
+# Documentation addresses only: RFC 5737 (IPv4) / RFC 3849 (IPv6).
+#ACTION   SOURCE   DEST                     PROTO   DPORT
+ACCEPT    net      fw                       tcp     22
+DNAT      net      loc:192.0.2.10           tcp     80
+DNAT      net      loc:198.51.100.20        tcp     8000:8100
+DNAT      net      loc:203.0.113.30:8022    tcp     22
+DNAT      net      loc:2001:db8::5          tcp     443
