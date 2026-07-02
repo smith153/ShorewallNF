@@ -376,6 +376,67 @@ def _build_nat(record: Record, zone_names: set[str]) -> Nat:
     )
 
 
+def parse_snat(records: Iterable[Record]) -> tuple[Nat, ...]:
+    """Parse ``snat``-file rows (``MASQUERADE``/``SNAT(<addr>)``) into source-NAT
+    :class:`~shorewallnf.ir.Nat` entries (epic #76).
+
+    A row is ``<ACTION> <SOURCE> <DEST>``: ``ACTION`` is ``MASQUERADE`` (dynamic source NAT to
+    the egress interface's address) or ``SNAT(<addr>)`` (static source NAT to ``<addr>``);
+    ``SOURCE`` the source network(s) — a comma-separated CIDR list preserved verbatim for the
+    generator to expand; ``DEST`` the egress (out) interface. Source NAT is IPv4 by construction
+    (ADR-0002: IPv6 does no NAT), so ``family`` is always :data:`Family.IPV4`. The ``snat`` file's
+    narrowing columns (PROTO/PORT/IPSEC/MARK/PROBABILITY) are out of MVP scope (#76): a row that
+    carries them fails fast with :class:`ConfigError` rather than being silently dropped.
+    """
+    return tuple(_build_snat(record) for record in records)
+
+
+def _build_snat(record: Record) -> Nat:
+    action = require_field(record, 0, "snat action")
+    source_nets = require_field(record, 1, "snat source")
+    out_interface = require_field(record, 2, "snat egress interface")
+    if len(record.fields) > 3:
+        raise ConfigError(
+            f"unsupported trailing snat columns {record.fields[3:]!r} "
+            "(only action, source, egress interface are supported; "
+            "PROTO/PORT/IPSEC/MARK/PROBABILITY narrowing is out of scope)",
+            path=record.path,
+            line=record.line,
+        )
+    action, snat_to = _parse_snat_action(action, record)
+    return Nat(
+        action=action,
+        source_nets=source_nets,
+        out_interface=out_interface,
+        snat_to=snat_to,
+        family=Family.IPV4,
+    )
+
+
+def _parse_snat_action(token: str, record: Record) -> tuple[str, str | None]:
+    """Split a ``snat`` ACTION column into ``(action, snat_to)``.
+
+    ``MASQUERADE`` carries no address; ``SNAT(<addr>)`` yields ``("SNAT", <addr>)``. A bare
+    ``SNAT``, an empty ``SNAT()``, or any other action fails fast (ADR-0004).
+    """
+    if token == "MASQUERADE":
+        return "MASQUERADE", None
+    if token.startswith("SNAT(") and token.endswith(")"):
+        addr = token[len("SNAT(") : -1]
+        if not addr:
+            raise ConfigError(
+                "SNAT action needs a source address: SNAT(<addr>)",
+                path=record.path,
+                line=record.line,
+            )
+        return "SNAT", addr
+    raise ConfigError(
+        f"unsupported snat action {token!r} (expected MASQUERADE or SNAT(<addr>))",
+        path=record.path,
+        line=record.line,
+    )
+
+
 def _optional(record: Record, index: int) -> str | None:
     """Field ``index`` if present and not the ``-`` placeholder, else ``None``."""
     if index >= len(record.fields):
@@ -449,4 +510,6 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
     if "rules" in streams:
         parsed_rules = parse_rules(parse(streams["rules"]), zones)
         rules, nats = parsed_rules.rules, parsed_rules.nats
+    if "snat" in streams:
+        nats += parse_snat(parse(streams["snat"]))
     return Ruleset(zones=zones, interfaces=interfaces, policies=policies, rules=rules, nats=nats)

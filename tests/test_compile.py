@@ -167,3 +167,36 @@ def test_parse_config_parses_dnat_rules_into_nats() -> None:
             proto="tcp", dport="22", family=Family.IPV4,
         ),
     )
+
+
+def test_parse_config_parses_the_snat_file() -> None:
+    ruleset = parse_config(
+        _streams(
+            zones="fw firewall\nnet ipv4\nloc ipv4\n",
+            interfaces="net eth1 detect\nloc eth0 detect\n",
+            snat="MASQUERADE 10.0.0.0/8 eth1\nSNAT(203.0.113.5) 192.0.2.0/24 eth1\n",
+        )
+    )
+    assert ruleset.nats == (
+        Nat(
+            action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth1",
+            family=Family.IPV4,
+        ),
+        Nat(
+            action="SNAT", source_nets="192.0.2.0/24", out_interface="eth1",
+            snat_to="203.0.113.5", family=Family.IPV4,
+        ),
+    )
+
+
+def test_parse_config_combines_dnat_and_snat_nats() -> None:
+    # DNAT entries from `rules` come first, then the `snat` file's source-NAT entries.
+    ruleset = parse_config(
+        _streams(
+            zones="fw firewall\nnet ipv4\nloc ipv4\n",
+            interfaces="net eth1 detect\nloc eth0 detect\n",
+            rules="DNAT net loc:192.0.2.5 tcp 22\n",
+            snat="MASQUERADE 10.0.0.0/8 eth1\n",
+        )
+    )
+    assert [nat.action for nat in ruleset.nats] == ["DNAT", "MASQUERADE"]
