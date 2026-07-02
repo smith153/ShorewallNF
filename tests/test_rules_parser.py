@@ -65,6 +65,26 @@ def test_range_on_source_port_column() -> None:
     assert _one("ACCEPT loc net udp - 49160:49300").sport == "49160:49300"
 
 
+# --- proto normalised to canonical lowercase (#134) ---------------------------
+
+
+@pytest.mark.parametrize("proto", ["tcp", "TCP", "Tcp", "tCp"])
+def test_proto_normalised_to_lowercase(proto: str) -> None:
+    assert _one(f"ACCEPT loc net {proto} 22").proto == "tcp"
+
+
+def test_uppercase_icmp_normalised_and_still_pins_ipv4() -> None:
+    rule = _one("ACCEPT loc net ICMP")
+    assert rule.proto == "icmp"
+    assert rule.family is Family.IPV4
+
+
+def test_mixedcase_ipv6_icmp_normalised_and_still_pins_ipv6() -> None:
+    rule = _one("ACCEPT loc net IPv6-ICMP")
+    assert rule.proto == "ipv6-icmp"
+    assert rule.family is Family.IPV6
+
+
 # --- zone:host narrowing + family inference (ADR-0002) ------------------------
 
 

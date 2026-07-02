@@ -309,6 +309,8 @@ def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Ru
             line=record.line,
         )
     proto = _optional(record, 3)
+    if proto is not None:
+        proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase (#134)
     _check_zones(source, dest, zone_names, record)
     return Rule(
         action=action,
