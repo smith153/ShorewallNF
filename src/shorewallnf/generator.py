@@ -126,14 +126,52 @@ def _feature_rule(
     chain, expr = _chain_and_zone_matches(
         _zone_of(rule.source), _zone_of(rule.dest), interfaces, firewalls, ctx
     )
+    expr += _host_matches(rule)
     expr += _l4_matches(rule, ctx)
     expr.append(_verdict(rule.action))
     return _rule(chain, expr)
 
 
 def _zone_of(token: str) -> str:
-    """The zone part of a ``zone`` or ``zone:host`` token; the host narrowing is task #123."""
+    """The zone part of a ``zone`` or ``zone:host`` token (task #123 narrows on the host)."""
     return token.split(":", 1)[0]
+
+
+def _host_of(token: str) -> str | None:
+    """The host/CIDR part of a ``zone:host`` token, or ``None`` for a bare zone."""
+    _, sep, host = token.partition(":")
+    return host if sep else None
+
+
+def _host_matches(rule: Rule) -> list[_Command]:
+    """``ip``/``ip6`` ``saddr``/``daddr`` narrowing from a ``zone:host`` source/dest (ADR-0007).
+
+    Family comes from the literal (``:`` marks IPv6, ADR-0002); the family-specific match is the
+    family guard, so no ``meta nfproto`` is added. Emitted after the interface matches and before
+    the L4 matches; source narrows on ``saddr``, dest on ``daddr``.
+    """
+    matches: list[_Command] = []
+    src_host = _host_of(rule.source)
+    if src_host is not None:
+        matches.append(_addr_match("saddr", src_host))
+    dst_host = _host_of(rule.dest)
+    if dst_host is not None:
+        matches.append(_addr_match("daddr", dst_host))
+    return matches
+
+
+def _addr_match(field: str, host: str) -> _Command:
+    proto = "ip6" if ":" in host else "ip"
+    left = {"payload": {"protocol": proto, "field": field}}
+    return {"match": {"op": "==", "left": left, "right": _addr_value(host)}}
+
+
+def _addr_value(host: str) -> str | dict[str, Any]:
+    """A bare address (scalar) or a CIDR literal as an nft ``prefix``."""
+    if "/" in host:
+        addr, length = host.rsplit("/", 1)
+        return {"prefix": {"addr": addr, "len": int(length)}}
+    return host
 
 
 def _l4_matches(rule: Rule, ctx: str) -> list[_Command]:
