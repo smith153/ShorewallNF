@@ -45,6 +45,14 @@ def test_discover_on_a_file_is_not_a_directory_error() -> None:
         discover(FIXTURE / "params")
 
 
+def test_discover_finds_conntrack_file(tmp_path: Path) -> None:
+    # The conntrack file (helper assignments) is a known config file (epic #200); it follows
+    # snat in processing order.
+    (tmp_path / "snat").write_text("MASQUERADE 10.0.0.0/8 eth0\n")
+    (tmp_path / "conntrack").write_text("CT:helper:ftp - -\n")
+    assert discover(tmp_path) == ("snat", "conntrack")
+
+
 def test_discover_finds_action_files_and_index(tmp_path: Path) -> None:
     (tmp_path / "zones").write_text("net ipv4\n")
     (tmp_path / "actions").write_text("Ping\n")
