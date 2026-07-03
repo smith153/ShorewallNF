@@ -12,14 +12,30 @@ golden-file-testable without an ``nft`` binary.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
+from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
-from .ir import Family, Nat, Policy, Rule, Ruleset, Zone
+from .ir import (
+    ConntrackHelper,
+    Family,
+    HelperCapabilities,
+    HelperDef,
+    Nat,
+    Policy,
+    Rule,
+    Ruleset,
+    Zone,
+)
 
 _FAMILY = "inet"
 _TABLE = "filter"
 _NAT_TABLE = "nat"
+
+# Fail-closed default capability surface: with nothing declared available, every helper is
+# skipped (with a warning). The caller passes a real HelperCapabilities to enable them.
+_NO_CAPABILITIES = HelperCapabilities()
 
 # (chain name == hook name, base-chain policy). Input/forward fail closed; output accepts.
 _BASE_CHAINS = (("input", "drop"), ("forward", "drop"), ("output", "accept"))
@@ -30,10 +46,19 @@ _VERDICTS = {"ACCEPT": "accept", "DROP": "drop", "REJECT": "reject"}
 _Command = dict[str, Any]
 
 
-def generate(ruleset: Ruleset) -> dict[str, list[_Command]]:
-    """Emit base skeleton (ADR-0005), then feature rules (ADR-0007), then policies (ADR-0006)."""
+def generate(
+    ruleset: Ruleset, capabilities: HelperCapabilities = _NO_CAPABILITIES
+) -> dict[str, list[_Command]]:
+    """Emit base skeleton (ADR-0005), then feature rules (ADR-0007), then policies (ADR-0006).
+
+    ``capabilities`` is the compile-time helper-availability surface (AUTOHELPERS-equivalent,
+    ADR-0040): the ``conntrack`` helpers it does not mark available are skipped with a warning
+    (ADR-0041). It defaults to the empty surface, so a helper is emitted only when the caller
+    declares the platform provides it.
+    """
     commands = _filter_base()
     commands += _nat_base(ruleset)
+    commands += _ct_helpers(ruleset, capabilities)
     commands += _feature_rules(ruleset)
     commands += _nat_rules(ruleset)
     commands += _policy_rules(ruleset)
@@ -175,7 +200,7 @@ def _feature_rule(
     chain, prefix = _chain_and_zone_matches(
         _zone_of(rule.source), _zone_of(rule.dest), interfaces, firewalls, ctx
     )
-    prefix += _host_matches(rule)
+    prefix += _host_matches(rule.source, rule.dest)
     prefix += _ct_matches(rule)
     verdict = _verdict(rule.action)
     if rule.proto in _ICMP_PROTOS:
@@ -249,18 +274,19 @@ def _host_of(token: str) -> str | None:
     return host if sep else None
 
 
-def _host_matches(rule: Rule) -> list[_Command]:
+def _host_matches(source: str, dest: str) -> list[_Command]:
     """``ip``/``ip6`` ``saddr``/``daddr`` narrowing from a ``zone:host`` source/dest (ADR-0007).
 
     Family comes from the literal (``:`` marks IPv6, ADR-0002); the family-specific match is the
     family guard, so no ``meta nfproto`` is added. Emitted after the interface matches and before
-    the L4 matches; source narrows on ``saddr``, dest on ``daddr``.
+    the L4 matches; source narrows on ``saddr``, dest on ``daddr``. Shared by feature rules and
+    conntrack-helper assignment rules (ADR-0041).
     """
     matches: list[_Command] = []
-    src_host = _host_of(rule.source)
+    src_host = _host_of(source)
     if src_host is not None:
         matches.append(_addr_match("saddr", src_host))
-    dst_host = _host_of(rule.dest)
+    dst_host = _host_of(dest)
     if dst_host is not None:
         matches.append(_addr_match("daddr", dst_host))
     return matches
@@ -340,6 +366,127 @@ def _log(level: str) -> _Command:
 
 def _verdict(action: str) -> _Command:
     return {_VERDICTS[action]: None}
+
+
+# ---- conntrack helper objects + assignment rules (ADR-0041) -----------------------------
+
+# A ct helper object's L3 protocol per its family capability (ADR-0040): a v6-capable helper is
+# declared once as ``l3proto inet`` (covers both families in the inet table, per the official nft
+# example), a v4-only one as ``l3proto ip``. The rule's own family scoping is a separate concern.
+_L3PROTO = {Family.BOTH: "inet", Family.IPV4: "ip", Family.IPV6: "ip6"}
+
+# meta nfproto value per the assignment rule's resolved family (ADR-0002); BOTH needs no guard.
+_NFPROTO = {Family.IPV4: "ipv4", Family.IPV6: "ipv6"}
+
+
+def _ct_helpers(ruleset: Ruleset, capabilities: HelperCapabilities) -> list[_Command]:
+    """Compile ``conntrack_helpers`` to ``ct helper`` objects + assignment rules (ADR-0041).
+
+    Each entry is resolved against the built-in registry (an unknown name is malformed IR and
+    fails closed, ADR-0004) and gated on ``capabilities``: a helper the platform does not provide
+    is skipped with a warning, never emitted. The surviving helpers yield one ``ct helper`` object
+    per distinct name (emitted first, so it precedes the rule that references it) followed by one
+    ``ct helper set`` assignment rule per entry, placed in the base chain the flow traverses.
+    """
+    available: list[tuple[ConntrackHelper, HelperDef]] = []
+    for helper in ruleset.conntrack_helpers:
+        hdef = _resolve_helper(helper)
+        if not capabilities.provides(helper.name):
+            warnings.warn(
+                f"conntrack helper {helper.name!r} is not available on the target platform "
+                "(capability gating); skipping — no ct helper object or assignment rule emitted",
+                stacklevel=2,
+            )
+            continue
+        available.append((helper, hdef))
+
+    interfaces = _zone_interfaces(ruleset.zones)
+    firewalls = _firewalls(ruleset)
+    objects = _ct_helper_objects(available)
+    rules = [_ct_helper_rule(helper, hdef, interfaces, firewalls) for helper, hdef in available]
+    return objects + rules
+
+
+def _resolve_helper(helper: ConntrackHelper) -> HelperDef:
+    """The registry entry for ``helper`` — its canonical proto/port + family capability.
+
+    An unknown name never resolves (the parser resolves against the same registry, #220), so
+    reaching one here is malformed IR the generator cannot lower: fail closed (ADR-0004).
+    """
+    hdef = BUILTIN_HELPERS.get(helper.name)
+    if hdef is None:
+        raise ConfigError(
+            f"conntrack helper {helper.name!r}: unknown helper (not in the built-in registry)"
+        )
+    return hdef
+
+
+def _ct_helper_objects(
+    available: list[tuple[ConntrackHelper, HelperDef]],
+) -> list[_Command]:
+    """One ``ct helper`` object per distinct helper name, in first-seen order (deduplicated).
+
+    Several rows may attach the same helper with different narrowing; the object is per-table and
+    named once, so it is emitted a single time regardless of how many rules reference it.
+    """
+    objects: list[_Command] = []
+    seen: set[str] = set()
+    for _helper, hdef in available:
+        if hdef.name in seen:
+            continue
+        seen.add(hdef.name)
+        objects.append(_ct_helper_object(hdef))
+    return objects
+
+
+def _ct_helper_object(hdef: HelperDef) -> _Command:
+    """The named ``ct helper`` object: type + L4 protocol + capability-derived ``l3proto``."""
+    return {
+        "add": {
+            "ct helper": {
+                "family": _FAMILY,
+                "table": _TABLE,
+                "name": hdef.name,
+                "type": hdef.name,
+                "protocol": hdef.proto,
+                "l3proto": _L3PROTO[hdef.family_capability],
+            }
+        }
+    }
+
+
+def _ct_helper_rule(
+    helper: ConntrackHelper,
+    hdef: HelperDef,
+    interfaces: dict[str, tuple[str, ...]],
+    firewalls: set[str],
+) -> _Command:
+    """The ``ct helper set`` assignment rule binding the helper to its matching flow (ADR-0041).
+
+    Reuses the ADR-0006/0007 zone matching (chain + iifname/oifname) and ``zone:host`` narrowing,
+    adds a ``meta nfproto`` guard for a family-scoped helper (ADR-0002; a dual-stack helper needs
+    none), matches the helper's canonical proto/default port unless the row overrides them, then
+    sets the helper. The statement is non-terminal — the packet falls through to normal filtering.
+    """
+    ctx = f"conntrack helper {helper.name!r}"
+    source = helper.source or "all"
+    dest = helper.dest or "all"
+    chain, expr = _chain_and_zone_matches(
+        _zone_of(source), _zone_of(dest), interfaces, firewalls, ctx
+    )
+    expr += _host_matches(source, dest)
+    guard = _NFPROTO.get(helper.family)
+    if guard is not None:
+        expr.append(_nfproto_match(guard))
+    proto = helper.proto or hdef.proto
+    dport = helper.dport if helper.dport is not None else ",".join(hdef.ports)
+    expr += _nat_l4_matches(proto, dport, ctx)
+    expr.append({"ct helper": helper.name})
+    return _rule(chain, expr)
+
+
+def _nfproto_match(nfproto: str) -> _Command:
+    return {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": nfproto}}
 
 
 # ---- IPv4 DNAT: nat prerouting + forward accept (ADR-0008) -------------------------------
