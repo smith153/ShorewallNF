@@ -14,7 +14,8 @@ populated).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -181,3 +182,6 @@ class Ruleset:
     policies: tuple[Policy, ...] = ()
     rules: tuple[Rule, ...] = ()
     nats: tuple[Nat, ...] = ()
+    # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
+    # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
+    actions: Mapping[str, MacroDef] = field(default_factory=dict)

@@ -33,6 +33,33 @@ def test_discover_on_a_file_is_not_a_directory_error() -> None:
         discover(FIXTURE / "params")
 
 
+def test_discover_finds_action_files_and_index(tmp_path: Path) -> None:
+    (tmp_path / "zones").write_text("net ipv4\n")
+    (tmp_path / "actions").write_text("Ping\n")
+    (tmp_path / "action.Ping").write_text("ACCEPT - - icmp echo-request\n")
+    (tmp_path / "action.WebServer").write_text("ACCEPT - - tcp 80\n")
+    found = discover(tmp_path)
+    # Known files keep their processing order; the actions index and action.<Name>
+    # files follow in a stable, sorted order.
+    assert found == ("zones", "actions", "action.Ping", "action.WebServer")
+
+
+def test_discover_action_files_sorted_deterministically(tmp_path: Path) -> None:
+    for name in ("action.Zeta", "action.Alpha", "action.Mid"):
+        (tmp_path / name).write_text("ACCEPT - -\n")
+    assert discover(tmp_path) == ("action.Alpha", "action.Mid", "action.Zeta")
+
+
+def test_discover_without_action_index_omits_it(tmp_path: Path) -> None:
+    (tmp_path / "action.Ping").write_text("ACCEPT - -\n")
+    assert discover(tmp_path) == ("action.Ping",)
+
+
+def test_discover_ignores_action_directory(tmp_path: Path) -> None:
+    (tmp_path / "action.Dir").mkdir()
+    assert discover(tmp_path) == ()
+
+
 # --- read_file --------------------------------------------------------------
 
 

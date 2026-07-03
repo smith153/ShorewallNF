@@ -22,7 +22,18 @@ from dataclasses import dataclass, replace
 from typing import NamedTuple, TypeVar
 
 from .errors import ConfigError
-from .ir import Family, Interface, Nat, Policy, Rule, Ruleset, Zone, ZoneMember
+from .ir import (
+    Family,
+    Interface,
+    MacroDef,
+    MacroRule,
+    Nat,
+    Policy,
+    Rule,
+    Ruleset,
+    Zone,
+    ZoneMember,
+)
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
@@ -437,6 +448,81 @@ def _parse_snat_action(token: str, record: Record) -> tuple[str, str | None]:
     )
 
 
+# --- action.<Name> (site-defined macro/custom-action) parser -----------------
+
+
+def parse_action(name: str, records: Iterable[Record]) -> MacroDef:
+    """Parse a site-defined ``action.<Name>`` body into a :class:`~shorewallnf.ir.MacroDef`
+    (ADR-0020, #182).
+
+    Each body row is ``<ACTION> <SOURCE> <DEST> [PROTO] [DEST PORT] [SOURCE PORT]`` limited to
+    the ``ACCEPT``/``DROP``/``REJECT`` verdict subset, mapping to a
+    :class:`~shorewallnf.ir.MacroRule`. Per ADR-0020 a ``MacroRule`` has no source/dest — they
+    come from the invoking rule — so the SOURCE and DEST columns must be the ``-`` placeholder;
+    a non-``-`` value, an unsupported action, or a malformed row fails fast with a located
+    :class:`ConfigError`. This is Reader→Parser only: no expansion/narrowing (that is the
+    resolver, #184). Family is inferred per ADR-0002 from the proto column alone.
+    """
+    body = tuple(build_records(records, _build_macro_rule))
+    return MacroDef(name=name, body=body, family=_combine_families(body))
+
+
+def _build_macro_rule(record: Record) -> MacroRule:
+    action = require_field(record, 0, "action")
+    if action not in _RULE_ACTIONS:
+        raise ConfigError(
+            f"unsupported action {action!r} in action body "
+            "(only ACCEPT/DROP/REJECT supported)",
+            path=record.path,
+            line=record.line,
+        )
+    source = require_field(record, 1, "source")
+    dest = require_field(record, 2, "dest")
+    for column, value in (("SOURCE", source), ("DEST", dest)):
+        if value != _UNSET:
+            raise ConfigError(
+                f"action body {column} must be {_UNSET!r} "
+                "(source/dest come from the invoking rule, ADR-0020)",
+                path=record.path,
+                line=record.line,
+            )
+    if len(record.fields) > 6:
+        raise ConfigError(
+            f"unsupported trailing action columns {record.fields[6:]!r} "
+            "(only action, source, dest, proto, dest-port, source-port are supported)",
+            path=record.path,
+            line=record.line,
+        )
+    proto = _optional(record, 3)
+    if proto is not None:
+        proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase
+    return MacroRule(
+        action=action,
+        proto=proto,
+        dport=_optional(record, 4),
+        sport=_optional(record, 5),
+        family=_family_from_proto(proto),
+    )
+
+
+def _family_from_proto(proto: str | None) -> Family:
+    """Infer a family from the proto column alone (ADR-0002): ``icmp`` → IPv4,
+    ``ipv6-icmp`` → IPv6, otherwise dual-stack :data:`Family.BOTH`. Since an action body's
+    source/dest are ``-``, the proto is the only family hint."""
+    if proto == "icmp":
+        return Family.IPV4
+    if proto == "ipv6-icmp":
+        return Family.IPV6
+    return Family.BOTH
+
+
+def _combine_families(rules: tuple[MacroRule, ...]) -> Family:
+    """The family scoping a whole :class:`~shorewallnf.ir.MacroDef`: the one family its body
+    agrees on, else :data:`Family.BOTH` (an empty or mixed-family body is dual-stack)."""
+    families = {rule.family for rule in rules}
+    return families.pop() if len(families) == 1 else Family.BOTH
+
+
 def _optional(record: Record, index: int) -> str | None:
     """Field ``index`` if present and not the ``-`` placeholder, else ``None``."""
     if index >= len(record.fields):
@@ -512,4 +598,19 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         rules, nats = parsed_rules.rules, parsed_rules.nats
     if "snat" in streams:
         nats += parse_snat(parse(streams["snat"]))
-    return Ruleset(zones=zones, interfaces=interfaces, policies=policies, rules=rules, nats=nats)
+    # Site-defined action.<Name> files → a name-keyed MacroDef registry (ADR-0020, #182),
+    # built in name-sorted order so the registry is deterministic. The `actions` index file
+    # is discovered by the reader but not a MacroDef, so it is not parsed here.
+    actions = {
+        name[len("action.") :]: parse_action(name[len("action.") :], parse(streams[name]))
+        for name in sorted(streams)
+        if name.startswith("action.")
+    }
+    return Ruleset(
+        zones=zones,
+        interfaces=interfaces,
+        policies=policies,
+        rules=rules,
+        nats=nats,
+        actions=actions,
+    )
