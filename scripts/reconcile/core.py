@@ -22,8 +22,12 @@ The rules mirror the judgment-free half of pipeline/roles/merge-readiness.md:
 * **R4 review-freshness** — reset a ``review-passed`` PR whose current head oid no longer
   equals the commit oid the latest review was cast against (``reviews(last:1).commit.oid`` via
   GraphQL) — an exact "review pins to this commit" check, not a timestamp proxy.
-* **R5 one-status invariant** — flag any issue that does not carry exactly one primary
-  ``status:*`` label; malformed issues are flagged, never otherwise mutated.
+* **R5 one-status invariant** — drive every issue to exactly one primary ``status:*`` label.
+  A lingering *pre-review claim* status (``implementation-ready``/``in-progress``) that a
+  strictly-later primary supersedes is stripped (**self-heal**, #227) — the #195/#219 silent
+  merge-gate stall; ``needs-human`` is flagged only for a genuinely ambiguous double-primary
+  self-heal can't resolve. ``status:blocked`` is an orthogonal modifier that legitimately
+  coexists (#146) and is never stripped.
 """
 
 from __future__ import annotations
@@ -50,6 +54,27 @@ PRIMARY_STATUS = frozenset(
 
 BLOCKED = "status:blocked"
 NEEDS_HUMAN = "needs-human"
+
+#: Pipeline progression of the primary statuses (index = lifecycle position). Used only by the
+#: R5 self-heal to tell whether a lingering pre-review claim label has been superseded by a
+#: strictly-later primary. Only the *ordering of the two claim statuses before every later
+#: state* is load-bearing — the exact order among the post-review states is not.
+_STATUS_ORDER: dict[str, int] = {
+    "status:proposed": 0,
+    "status:needs-refinement": 1,
+    "status:implementation-ready": 2,
+    "status:in-progress": 3,
+    "status:in-review": 4,
+    "status:changes-requested": 5,
+    "status:review-passed": 6,
+    "status:ready-to-merge": 7,
+}
+
+#: Pre-review "claim" statuses the Implementer/Reviewer swap should have removed. When one
+#: lingers alongside a strictly-later primary — the #195/#219 stall — reconcile strips it
+#: (self-heal) instead of flagging needs-human. ``status:blocked`` is deliberately NOT here:
+#: it is an orthogonal modifier that legitimately coexists (#146) and is never self-healed.
+STALE_CLAIM_STATUSES = frozenset({"status:implementation-ready", "status:in-progress"})
 
 #: Machine-readable signature so the maintainer's "unsigned == human" rule (pipeline/
 #: workflow.md#comment-attribution) still holds for comments this Action posts.
@@ -155,17 +180,68 @@ def _review_current(pr: PullRequest) -> bool:
     return pr.reviewed_oid is not None and pr.reviewed_oid == pr.head_oid
 
 
-def _invariant_violators(issues: tuple[Issue, ...]) -> set[int]:
-    """Issues carrying some ``status:*`` label but not exactly one *primary* status."""
-    return {i.number for i in issues if _has_status(i) and len(_primaries(i)) != 1}
+def _superseded_stale(issue: Issue) -> frozenset[str]:
+    """Pre-review claim labels on ``issue`` a strictly-later primary status supersedes — the
+    R5 self-heal set. Empty unless a claim status lingers under a genuinely later one."""
+    primaries = _primaries(issue)
+    latest = max((_STATUS_ORDER[p] for p in primaries), default=-1)
+    return frozenset(
+        p for p in primaries if p in STALE_CLAIM_STATUSES and _STATUS_ORDER[p] < latest
+    )
 
 
-def _flag_invariant(issues: tuple[Issue, ...], violators: set[int]) -> list[Action]:
+def _self_heal_stale(
+    issues: tuple[Issue, ...],
+) -> tuple[list[Action], dict[int, frozenset[str]]]:
+    """Strip stale claim statuses superseded by a later primary (R5 self-heal, #227). Returns
+    the removal (+ signed reason) actions and each issue's primaries *after* healing, so the
+    one-status flag sees the corrected set and escalates only a genuinely ambiguous remainder.
+    A human's ``needs-human`` is respected (like unblock/reap) — such an issue is left untouched."""
+    actions: list[Action] = []
+    healed: dict[int, frozenset[str]] = {}
+    for issue in issues:
+        stale = frozenset() if NEEDS_HUMAN in issue.labels else _superseded_stale(issue)
+        healed[issue.number] = _primaries(issue) - stale
+        if not stale:
+            continue
+        dropped = ", ".join(f"`{s}`" for s in sorted(stale))
+        actions += [
+            Action(ActionKind.REMOVE_LABEL, issue.number, s, reason="stale-status")
+            for s in sorted(stale)
+        ]
+        actions.append(
+            Action(
+                ActionKind.COMMENT,
+                issue.number,
+                _sign(
+                    f"Self-healing the one-status invariant: removed the stale {dropped}, "
+                    "superseded by a later primary status (a transition left the claim label "
+                    "behind). No human needed."
+                ),
+                reason="stale-status",
+            )
+        )
+    return actions, healed
+
+
+def _invariant_violators(
+    issues: tuple[Issue, ...], healed_primaries: dict[int, frozenset[str]]
+) -> set[int]:
+    """Issues carrying some ``status:*`` label but not exactly one *primary* status, judged on
+    the post-self-heal primary set so a healed stale claim is no longer a violation."""
+    return {i.number for i in issues if _has_status(i) and len(healed_primaries[i.number]) != 1}
+
+
+def _flag_invariant(
+    issues: tuple[Issue, ...],
+    violators: set[int],
+    healed_primaries: dict[int, frozenset[str]],
+) -> list[Action]:
     actions: list[Action] = []
     for issue in issues:
         if issue.number not in violators or NEEDS_HUMAN in issue.labels:
             continue  # healthy, or already escalated (one-shot — no comment spam)
-        found = ", ".join(sorted(_primaries(issue))) or "none"
+        found = ", ".join(sorted(healed_primaries[issue.number])) or "none"
         actions += [
             Action(ActionKind.ADD_LABEL, issue.number, NEEDS_HUMAN, reason="invariant"),
             Action(
@@ -382,10 +458,17 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
 
 def reconcile(board: Board, *, now: datetime, stale_after: timedelta) -> list[Action]:
     """Return every action needed to drive ``board`` to its correct pipeline state."""
-    violators = _invariant_violators(board.issues)
+    heal, healed = _self_heal_stale(board.issues)
+    healed_numbers = {a.number for a in heal}
+    violators = _invariant_violators(board.issues, healed)
+    # Skip an issue we normalize this pass from the downstream sweeps so a strip and a
+    # reap/promote can't issue conflicting label edits on it in one pass; it re-derives cleanly
+    # next pass (level-triggered — the unlabeled event re-triggers, cron backstops).
+    skip = violators | healed_numbers
     return [
-        *_flag_invariant(board.issues, violators),
-        *_unblock(board.issues, board.blocker_state, skip=violators),
-        *_reap_stale(board.issues, now, stale_after, skip=violators),
-        *_promote_and_refresh(board, skip=violators),
+        *heal,
+        *_flag_invariant(board.issues, violators, healed),
+        *_unblock(board.issues, board.blocker_state, skip=skip),
+        *_reap_stale(board.issues, now, stale_after, skip=skip),
+        *_promote_and_refresh(board, skip=skip),
     ]

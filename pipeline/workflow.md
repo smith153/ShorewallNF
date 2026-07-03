@@ -62,6 +62,11 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
   −`in-review` +`changes-requested`; fix pushed = −`changes-requested` +`in-review`; commits after
   review = −`review-passed` +`in-review`; merge-ready = −`review-passed` +`ready-to-merge`. Merging
   closes the issue, so its final `status:*` is moot.
+- **Self-healed, not stalled.** If a transition ever leaves a stale *pre-review claim* status
+  behind (`implementation-ready`/`in-progress`) under a strictly-later primary — the #195/#219
+  silent merge-gate stall — the reconcile Action strips the stale label (R5 self-heal) instead of
+  flagging `needs-human`; a human is asked only for a genuinely ambiguous double-primary it can't
+  resolve. `status:blocked` is never touched by this.
 - **Un-blocking.** When a blocker's PR merges (its issue closes), the reconcile Action un-block
   sweep removes `status:blocked` from each dependent once **all** its `blocked-by` blockers are
   closed, returning it to the queue.
@@ -70,7 +75,8 @@ Epic Author ─► epic:proposed ─►(human approve)─► Decomposer ─► t
 
 The judgment-free transitions — un-blocking dependents, reaping stale claims, promoting
 `review-passed`→`ready-to-merge`, resetting stale reviews, nudging behind PRs to rebase, resetting a
-persistently-conflicting `review-passed` PR to `changes-requested` for the Fixer, and flagging
+persistently-conflicting `review-passed` PR to `changes-requested` for the Fixer, self-healing a
+stale pre-review claim status a later primary supersedes, and flagging only genuinely-ambiguous
 one-status-invariant violations — are run by the `pipeline-reconcile` GitHub Action
 (`.github/workflows/reconcile.yml`, #106). It **replaces the delivery-side sweeps of the former
 Merge-readiness role**, which is kept only as a manual fallback
