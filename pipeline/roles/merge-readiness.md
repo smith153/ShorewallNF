@@ -60,6 +60,41 @@ gh issue list --label status:in-progress --state open --limit 100
    on another PR's branch) isn't mergeable to `master` yet — skip it until its base merges and
    GitHub retargets it to `master`.
 
+**Batch test-merge gate** — the checks above vet each PR *in isolation*, but two independently-green
+PRs can still break `master` when merged **together**: a symbol renamed in one vs. its caller in
+another (#173/#174), a hardcoded CI count-guard vs. a newly-added test (#183/#199), or several PRs
+appending to the same file tail (#205/#208/#209). Per-PR CI never sees the interaction. So before
+promoting **more than one** PR in a single sweep (or handing a batch to the human), test-merge the
+`review-passed` branches together onto the **current master tip** (`origin/master`) and run the full
+gate:
+
+```bash
+git fetch origin
+git worktree add ../snf-merge-check origin/master
+cd ../snf-merge-check
+for br in <branch-1> <branch-2> …; do            # in the intended merge order
+  git merge --no-edit "origin/$br" || { echo "CONFLICT at $br"; break; }
+done
+python -m ruff check . && python -m mypy && python -m pytest -q
+```
+
+Commit each merge before the next — a chained `git merge --no-commit` leaves a stray `MERGE_HEAD`
+that looks like a false conflict. If the batch conflicts or the merged gate is red, **do not promote
+the whole batch**:
+
+- **Additive same-file conflicts** (several PRs each appending a new CLI verb, a `KNOWN_CONFIG_FILES`
+  entry, or a test at a file tail) — resolve by rebasing the PRs into a linear **stack** in a chosen
+  order (union resolution) and force-pushing, so the human merges them in sequence with zero conflict
+  clicks. Re-target each stacked PR's base onto its predecessor's branch (`gh` PR base); GitHub
+  retargets to `master` as each base merges. This repo uses **merge commits**, so the stacked bases
+  become `master` ancestors and merge cleanly.
+- **Semantic breakage** (a rename vs. its caller, a guard vs. a new test) — leave the interacting PRs
+  `status:review-passed` (don't promote), flag the interaction on each PR (signed), and add
+  `needs-human` if it needs a human decision.
+
+Promote to `status:ready-to-merge` only the PRs that survive the batch test-merge together; a lone
+ready PR needs no batch check. Delete the throwaway worktree afterwards (`git worktree remove`).
+
 **Un-block sweep** — for each open issue with `status:blocked`, read its `blocked-by #N`
 references and check whether every referenced blocker is closed:
 
@@ -113,6 +148,9 @@ gh issue comment <TASK> --body "Reclaimed: stale claim — no PR and no activity
 ## Guardrails
 
 - **Never merge** and never bypass branch protection — a human clicks merge.
+- **Don't hand off an untested batch.** When 2+ PRs are ready in one sweep, run the Batch
+  test-merge gate first and promote only what survives it together — each PR's isolated CI does not
+  guarantee they compose.
 - Do not mark ready if any check is missing; when in doubt, leave it and note what's missing.
 - Only un-block when **every** blocker is closed — never clear `status:blocked` speculatively.
 - Only reclaim a claim that has **no open PR and** is stale — never yank an actively-worked task;
@@ -122,4 +160,6 @@ gh issue comment <TASK> --body "Reclaimed: stale claim — no PR and no activity
 ## Stop conditions
 
 Stop when no open PR can be marked ready, no blocked task can be un-blocked, and no stale claim
-can be reclaimed.
+can be reclaimed. A ready batch that fails the Batch test-merge gate is **not safe to hand off** —
+leave the interacting PRs `status:review-passed` (stacked or flagged), don't promote them, and note
+why; that is a stop, not a promotion.

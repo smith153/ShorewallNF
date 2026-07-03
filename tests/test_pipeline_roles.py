@@ -68,6 +68,21 @@ def test_merge_readiness_reclaim_deletes_ref() -> None:
     assert "DELETE" in text and CLAIM_REF in text, "reclaim must delete the claim ref"
 
 
+def test_merge_readiness_documents_batch_test_merge_gate() -> None:
+    """Two independently-green PRs can still break `master` when merged together — a rename vs.
+    its caller, a CI count-guard vs. a new test, or several PRs appending to one file tail (#218).
+    Per-PR CI can't catch this; the runbook must document a pre-merge test-merge of the ready batch
+    onto the current `master` tip plus the full gate, with stacking guidance for additive conflicts
+    and a not-safe-to-hand-off stop condition. Guard it against a silent drop."""
+    text = MERGE_READINESS.read_text()
+    lowered = text.lower()
+    assert "test-merge" in lowered, "merge-readiness.md must document the batch test-merge step"
+    assert "master tip" in lowered, "the batch must be test-merged onto the current master tip"
+    for tool in ("ruff", "mypy", "pytest"):
+        assert tool in lowered, f"the batch test-merge must run the full gate (missing {tool})"
+    assert "stack" in lowered, "must give stacking guidance for additive same-file conflicts"
+
+
 # --- atomic epic-claim for the Decomposer (retires status:decomposing) --------
 
 DECOMPOSER = ROOT / "pipeline" / "roles" / "epic-decomposer.md"
