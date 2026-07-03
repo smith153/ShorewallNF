@@ -59,9 +59,43 @@ def test_apply_verb_checks_then_applies_and_exits_zero(
     calls: list[str] = []
     monkeypatch.setattr(cli, "check_ruleset", lambda r: calls.append("check"))
     monkeypatch.setattr(cli, "apply_ruleset", lambda r: calls.append("apply"))
+    monkeypatch.setattr(cli, "save_ruleset", lambda r: calls.append("save"))
     assert cli.main(["apply", _COMPILE_DIR]) == 0
-    assert calls == ["check", "apply"]
+    assert calls == ["check", "apply", "save"]
     assert _COMPILE_DIR in capsys.readouterr().out
+
+
+def test_apply_verb_saves_the_exact_applied_ruleset(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    applied: list[object] = []
+    saved: list[object] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: applied.append(r))
+    monkeypatch.setattr(cli, "save_ruleset", lambda r: saved.append(r))
+    assert cli.main(["apply", _COMPILE_DIR]) == 0
+    # The persisted object is exactly the ruleset that was applied (round-trip guarantee).
+    assert saved == applied
+
+
+def test_apply_verb_does_not_save_after_failed_apply(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_apply(_r: object) -> None:
+        raise ConfigError("ruleset rejected by nft: boom")
+
+    saved = False
+
+    def record_save(_r: object) -> None:
+        nonlocal saved
+        saved = True
+
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", failing_apply)
+    monkeypatch.setattr(cli, "save_ruleset", record_save)
+    assert cli.main(["apply", _COMPILE_DIR]) == 1
+    assert saved is False
+    assert "error:" in capsys.readouterr().err
 
 
 def test_apply_verb_does_not_load_after_failed_check(

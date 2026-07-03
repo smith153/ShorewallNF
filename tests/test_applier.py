@@ -8,14 +8,17 @@ error mapping without needing ``nft`` (or the CAP_NET_ADMIN it requires) install
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 import tests.golden_harness as gh
 from shorewallnf import applier
-from shorewallnf.errors import ConfigError
+from shorewallnf.errors import ConfigError, ShorewallNFError
 
 
 def test_check_ruleset_invokes_nft_check_json_with_ruleset_on_stdin(
@@ -221,3 +224,63 @@ def test_apply_ruleset_loads_valid_ruleset_live() -> None:
             capture_output=True,
             text=True,
         )
+
+
+# --- save_ruleset: persist the effective ruleset to disk (task #205) -----------------------
+
+
+def test_save_ruleset_round_trips_the_exact_applied_object(tmp_path: Path) -> None:
+    ruleset = {
+        "nftables": [
+            {"add": {"table": {"family": "inet", "name": "filter"}}},
+            {"add": {"chain": {"family": "inet", "table": "filter", "name": "input"}}},
+        ]
+    }
+    path = tmp_path / "state" / "ruleset.json"
+    applier.save_ruleset(ruleset, path)
+    with path.open() as fh:
+        assert json.load(fh) == ruleset  # exactly the applied object, round-tripped
+
+
+def test_save_ruleset_writes_owner_only_permissions(tmp_path: Path) -> None:
+    path = tmp_path / "ruleset.json"
+    applier.save_ruleset({"nftables": []}, path)
+    mode = stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o600  # owner read/write only, no group/other access
+
+
+def test_save_ruleset_is_atomic_leaves_no_temp_on_success(tmp_path: Path) -> None:
+    path = tmp_path / "ruleset.json"
+    applier.save_ruleset({"nftables": []}, path)
+    # only the final file remains — no leftover temp files in the directory.
+    assert [p.name for p in tmp_path.iterdir()] == ["ruleset.json"]
+
+
+def test_save_ruleset_atomic_never_truncates_existing_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "ruleset.json"
+    good = {"nftables": [{"add": {"table": {"family": "inet", "name": "filter"}}}]}
+    applier.save_ruleset(good, path)
+
+    # A write that fails mid-serialisation must not corrupt the pre-existing good file.
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(ShorewallNFError):
+        applier.save_ruleset({"nftables": []}, path)
+    with path.open() as fh:
+        assert json.load(fh) == good  # original intact, no partial/truncated content
+
+
+def test_save_ruleset_raises_shorewallnferror_on_write_failure(tmp_path: Path) -> None:
+    # Parent path component is a file, so the directory cannot be created — a clear failure.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    with pytest.raises(ShorewallNFError):
+        applier.save_ruleset({"nftables": []}, blocker / "ruleset.json")
+
+
+def test_default_ruleset_path_is_stable_and_documented() -> None:
+    assert applier.DEFAULT_RULESET_PATH == Path("/var/lib/shorewallnf/ruleset.json")
