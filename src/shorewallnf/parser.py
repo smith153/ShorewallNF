@@ -607,6 +607,8 @@ def _build_provider(record: Record) -> Provider:
         gateway=gateway,
         options=options,
         family=_provider_family(gateway),
+        path=record.path,
+        line=record.line,
     )
 
 
@@ -673,6 +675,8 @@ def _build_mangle_rule(record: Record) -> MangleRule:
         mask=mask,
         port=port,
         family=_infer_family(source, dest, proto, record),
+        path=record.path,
+        line=record.line,
     )
 
 

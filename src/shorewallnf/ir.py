@@ -243,7 +243,9 @@ class Provider:
     IPv4 gateway scopes the provider to :data:`Family.IPV4`, an IPv6 gateway to
     :data:`Family.IPV6`, and a non-literal gateway leaves it dual-stack (:data:`Family.BOTH`).
     Populating these is the parser's job (#232); validation (unique mark/table id, known
-    interface) is a later task (#233).
+    interface) is a later task (#233). ``path``/``line`` are the originating ``file:line`` (set by
+    the parser) so validator errors can cite the source; they are ``compare=False`` metadata and do
+    not participate in equality (ADR-0001, #251).
     """
 
     name: str
@@ -253,6 +255,8 @@ class Provider:
     gateway: str
     options: tuple[str, ...] = ()
     family: Family = Family.BOTH
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +273,8 @@ class MangleRule:
     ``source``/``dest`` are the raw ``zone``/``zone:host`` match tokens and ``proto``/``dport`` the
     matched protocol / destination port(s), verbatim. ``family`` is inferred from the rule content
     (ADR-0002), defaulting to :data:`Family.BOTH`. The generator (#229) consumes this IR.
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) for located diagnostics;
+    they are ``compare=False`` metadata and do not participate in equality (ADR-0001, #251).
     """
 
     action: str
@@ -280,6 +286,8 @@ class MangleRule:
     mask: int | None = None
     port: int | None = None
     family: Family = Family.BOTH
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,20 +49,26 @@ def _validate_providers(
         if provider.mark in marks:
             raise ConfigError(
                 f"provider {provider.name!r} reuses fwmark {provider.mark} already assigned to "
-                f"provider {marks[provider.mark]!r} — each provider needs a distinct mark"
+                f"provider {marks[provider.mark]!r} — each provider needs a distinct mark",
+                path=provider.path,
+                line=provider.line,
             )
         marks[provider.mark] = provider.name
         if provider.number in numbers:
             raise ConfigError(
                 f"provider {provider.name!r} reuses routing-table number {provider.number} "
                 f"already assigned to provider {numbers[provider.number]!r} — each provider needs "
-                f"a distinct number"
+                f"a distinct number",
+                path=provider.path,
+                line=provider.line,
             )
         numbers[provider.number] = provider.name
         if provider.interface not in interface_names:
             raise ConfigError(
                 f"provider {provider.name!r} names unknown interface {provider.interface!r} "
-                f"(no such interface is configured)"
+                f"(no such interface is configured)",
+                path=provider.path,
+                line=provider.line,
             )
 
 
