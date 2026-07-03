@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+import tests.golden_harness as gh
 from shorewallnf import applier
 from shorewallnf.errors import ConfigError
 
@@ -105,3 +106,57 @@ def test_atomic_load_payload_does_not_mutate_input() -> None:
     original = json.loads(json.dumps(ruleset))
     applier.atomic_load_payload(ruleset)
     assert ruleset == original
+
+
+# --- apply_ruleset: fail-closed live load (task #179) --------------------------------------
+
+
+def test_apply_ruleset_loads_atomic_payload_with_dry_run_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        seen["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ruleset = {"nftables": [{"add": {"table": {"family": "inet", "name": "filter"}}}]}
+    applier.apply_ruleset(ruleset)  # exit-0 path returns None cleanly
+
+    # Real load (dry-run OFF): no ``--check`` flag, unlike check_ruleset.
+    assert seen["cmd"] == ["nft", "--json", "--file", "-"]
+    assert "--check" not in seen["cmd"]
+    # The payload fed to nft is the scoped atomic-replace payload, not the raw ruleset.
+    assert json.loads(seen["input"]) == applier.atomic_load_payload(ruleset)
+
+
+def test_apply_ruleset_raises_configerror_when_nft_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "nft: boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ConfigError, match="boom"):
+        applier.apply_ruleset({"nftables": []})
+
+
+@pytest.mark.skipif(
+    not gh.nft_available(),
+    reason="apply_ruleset live load needs a usable nft (CAP_NET_ADMIN)",
+)
+def test_apply_ruleset_loads_valid_ruleset_live() -> None:
+    # Scoped atomic replace of a uniquely-named probe table — leaves co-resident tables alone.
+    ruleset = {
+        "nftables": [{"add": {"table": {"family": "inet", "name": "snf_apply_probe"}}}]
+    }
+    try:
+        applier.apply_ruleset(ruleset)  # rc 0, no raise
+    finally:
+        subprocess.run(
+            ["nft", "delete", "table", "inet", "snf_apply_probe"],
+            capture_output=True,
+            text=True,
+        )
