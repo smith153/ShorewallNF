@@ -16,7 +16,7 @@ import pytest
 
 from shorewallnf import cli
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Rule, Ruleset
+from shorewallnf.ir import Interface, Provider, Rule, Ruleset
 from shorewallnf.validator import validate
 
 
@@ -113,3 +113,49 @@ def _message(rs: Ruleset) -> str:
     with pytest.raises(ConfigError) as exc:
         validate(rs)
     return str(exc.value)
+
+
+# --- provider definitions: duplicate mark / table id / unknown interface (#233) ---
+
+_ETH = (Interface(name="eth0"), Interface(name="eth1"))
+
+
+def _providers_rs(*providers: Provider) -> Ruleset:
+    return Ruleset(providers=providers, interfaces=_ETH)
+
+
+def test_valid_provider_set_passes_unchanged() -> None:
+    rs = _providers_rs(
+        Provider(name="wan1", number=1, mark=1, interface="eth0", gateway="192.0.2.1"),
+        Provider(name="wan2", number=2, mark=2, interface="eth1", gateway="198.51.100.1"),
+    )
+    assert validate(rs) is rs  # pure IR -> IR, no mutation
+
+
+def test_duplicate_fwmark_fails_fast() -> None:
+    msg = _message(
+        _providers_rs(
+            Provider(name="wan1", number=1, mark=1, interface="eth0", gateway="192.0.2.1"),
+            Provider(name="wan2", number=2, mark=1, interface="eth1", gateway="198.51.100.1"),
+        )
+    )
+    assert "fwmark" in msg and "wan1" in msg and "wan2" in msg  # names the collision
+
+
+def test_duplicate_provider_number_fails_fast() -> None:
+    msg = _message(
+        _providers_rs(
+            Provider(name="wan1", number=1, mark=1, interface="eth0", gateway="192.0.2.1"),
+            Provider(name="wan2", number=1, mark=2, interface="eth1", gateway="198.51.100.1"),
+        )
+    )
+    assert "wan1" in msg and "wan2" in msg and "1" in msg  # names both and the shared table id
+
+
+def test_unknown_interface_fails_fast() -> None:
+    msg = _message(
+        _providers_rs(
+            Provider(name="wan1", number=1, mark=1, interface="eth9", gateway="192.0.2.1"),
+        )
+    )
+    assert "wan1" in msg and "eth9" in msg  # names the provider and the unknown interface
