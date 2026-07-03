@@ -63,4 +63,4 @@ jobs:
             echo "::error::netns behavioral test was skipped; expected it to run as root"
             exit 1
           fi
-          grep -qE '1 passed' netns.log
+          grep -qE '[0-9]+ passed' netns.log
