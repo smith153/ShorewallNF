@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import reader
-from .applier import apply_ruleset, check_ruleset, clear_ruleset
+from .applier import apply_ruleset, check_ruleset, clear_ruleset, save_ruleset
 from .errors import ShorewallNFError
 from .generator import generate
 from .parser import parse_config
@@ -27,7 +27,7 @@ from .validator import validate
 _VERB_HELP = {
     "check": "preprocess and validate the config; emit no ruleset",
     "compile": "compile the config into an nftables ruleset",
-    "apply": "compile, dry-run check, then load the ruleset onto the running system",
+    "apply": "compile, dry-run check, load the ruleset, then save it to disk",
     "start": "bring the firewall up: compile, dry-run check, then atomically load the ruleset",
     "reload": "compile, dry-run check, then atomically replace the running ruleset",
     "restart": "alias of reload: atomically replace the running ruleset",
@@ -89,6 +89,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         ruleset = compile_config(args.config_dir)
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
+        save_ruleset(ruleset)
         print(f"applied: {args.config_dir}")
         return 0
     if args.verb in _LIFECYCLE_MESSAGE:

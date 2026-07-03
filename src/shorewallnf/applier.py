@@ -14,10 +14,12 @@ nftables tooling. ``nft --check`` reads the kernel ruleset cache, so it needs CA
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from pathlib import Path
 from typing import Any
 
-from .errors import ConfigError
+from .errors import ConfigError, ShorewallNFError
 
 NFT = "nft"
 
@@ -60,6 +62,10 @@ def clear_ruleset() -> None:
     )
     if result.returncode != 0:
         raise ConfigError(f"ruleset rejected by nft: {result.stderr.strip()}")
+
+
+#: Stable on-disk location of the effective ruleset — the save-on-apply target (ADR-0030).
+DEFAULT_RULESET_PATH = Path("/var/lib/shorewallnf/ruleset.json")
 
 
 def atomic_load_payload(ruleset: dict[str, Any]) -> dict[str, Any]:
@@ -108,3 +114,29 @@ def apply_ruleset(ruleset: dict[str, Any]) -> None:
     )
     if result.returncode != 0:
         raise ConfigError(f"ruleset rejected by nft: {result.stderr.strip()}")
+
+
+def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> None:
+    """Persist the exact applied ``ruleset`` JSON to ``path``, atomically (task #205, ADR-0030).
+
+    Writes the same object handed to :func:`apply_ruleset` (no atomic-load wrapping) so it
+    round-trips via ``json.load``. The file is created owner-only (``0o600``) and published with
+    a temp-write-then-``os.replace`` so a reader never sees a partial or truncated file and an
+    interrupted write leaves any prior copy intact. Any I/O failure surfaces as
+    :class:`~shorewallnf.errors.ShorewallNFError` rather than passing silently (ADR-0004).
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(ruleset, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    except OSError as err:
+        raise ShorewallNFError(f"failed to save ruleset to {path}: {err}") from err
