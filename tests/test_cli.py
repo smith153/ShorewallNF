@@ -132,6 +132,33 @@ def test_lifecycle_verb_does_not_load_after_failed_check(
     assert "error:" in capsys.readouterr().err
 
 
+def test_clear_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "clear" in capsys.readouterr().out
+
+
+def test_clear_verb_invokes_clear_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "clear_ruleset", lambda: calls.append("clear"))
+    assert cli.main(["clear", _COMPILE_DIR]) == 0
+    assert calls == ["clear"]
+    assert _COMPILE_DIR in capsys.readouterr().out
+
+
+def test_clear_verb_reports_nft_rejection_and_exits_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_clear() -> None:
+        raise ConfigError("ruleset rejected by nft: boom")
+
+    monkeypatch.setattr(cli, "clear_ruleset", failing_clear)
+    assert cli.main(["clear", _COMPILE_DIR]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
 def test_console_script_entry_point_declared() -> None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())

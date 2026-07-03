@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import reader
-from .applier import apply_ruleset, check_ruleset
+from .applier import apply_ruleset, check_ruleset, clear_ruleset
 from .errors import ShorewallNFError
 from .generator import generate
 from .parser import parse_config
@@ -31,6 +31,7 @@ _VERB_HELP = {
     "start": "bring the firewall up: compile, dry-run check, then atomically load the ruleset",
     "reload": "compile, dry-run check, then atomically replace the running ruleset",
     "restart": "alias of reload: atomically replace the running ruleset",
+    "clear": "remove all ShorewallNF tables, leaving traffic unfiltered",
 }
 
 # start/reload/restart share apply's compile->check->apply mechanism (incremental diff
@@ -95,6 +96,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
         print(f"{_LIFECYCLE_MESSAGE[args.verb]}: {args.config_dir}")
+        return 0
+    if args.verb == "clear":
+        clear_ruleset()
+        print(f"cleared: {args.config_dir}")
         return 0
     # compile: emit the base inet ruleset as nftables JSON on stdout.
     print(json.dumps(compile_config(args.config_dir), indent=2))

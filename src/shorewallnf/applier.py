@@ -21,6 +21,46 @@ from .errors import ConfigError
 
 NFT = "nft"
 
+# The fixed set of ShorewallNF-owned tables. ``clear`` deletes this constant set regardless of
+# what any config compiles to — a NAT-less config must still clear a stale ``nat`` table.
+OWNED_TABLES: tuple[dict[str, str], ...] = (
+    {"family": "inet", "name": "filter"},
+    {"family": "inet", "name": "nat"},
+)
+
+
+def clear_payload() -> dict[str, Any]:
+    """Build the wide-open scoped-clear transaction (task #208, ADR-0010 idiom).
+
+    Delete-only: for each ShorewallNF-owned table emit an idempotent create-then-delete
+    (``add table`` then ``delete table``) and nothing else — no rule re-add, no ``flush``.
+    The scope is the fixed :data:`OWNED_TABLES` constant, not a compiled config, so a stale
+    table is cleared even when the current config would not create it. Co-resident tables are
+    never named, so they are untouched.
+    """
+    commands: list[dict[str, Any]] = []
+    for table in OWNED_TABLES:
+        commands.append({"add": {"table": dict(table)}})
+        commands.append({"delete": {"table": dict(table)}})
+    return {"nftables": commands}
+
+
+def clear_ruleset() -> None:
+    """Load the scoped-clear payload live, fail-closed (task #208, ADR-0010/0004).
+
+    Hands nft the one atomic :func:`clear_payload` transaction (``nft --json --file -``). A
+    non-zero rc raises :class:`~shorewallnf.errors.ConfigError`, leaving the live ruleset
+    unchanged.
+    """
+    result = subprocess.run(
+        [NFT, "--json", "--file", "-"],
+        input=json.dumps(clear_payload()),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(f"ruleset rejected by nft: {result.stderr.strip()}")
+
 
 def atomic_load_payload(ruleset: dict[str, Any]) -> dict[str, Any]:
     """Wrap ``ruleset`` so a load replaces only its own tables in one transaction (ADR-0010).
