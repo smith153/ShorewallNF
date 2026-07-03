@@ -150,3 +150,9 @@ def test_parse_config_carries_mangle_rules_into_the_ruleset() -> None:
     assert ruleset.mangle_rules == (
         MangleRule(action="MARK", source="net", dest="loc", mark=1),
     )
+
+
+def test_parsed_mangle_rule_carries_source_location() -> None:
+    # #251: located diagnostics — the parser stamps the row's path/line onto the IR.
+    rule = _one("MARK(1) net loc")
+    assert (rule.path, rule.line) == ("mangle", 1)

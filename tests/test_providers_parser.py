@@ -124,3 +124,19 @@ def test_parse_config_carries_providers_into_the_ruleset() -> None:
             family=Family.IPV4,
         ),
     )
+
+
+def test_parsed_provider_carries_source_location() -> None:
+    # #251: located diagnostics — the parser stamps the row's path/line onto the IR.
+    assert (_one("wan 1 1 eth0 192.0.2.1").path, _one("wan 1 1 eth0 192.0.2.1").line) == (
+        "providers", 1,
+    )
+
+
+def test_provider_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = Provider(name="wan", number=1, mark=1, interface="eth0", gateway="192.0.2.1",
+                 path="providers", line=1)
+    b = Provider(name="wan", number=1, mark=1, interface="eth0", gateway="192.0.2.1",
+                 path="other", line=9)
+    assert a == b

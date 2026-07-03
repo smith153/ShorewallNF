@@ -159,3 +159,18 @@ def test_unknown_interface_fails_fast() -> None:
         )
     )
     assert "wan1" in msg and "eth9" in msg  # names the provider and the unknown interface
+
+
+def test_provider_validation_error_cites_source_location() -> None:
+    # #251: a Provider carrying path/line yields a located ConfigError (mirrors Rule, #198/#195).
+    rs = Ruleset(
+        providers=(
+            Provider(name="wan1", number=1, mark=1, interface="eth0",
+                     gateway="192.0.2.1", path="providers", line=3),
+            Provider(name="wan2", number=2, mark=1, interface="eth1",
+                     gateway="198.51.100.1", path="providers", line=4),
+        ),
+        interfaces=_ETH,
+    )
+    # The collision fires on the second (line 4) provider, so the error prefixes providers:4.
+    assert str(_message(rs)).startswith("providers:4: ")
