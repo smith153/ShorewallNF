@@ -283,6 +283,25 @@ class MangleRule:
 
 
 @dataclass(frozen=True, slots=True)
+class RoutingArtifact:
+    """A provider lowered into policy-routing artifacts (the second output channel, ADR-0050).
+
+    The whole routing lowering of one :class:`Provider`, shared by the Generator (which produces
+    it) and the Applier (#235, which renders it to ``ip rule``/``ip route``): ``table_id`` is the
+    routing-table id (= the provider number) whose default route is ``via <gateway> dev
+    <interface>``, and ``fwmark`` (= the provider mark) is the mark whose ``ip rule`` selects that
+    table. ``family`` is :data:`Family.IPV4` or :data:`Family.IPV6` — never :data:`Family.BOTH`; a
+    routing table is family-specific (ADR-0002). Not part of the nftables JSON channel.
+    """
+
+    table_id: int
+    fwmark: int
+    gateway: str
+    interface: str
+    family: Family
+
+
+@dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
 

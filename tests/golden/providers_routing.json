@@ -1,0 +1,25 @@
+{
+  "routing": [
+    {
+      "table_id": 1,
+      "fwmark": 1,
+      "gateway": "192.0.2.1",
+      "interface": "eth0",
+      "family": "ipv4"
+    },
+    {
+      "table_id": 2,
+      "fwmark": 2,
+      "gateway": "198.51.100.1",
+      "interface": "eth1",
+      "family": "ipv4"
+    },
+    {
+      "table_id": 3,
+      "fwmark": 3,
+      "gateway": "2001:db8::1",
+      "interface": "eth2",
+      "family": "ipv6"
+    }
+  ]
+}
