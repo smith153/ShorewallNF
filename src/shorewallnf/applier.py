@@ -20,8 +20,14 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError, ShorewallNFError
+from .ir import Family, RoutingArtifact
 
 NFT = "nft"
+IP = "ip"
+
+# The ``ip`` family flag per artifact family (ADR-0002): a provider routing table + fwmark rule is
+# scoped to one family (v4 or v6, never both), so every ``ip`` invocation carries -4 or -6.
+_IP_FAMILY_FLAG = {Family.IPV4: "-4", Family.IPV6: "-6"}
 
 # The fixed set of ShorewallNF-owned tables. ``clear`` deletes this constant set regardless of
 # what any config compiles to — a NAT-less config must still clear a stale ``nat`` table.
@@ -163,3 +169,74 @@ def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> 
             raise
     except OSError as err:
         raise ShorewallNFError(f"failed to save ruleset to {path}: {err}") from err
+
+
+# --- provider policy routing via iproute2 (task #235, ADR-0050) ----------------------------
+#
+# Policy routing lives in the Linux routing subsystem, not nftables, so it is applied with the
+# ``ip`` binary rather than ``nft``. The argv is derived purely from the ADR-0050 artifact model
+# (so it is unit-testable by capturing argv without a live network); all invocation stays here in
+# the shell (ADR-0003).
+
+
+def routing_install_argv(artifacts: tuple[RoutingArtifact, ...]) -> list[list[str]]:
+    """The ``ip`` argv that installs the provider routing artifacts (ADR-0050), per family.
+
+    Per artifact, in order: add the default route via the provider's gateway/interface into its
+    routing table, then the fwmark→table selection rule (populate the table before selecting it).
+    """
+    argv: list[list[str]] = []
+    for art in artifacts:
+        flag, table = _IP_FAMILY_FLAG[art.family], str(art.table_id)
+        argv.append(
+            [IP, flag, "route", "add", "default", "via", art.gateway,
+             "dev", art.interface, "table", table]
+        )
+        argv.append([IP, flag, "rule", "add", "fwmark", str(art.fwmark), "table", table])
+    return argv
+
+
+def routing_teardown_argv(artifacts: tuple[RoutingArtifact, ...]) -> list[list[str]]:
+    """The ``ip`` argv that removes the provider routing artifacts — idempotent (safe when absent).
+
+    Per artifact, the reverse of install: drop the fwmark selection rule, then flush the table's
+    routes. Run before a re-install (so repeated applies don't accumulate) and by stop/clear.
+    """
+    argv: list[list[str]] = []
+    for art in artifacts:
+        flag, table = _IP_FAMILY_FLAG[art.family], str(art.table_id)
+        argv.append([IP, flag, "rule", "del", "fwmark", str(art.fwmark), "table", table])
+        argv.append([IP, flag, "route", "flush", "table", table])
+    return argv
+
+
+def apply_routing(artifacts: tuple[RoutingArtifact, ...]) -> None:
+    """Install the provider routing artifacts via iproute2, idempotently and fail-closed (#235).
+
+    **Ordering:** run this *after* the nft ruleset load (:func:`apply_ruleset`) — the fwmark these
+    rules select is set in the nftables mangle path (epic #203), and the nft load is the atomic
+    core (ADR-0010). First tear down any prior provider artifacts (best-effort — on a clean system
+    the removals no-op), then install the current set. An install failure rolls the partial set
+    back (a second teardown) and raises :class:`~shorewallnf.errors.ConfigError`, so a failed apply
+    never leaves half-configured routing (fail-closed, ADR-0004).
+    """
+    _run_best_effort(routing_teardown_argv(artifacts))
+    for argv in routing_install_argv(artifacts):
+        result = subprocess.run(argv, capture_output=True, text=True)
+        if result.returncode != 0:
+            _run_best_effort(routing_teardown_argv(artifacts))  # roll back to a clean state
+            raise ConfigError(
+                f"routing artifact rejected by ip ({' '.join(argv)}): {result.stderr.strip()}"
+            )
+
+
+def teardown_routing(artifacts: tuple[RoutingArtifact, ...]) -> None:
+    """Remove the provider routing artifacts via iproute2 (idempotent), for stop/clear (#235)."""
+    _run_best_effort(routing_teardown_argv(artifacts))
+
+
+def _run_best_effort(argvs: list[list[str]]) -> None:
+    """Run each ``ip`` argv, ignoring exit status — removals are idempotent (nothing to remove is
+    not an error), so their failure must not abort an apply or a teardown."""
+    for argv in argvs:
+        subprocess.run(argv, capture_output=True, text=True)
