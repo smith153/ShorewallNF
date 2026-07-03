@@ -1,0 +1,7 @@
+# Admit the helper-tracked control channels so the conntrack assignments track a real, accepted
+# flow. Documentation addresses only: RFC 5737.
+#ACTION   SOURCE   DEST              PROTO   DPORT
+ACCEPT    net      fw                tcp     22
+ACCEPT    net      loc:198.51.100.10 tcp     21
+ACCEPT    net      loc               udp     69
+ACCEPT    net      loc               tcp     1723

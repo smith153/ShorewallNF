@@ -6,7 +6,16 @@ import pytest
 
 import tests.golden_harness as gh
 from shorewallnf import cli
-from shorewallnf.ir import ConntrackHelper, Family, Nat, Policy, Rule, ZoneMember
+from shorewallnf.generator import generate
+from shorewallnf.ir import (
+    ConntrackHelper,
+    Family,
+    HelperCapabilities,
+    Nat,
+    Policy,
+    Rule,
+    ZoneMember,
+)
 from shorewallnf.parser import parse_config
 from shorewallnf.preprocessor import SourceLine, to_source_lines
 from tests.golden_harness import assert_golden
@@ -397,3 +406,108 @@ def test_snat_compiled_ruleset_passes_nft_check() -> None:
     from shorewallnf.applier import check_ruleset
 
     check_ruleset(cli.compile_config(SNAT_FIXTURE))  # must not raise
+
+
+# --- conntrack helpers end-to-end (#222) -------------------------------------
+#
+# A committed fixture mirroring the reference config's helper intent abstractly: the active-FTP
+# helper on the FTP control channel narrowed to an RFC 5737 host (v4-scoped), a dual-stack TFTP
+# helper, and the IPv4-only PPTP helper (RFC ranges only). The generator gates emission on a
+# compile-time HelperCapabilities surface (ADR-0040/0041); the CLI path defaults to the empty
+# surface, so the caller here declares the platform provides them. The capability-on golden shows
+# the `ct helper` objects + assignment rules; a capability-off variant skips the unavailable helper
+# with a warning yet still compiles to a valid ruleset. Kept in its own region.
+
+CONNTRACK_FIXTURE = Path(__file__).parent / "fixtures" / "conntrack_compile_dir"
+
+# The AUTOHELPERS-equivalent surface that makes every fixture helper available (ADR-0040).
+_CONNTRACK_CAPS = HelperCapabilities(available=frozenset({"ftp", "tftp", "pptp"}))
+
+# The meta nfproto guard a family-scoped helper's assignment rule carries (ADR-0002).
+_NFPROTO_V4 = {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv4"}}
+
+
+def _helper_objects(compiled: dict[str, Any]) -> list[dict[str, Any]]:
+    return [c["add"]["ct helper"] for c in compiled["nftables"] if "ct helper" in c["add"]]
+
+
+def _helper_assignment_rules(compiled: dict[str, Any]) -> list[dict[str, Any]]:
+    rules = (c["add"]["rule"] for c in compiled["nftables"] if "rule" in c["add"])
+    return [r for r in rules if any("ct helper" in e for e in r["expr"])]
+
+
+def test_conntrack_compile_end_to_end_matches_golden() -> None:
+    # Full path: preprocess (I/O) -> parse_config (conntrack_helpers wired in) -> generate with the
+    # helpers made available. The golden harness also dry-run validates with nft --check where able.
+    ruleset = parse_config(cli.preprocess(CONNTRACK_FIXTURE))
+    assert_golden(ruleset, "conntrack_compile", generator=lambda rs: generate(rs, _CONNTRACK_CAPS))
+
+
+def test_conntrack_compile_carries_helper_objects_and_assignment_rules() -> None:
+    # parse_config -> generate with the platform providing all three helpers. One `ct helper` object
+    # per distinct helper (v6-capable -> l3proto inet, v4-only -> l3proto ip) precedes one
+    # `ct helper set` assignment rule per row (ADR-0041), alongside the base skeleton and filters.
+    compiled = generate(parse_config(cli.preprocess(CONNTRACK_FIXTURE)), _CONNTRACK_CAPS)
+    adds = compiled["nftables"]
+    objects = {o["name"]: o for o in _helper_objects(compiled)}
+    assert objects["ftp"]["protocol"] == "tcp" and objects["ftp"]["l3proto"] == "inet"
+    assert objects["tftp"]["protocol"] == "udp" and objects["tftp"]["l3proto"] == "inet"
+    assert objects["pptp"]["protocol"] == "tcp" and objects["pptp"]["l3proto"] == "ip"  # v4-only
+    # ...one assignment rule per row binds its helper via the non-terminal set statement...
+    rules = _helper_assignment_rules(compiled)
+    assigned = {e["ct helper"] for r in rules for e in r["expr"] if "ct helper" in e}
+    assert assigned == {"ftp", "tftp", "pptp"}
+    # ...the v4-narrowed FTP rule carries the RFC 5737 host match + a meta nfproto ipv4 guard...
+    ftp_rule = next(r for r in rules if {"ct helper": "ftp"} in r["expr"])
+    assert _NFPROTO_V4 in ftp_rule["expr"]
+    host_match = {
+        "match": {
+            "op": "==",
+            "left": {"payload": {"protocol": "ip", "field": "daddr"}},
+            "right": "198.51.100.10",
+        }
+    }
+    assert host_match in ftp_rule["expr"]
+    # ...while the dual-stack TFTP rule needs no family guard (ADR-0002)...
+    tftp_rule = next(r for r in rules if {"ct helper": "tftp"} in r["expr"])
+    assert _NFPROTO_V4 not in tftp_rule["expr"]
+    # ...and every `ct helper` object is emitted before the assignment rules that reference it.
+    last_obj_idx = max(i for i, c in enumerate(adds) if "ct helper" in c["add"])
+    first_rule_idx = min(
+        i
+        for i, c in enumerate(adds)
+        if "rule" in c["add"] and any("ct helper" in e for e in c["add"]["rule"]["expr"])
+    )
+    assert last_obj_idx < first_rule_idx
+
+
+def test_conntrack_capability_off_helper_is_skipped_with_warning() -> None:
+    # A helper the platform does not provide is skipped — no object, no rule — with a surfaced
+    # warning, leaving the rest of the ruleset well-formed (ADR-0041 fail-closed capability gating).
+    ruleset = parse_config(cli.preprocess(CONNTRACK_FIXTURE))
+    caps = HelperCapabilities(available=frozenset({"ftp", "pptp"}))  # tftp marked unavailable
+    with pytest.warns(UserWarning, match="tftp.*not available"):
+        compiled = generate(ruleset, caps)
+    assert {o["name"] for o in _helper_objects(compiled)} == {"ftp", "pptp"}
+    assigned = {
+        e["ct helper"]
+        for r in _helper_assignment_rules(compiled)
+        for e in r["expr"]
+        if "ct helper" in e
+    }
+    assert assigned == {"ftp", "pptp"}
+
+
+@pytest.mark.nft
+def test_conntrack_compiled_ruleset_passes_nft_check() -> None:
+    # The real end-to-end guarantee (#222): the generated `ct helper` objects + assignment rules
+    # load under `nft --check`. Hard-fails under CI if nft can't run; skips locally (needs root).
+    # Both the capability-on ruleset and a capability-off variant must validate.
+    gh.require_nft()
+    from shorewallnf.applier import check_ruleset
+
+    ruleset = parse_config(cli.preprocess(CONNTRACK_FIXTURE))
+    check_ruleset(generate(ruleset, _CONNTRACK_CAPS))  # objects + assignment rules
+    with pytest.warns(UserWarning, match="not available"):
+        capability_off = generate(ruleset, HelperCapabilities(available=frozenset({"ftp", "pptp"})))
+    check_ruleset(capability_off)  # a skipped helper still leaves a valid ruleset
