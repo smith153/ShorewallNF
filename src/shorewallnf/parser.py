@@ -30,6 +30,7 @@ from .ir import (
     Interface,
     MacroDef,
     MacroRule,
+    MangleRule,
     Nat,
     Policy,
     Provider,
@@ -632,6 +633,116 @@ def _provider_family(gateway: str) -> Family:
     return Family.IPV4 if network.version == 4 else Family.IPV6
 
 
+# --- mangle (packet marking) parser ------------------------------------------
+
+
+def parse_mangle(records: Iterable[Record]) -> tuple[MangleRule, ...]:
+    """Parse ``mangle``-file rows into :class:`~shorewallnf.ir.MangleRule` IR (epic #203).
+
+    A row is ``ACTION SOURCE DEST [PROTO] [DPORT]``. ``ACTION`` is ``MARK(<value>[/<mask>])`` /
+    ``CONNMARK(<value>[/<mask>])`` (packet/connection mark + optional mask), bare ``DIVERT``, or
+    ``TPROXY(<port>[,<mark>])`` (transparent-proxy port + optional mark); the rest are the match
+    criteria. File order is preserved. Family is inferred from the row content (ADR-0002). An
+    unknown action, a malformed target (non-integer/out-of-range port or mark), or an unsupported
+    trailing column fails fast with a located :class:`ConfigError` (ADR-0004).
+    """
+    return tuple(_build_mangle_rule(record) for record in records)
+
+
+def _build_mangle_rule(record: Record) -> MangleRule:
+    action_token = require_field(record, 0, "mangle action")
+    if len(record.fields) > 5:
+        raise ConfigError(
+            f"unsupported trailing mangle columns {record.fields[5:]!r} "
+            "(only action, source, dest, proto, dest-port are supported)",
+            path=record.path,
+            line=record.line,
+        )
+    action, mark, mask, port = _parse_mangle_action(action_token, record)
+    source = _optional(record, 1) or ""
+    dest = _optional(record, 2) or ""
+    proto = _optional(record, 3)
+    dport = _optional(record, 4)
+    return MangleRule(
+        action=action,
+        source=source,
+        dest=dest,
+        proto=proto,
+        dport=dport,
+        mark=mark,
+        mask=mask,
+        port=port,
+        family=_infer_family(source, dest, proto, record),
+    )
+
+
+def _parse_mangle_action(
+    token: str, record: Record
+) -> tuple[str, int | None, int | None, int | None]:
+    """Split a ``mangle`` ACTION column into ``(action, mark, mask, port)`` (ADR-0004)."""
+    if token == "DIVERT":
+        return "DIVERT", None, None, None
+    for name in ("MARK", "CONNMARK"):
+        if token.startswith(f"{name}(") and token.endswith(")"):
+            mark, mask = _parse_mark_mask(token[len(name) + 1 : -1], name, record)
+            return name, mark, mask, None
+    if token.startswith("TPROXY(") and token.endswith(")"):
+        port, tproxy_mark = _parse_tproxy(token[len("TPROXY(") : -1], record)
+        return "TPROXY", tproxy_mark, None, port
+    raise ConfigError(
+        f"unsupported mangle action {token!r} "
+        "(expected MARK(<value>), CONNMARK(<value>), DIVERT, or TPROXY(<port>))",
+        path=record.path,
+        line=record.line,
+    )
+
+
+def _parse_mark_mask(value: str, name: str, record: Record) -> tuple[int, int | None]:
+    """Parse a ``MARK``/``CONNMARK`` ``<value>[/<mask>]`` parameter into ``(mark, mask)``."""
+    if not value:
+        raise ConfigError(
+            f"{name} needs a mark value: {name}(<value>[/<mask>])",
+            path=record.path,
+            line=record.line,
+        )
+    mark_str, sep, mask_str = value.partition("/")
+    mark = _int_or_fail(mark_str, f"{name} mark value", record)
+    mask = _int_or_fail(mask_str, f"{name} mask", record) if sep else None
+    return mark, mask
+
+
+def _parse_tproxy(value: str, record: Record) -> tuple[int, int | None]:
+    """Parse a ``TPROXY`` ``<port>[,<mark>]`` parameter into ``(port, mark)``."""
+    if not value:
+        raise ConfigError(
+            "TPROXY needs a port: TPROXY(<port>[,<mark>])",
+            path=record.path,
+            line=record.line,
+        )
+    port_str, sep, mark_str = value.partition(",")
+    port = _int_or_fail(port_str, "TPROXY port", record)
+    if not 1 <= port <= 65535:
+        raise ConfigError(
+            f"TPROXY port {port} out of range (1-65535)",
+            path=record.path,
+            line=record.line,
+        )
+    mark = _int_or_fail(mark_str, "TPROXY mark", record) if sep else None
+    return port, mark
+
+
+def _int_or_fail(token: str, name: str, record: Record) -> int:
+    """Parse ``token`` as an integer (decimal or ``0x`` hex), or fail fast (ADR-0004)."""
+    try:
+        return int(token, 0)
+    except ValueError:
+        raise ConfigError(
+            f"{name} must be an integer, got {token!r}",
+            path=record.path,
+            line=record.line,
+        ) from None
+
+
 # --- action.<Name> (site-defined macro/custom-action) parser -----------------
 
 
@@ -788,6 +899,9 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
     providers: tuple[Provider, ...] = ()
     if "providers" in streams:
         providers = parse_providers(parse(streams["providers"]))
+    mangle_rules: tuple[MangleRule, ...] = ()
+    if "mangle" in streams:
+        mangle_rules = parse_mangle(parse(streams["mangle"]))
     stopped_rules: tuple[Rule, ...] = ()
     if "stoppedrules" in streams:
         stopped_rules = parse_stopped_rules(parse(streams["stoppedrules"]), zones)
@@ -808,5 +922,6 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         nats=nats,
         conntrack_helpers=conntrack_helpers,
         providers=providers,
+        mangle_rules=mangle_rules,
         actions=actions,
     )

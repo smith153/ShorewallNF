@@ -61,6 +61,14 @@ def test_discover_finds_providers_file(tmp_path: Path) -> None:
     assert discover(tmp_path) == ("interfaces", "providers")
 
 
+def test_discover_finds_mangle_file(tmp_path: Path) -> None:
+    # The mangle file (packet marking) is a known config file (epic #203); it follows conntrack
+    # in processing order, grouped with the other packet-processing feature files.
+    (tmp_path / "conntrack").write_text("CT:helper:ftp - -\n")
+    (tmp_path / "mangle").write_text("MARK(1) net loc\n")
+    assert discover(tmp_path) == ("conntrack", "mangle")
+
+
 def test_discover_finds_action_files_and_index(tmp_path: Path) -> None:
     (tmp_path / "zones").write_text("net ipv4\n")
     (tmp_path / "actions").write_text("Ping\n")
