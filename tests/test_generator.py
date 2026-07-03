@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.generator import generate
+from shorewallnf.generator import generate, generate_stopped
 from shorewallnf.ir import Family, Nat, Policy, Rule, Ruleset, Zone, ZoneMember
 from tests.golden_harness import assert_golden
 
@@ -1264,3 +1264,147 @@ def test_snat_without_source_nets_fails_fast() -> None:
     with pytest.raises(ConfigError) as exc:
         generate(rs)
     assert "source network" in str(exc.value).lower()
+
+
+# ---- stopped safe-state ruleset (task #211, ADR-0021) ------------------------------------
+#
+# `generate_stopped` renders the fail-safe ruleset installed while the firewall is stopped
+# (#212 installs it). Default-drop base chains keep everything closed, but the no-lockout
+# baseline (loopback + established/related) plus the parsed admin `stopped_rules` are always
+# admitted so an operator is never orphaned. It consumes ONLY `stopped_rules` — never the
+# running `rules`/`policies`/`nats`.
+
+
+def _stopped_rules(rs: Ruleset) -> list[dict[str, Any]]:
+    return [c["add"]["rule"] for c in generate_stopped(rs)["nftables"] if "rule" in c["add"]]
+
+
+def _stopped_chains(rs: Ruleset) -> dict[str, dict[str, Any]]:
+    return {
+        c["add"]["chain"]["name"]: c["add"]["chain"]
+        for c in generate_stopped(rs)["nftables"]
+        if "chain" in c["add"]
+    }
+
+
+def test_stopped_state_is_single_inet_filter_table() -> None:
+    tables = [
+        c["add"]["table"] for c in generate_stopped(Ruleset())["nftables"] if "table" in c["add"]
+    ]
+    assert tables == [{"family": "inet", "name": "filter"}]
+
+
+def test_stopped_base_chains_are_default_drop() -> None:
+    chains = _stopped_chains(Ruleset())
+    assert set(chains) == {"input", "forward", "output"}
+    assert chains["input"]["policy"] == "drop"
+    assert chains["forward"]["policy"] == "drop"
+    assert chains["output"]["policy"] == "accept"
+
+
+def test_stopped_state_admits_loopback_and_stateful_baseline() -> None:
+    # No-lockout baseline: even with ZERO admin rules the stopped state still admits loopback
+    # and established/related return traffic — no silent lockout, no all-ports-open.
+    rules = _stopped_rules(Ruleset())
+    stateful = {
+        "match": {
+            "op": "in",
+            "left": {"ct": {"key": "state"}},
+            "right": {"set": ["established", "related"]},
+        }
+    }
+    loopback = {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "lo"}}
+    input_rules = [r["expr"] for r in rules if r["chain"] == "input"]
+    forward_rules = [r["expr"] for r in rules if r["chain"] == "forward"]
+    assert [stateful, {"accept": None}] in input_rules
+    assert [loopback, {"accept": None}] in input_rules
+    assert [stateful, {"accept": None}] in forward_rules
+
+
+def test_stopped_state_with_zero_admin_rules_is_exactly_the_baseline() -> None:
+    # Zero admin rules → the emitted ruleset is precisely the default-drop skeleton + baseline
+    # accepts. Nothing more is opened (no all-ports-open), nothing less (no total lockout).
+    rules = _stopped_rules(Ruleset())
+    assert [(r["chain"], r["expr"][-1]) for r in rules] == [
+        ("input", {"accept": None}),
+        ("input", {"accept": None}),
+        ("forward", {"accept": None}),
+    ]
+
+
+def test_stopped_admin_rule_to_firewall_lands_in_input_chain() -> None:
+    # Admin SSH from a management host is translated exactly as the main rules generator would,
+    # landing in the input chain past the baseline accepts.
+    zones = (_FW, _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        stopped_rules=(
+            Rule(
+                action="ACCEPT", source="net:198.51.100.10", dest="fw",
+                proto="tcp", dport="22", family=Family.IPV4,
+            ),
+        ),
+    )
+    admin = [r for r in _stopped_rules(rs) if r["chain"] == "input"][-1]
+    assert admin["expr"] == [
+        _iif("eth0"),
+        _addr("saddr", "ip", "198.51.100.10"),
+        _dport("tcp", 22),
+        {"accept": None},
+    ]
+
+
+def test_stopped_admin_rules_are_family_correct() -> None:
+    # A v4 and a v6 admin rule each carry their own family guard (ip vs ip6 saddr) in the one
+    # inet table — same dual-stack handling as the running rules generator (ADR-0002).
+    zones = (_FW, _zone("net", "eth0"))
+    rs = Ruleset(
+        zones=zones,
+        stopped_rules=(
+            Rule(action="ACCEPT", source="net:198.51.100.10", dest="fw",
+                 proto="tcp", dport="22", family=Family.IPV4),
+            Rule(action="ACCEPT", source="net:2001:db8::10", dest="fw",
+                 proto="tcp", dport="22", family=Family.IPV6),
+        ),
+    )
+    exprs = [r["expr"] for r in _stopped_rules(rs) if r["chain"] == "input"]
+    assert any(_addr("saddr", "ip", "198.51.100.10") in e for e in exprs)
+    assert any(_addr("saddr", "ip6", "2001:db8::10") in e for e in exprs)
+
+
+def test_stopped_state_ignores_running_rules_policies_and_nats() -> None:
+    # The stopped state is built ONLY from stopped_rules: the running config's rules, policies,
+    # and NATs are invisible to it (that is what makes it a self-contained safe state).
+    zones = (_FW, _zone("net", "eth0"), _zone("loc", "eth1"))
+    rs = Ruleset(
+        zones=zones,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="80"),),
+        policies=(Policy(source="all", dest="all", action="ACCEPT"),),
+        nats=(Nat(action="MASQUERADE", source_nets="192.0.2.0/24", out_interface="eth0"),),
+    )
+    assert generate_stopped(rs) == generate_stopped(Ruleset(zones=zones))
+
+
+def test_stopped_admin_rule_zone_without_interfaces_fails_fast() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("net")),
+        stopped_rules=(
+            Rule(action="ACCEPT", source="net", dest="fw", proto="tcp", dport="22"),
+        ),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate_stopped(rs)
+    assert "net" in str(exc.value)
+
+
+def test_stopped_state_matches_golden() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        stopped_rules=(
+            Rule(action="ACCEPT", source="net:198.51.100.10", dest="fw",
+                 proto="tcp", dport="22", family=Family.IPV4),
+            Rule(action="ACCEPT", source="net:2001:db8::10", dest="fw",
+                 proto="tcp", dport="22", family=Family.IPV6),
+        ),
+    )
+    assert_golden(rs, "stopped_safe_state", generator=generate_stopped)

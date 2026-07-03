@@ -32,16 +32,43 @@ _Command = dict[str, Any]
 
 def generate(ruleset: Ruleset) -> dict[str, list[_Command]]:
     """Emit base skeleton (ADR-0005), then feature rules (ADR-0007), then policies (ADR-0006)."""
-    commands: list[_Command] = [_table()]
-    commands += [_chain(name, policy) for name, policy in _BASE_CHAINS]
-    commands.append(_rule("input", [_ct_established_related(), _accept()]))
-    commands.append(_rule("input", [_ifname("iifname", "lo"), _accept()]))
-    commands.append(_rule("forward", [_ct_established_related(), _accept()]))
+    commands = _filter_base()
     commands += _nat_base(ruleset)
     commands += _feature_rules(ruleset)
     commands += _nat_rules(ruleset)
     commands += _policy_rules(ruleset)
     return {"nftables": commands}
+
+
+def generate_stopped(ruleset: Ruleset) -> dict[str, list[_Command]]:
+    """Emit the stopped safe-state ruleset (ADR-0021).
+
+    A self-contained ``inet filter`` table with the same fail-closed default-drop base chains
+    (ADR-0005) and no-lockout baseline (loopback + established/related accepts) as the running
+    ruleset, but carrying **only** the admin-access ``stopped_rules`` (#210) — never the running
+    ``rules``/``policies``/``nats``. With zero admin rules the baseline alone still admits the
+    operator's return traffic and loopback, so ``stop`` can never silently lock anyone out.
+    """
+    interfaces = _zone_interfaces(ruleset.zones)
+    firewalls = _firewalls(ruleset)
+    commands = _filter_base()
+    commands += _translate_rules(ruleset.stopped_rules, interfaces, firewalls)
+    return {"nftables": commands}
+
+
+def _filter_base() -> list[_Command]:
+    """The always-present ADR-0005 filter skeleton: table, default-drop base chains, and the
+    no-lockout baseline accepts (established/related on input+forward, loopback on input)."""
+    commands: list[_Command] = [_table()]
+    commands += [_chain(name, policy) for name, policy in _BASE_CHAINS]
+    commands.append(_rule("input", [_ct_established_related(), _accept()]))
+    commands.append(_rule("input", [_ifname("iifname", "lo"), _accept()]))
+    commands.append(_rule("forward", [_ct_established_related(), _accept()]))
+    return commands
+
+
+def _firewalls(ruleset: Ruleset) -> set[str]:
+    return {zone.name for zone in ruleset.zones if zone.is_firewall}
 
 
 # ---- inter-zone default-policy rules (ADR-0006) -----------------------------------------
@@ -123,8 +150,20 @@ def _feature_rules(ruleset: Ruleset) -> list[_Command]:
     each. Sorting before the policy fall-through keeps explicit verdicts ahead of the defaults.
     """
     interfaces = _zone_interfaces(ruleset.zones)
-    firewalls = {zone.name for zone in ruleset.zones if zone.is_firewall}
-    ordered = sorted(ruleset.rules, key=lambda rule: _SECTION_ORDER[_section_of(rule)])
+    firewalls = _firewalls(ruleset)
+    return _translate_rules(ruleset.rules, interfaces, firewalls)
+
+
+def _translate_rules(
+    rules: tuple[Rule, ...], interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
+) -> list[_Command]:
+    """Translate a tuple of ``Rule``s to nft commands, ``?SECTION``-ordered (ADR-0007).
+
+    Shared by the running ruleset (``ruleset.rules``) and the stopped safe state
+    (``ruleset.stopped_rules``, ADR-0021) so admin rules are compiled family-correctly and
+    identically to normal rules.
+    """
+    ordered = sorted(rules, key=lambda rule: _SECTION_ORDER[_section_of(rule)])
     return [cmd for rule in ordered for cmd in _feature_rule(rule, interfaces, firewalls)]
 
 
