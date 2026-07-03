@@ -130,6 +130,15 @@ def test_load_command_reads_json_from_stdin() -> None:
     assert nh.load_command("snf_r") == ["ip", "netns", "exec", "snf_r", "nft", "-j", "-f", "-"]
 
 
+def test_apply_command_runs_real_applier_in_router() -> None:
+    cmd = nh.apply_command("snf_r", python="/usr/bin/python3")
+    assert cmd[:5] == ["ip", "netns", "exec", "snf_r", "/usr/bin/python3"]
+    assert cmd[5] == "-c"
+    # Faithful to the real apply path: it calls apply_ruleset, not a flush-ruleset shortcut.
+    assert "apply_ruleset" in cmd[6]
+    assert "flush" not in cmd[6]
+
+
 def test_ping_command_v4() -> None:
     assert nh.ping_command("snf_client", "198.51.100.2", count=2) == [
         "ip", "netns", "exec", "snf_client", "ping", "-4", "-c", "2", "-W", "1", "198.51.100.2",
@@ -167,3 +176,38 @@ def test_forward_drop_blocks_ping() -> None:
         assert sb.ping(CLIENT.name, SERVER.host_ip4), "ACCEPT policy should let the ping through"
         sb.load(drop)
         assert not sb.ping(CLIENT.name, SERVER.host_ip4), "DROP policy should block the ping"
+
+
+# A co-resident table ShorewallNF must not own or clobber (added out-of-band below).
+_COEXIST_TABLE = ("nft", "add", "table", "inet", "coexist_probe")
+
+
+@pytest.mark.netns
+@pytest.mark.skipif(
+    not nh.netns_available(), reason="netns behavioral tier needs root + ip/nft (epics #77/#78)"
+)
+def test_apply_real_path_packet_path_reapply_and_coresident() -> None:
+    """The production apply path (ADR-0010 scoped replace, not ``flush ruleset``): a real apply
+    controls the packet path, a re-apply atomically swaps it with no teardown gap, and a
+    co-resident non-ShorewallNF table survives the apply."""
+    accept = Ruleset(
+        zones=_ZONES, policies=(Policy(source="client", dest="server", action="ACCEPT"),)
+    )
+    drop = Ruleset(
+        zones=_ZONES, policies=(Policy(source="client", dest="server", action="DROP"),)
+    )
+    with nh.NetnsSandbox(TOPO) as sb:
+        # A non-ShorewallNF table pre-existing in the router netns must survive every apply.
+        sb.exec(sb.topo.router, _COEXIST_TABLE)
+
+        # First apply via the real applier: ACCEPT opens the forward path.
+        sb.apply(accept)
+        assert sb.ping(CLIENT.name, SERVER.host_ip4), "ACCEPT policy should let the ping through"
+
+        # Re-apply atomically replaces the previous ShorewallNF ruleset with the new packet path.
+        sb.apply(drop)
+        assert not sb.ping(CLIENT.name, SERVER.host_ip4), "DROP re-apply should block the ping"
+
+        # The co-resident table is untouched by the scoped replace (no `flush ruleset`).
+        survived = sb.exec(sb.topo.router, ("nft", "list", "table", "inet", "coexist_probe"))
+        assert survived.returncode == 0, "co-resident table must survive a ShorewallNF apply"
