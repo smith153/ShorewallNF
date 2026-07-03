@@ -174,3 +174,51 @@ def test_provider_validation_error_cites_source_location() -> None:
     )
     # The collision fires on the second (line 4) provider, so the error prefixes providers:4.
     assert str(_message(rs)).startswith("providers:4: ")
+
+
+# --- reserved routing-table numbers + fwmark 0 (#255) ------------------------
+
+
+@pytest.mark.parametrize("number", [0, 253, 254, 255])
+def test_reserved_routing_table_number_fails_fast(number: int) -> None:
+    # 0/253/254/255 are the kernel's unspec/default/main/local tables — assigning one lets
+    # teardown `ip route flush` a system table (destructive).
+    rs = _providers_rs(
+        Provider(name="wan", number=number, mark=1, interface="eth0", gateway="192.0.2.1"),
+    )
+    with pytest.raises(ConfigError, match="reserved"):
+        validate(rs)
+
+
+def test_out_of_range_routing_table_number_fails_fast() -> None:
+    rs = _providers_rs(
+        Provider(name="wan", number=2**32, mark=1, interface="eth0", gateway="192.0.2.1"),
+    )
+    with pytest.raises(ConfigError, match="number"):
+        validate(rs)
+
+
+def test_fwmark_zero_fails_fast() -> None:
+    # fwmark 0 matches *unmarked* traffic, silently routing everything out this provider.
+    rs = _providers_rs(
+        Provider(name="wan", number=1, mark=0, interface="eth0", gateway="192.0.2.1"),
+    )
+    with pytest.raises(ConfigError, match="fwmark"):
+        validate(rs)
+
+
+def test_out_of_range_fwmark_fails_fast() -> None:
+    rs = _providers_rs(
+        Provider(name="wan", number=1, mark=2**32, interface="eth0", gateway="192.0.2.1"),
+    )
+    with pytest.raises(ConfigError, match="fwmark"):
+        validate(rs)
+
+
+def test_valid_boundary_number_and_mark_pass() -> None:
+    # The largest valid values (2^32-1) and a non-reserved id pass unchanged.
+    rs = _providers_rs(
+        Provider(name="wan", number=2**32 - 1, mark=2**32 - 1, interface="eth0",
+                 gateway="192.0.2.1"),
+    )
+    assert validate(rs) is rs

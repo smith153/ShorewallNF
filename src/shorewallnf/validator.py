@@ -46,6 +46,7 @@ def _validate_providers(
     marks: dict[int, str] = {}
     numbers: dict[int, str] = {}
     for provider in providers:
+        _reject_reserved_or_out_of_range(provider)
         if provider.mark in marks:
             raise ConfigError(
                 f"provider {provider.name!r} reuses fwmark {provider.mark} already assigned to "
@@ -70,6 +71,39 @@ def _validate_providers(
                 path=provider.path,
                 line=provider.line,
             )
+
+
+# The kernel's reserved routing tables (iproute2): 0 unspec, 253 default, 254 main, 255 local.
+# A provider must never claim one — teardown's ``ip route flush table <n>`` would wipe a system
+# table. Marks and table ids are 32-bit unsigned.
+_RESERVED_TABLE_IDS = frozenset({0, 253, 254, 255})
+_MAX_U32 = 0xFFFFFFFF
+
+
+def _reject_reserved_or_out_of_range(provider: Provider) -> None:
+    """Reject a provider whose routing-table number or fwmark is reserved/zero or out of range.
+
+    A reserved table id (0/253/254/255) would let teardown flush a system routing table, and
+    fwmark 0 matches unmarked traffic (silently routing everything out the provider) — both
+    footguns the applier (#235) would faithfully carry out, so the gate belongs here (#255,
+    ADR-0004).
+    """
+    if provider.number in _RESERVED_TABLE_IDS or not 1 <= provider.number <= _MAX_U32:
+        raise ConfigError(
+            f"provider {provider.name!r} uses reserved/invalid routing-table number "
+            f"{provider.number} — use 1..{_MAX_U32} excluding the kernel-reserved "
+            f"{sorted(_RESERVED_TABLE_IDS)} (unspec/default/main/local); one of those would let "
+            "teardown flush a system routing table",
+            path=provider.path,
+            line=provider.line,
+        )
+    if not 1 <= provider.mark <= _MAX_U32:
+        raise ConfigError(
+            f"provider {provider.name!r} uses invalid fwmark {provider.mark} — use 1..{_MAX_U32} "
+            "(fwmark 0 matches unmarked traffic, silently routing everything out this provider)",
+            path=provider.path,
+            line=provider.line,
+        )
 
 
 def _reject_shadowed_section_rule(rule: Rule) -> None:
