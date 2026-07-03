@@ -1,0 +1,5 @@
+# Inter-zone default policies, so the nft channel carries a real ruleset alongside the routing
+# artifacts (providers themselves add no nft rule — ADR-0050).
+loc     net     ACCEPT
+net     all     DROP        info
+all     all     REJECT      info
