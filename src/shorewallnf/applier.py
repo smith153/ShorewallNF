@@ -21,6 +21,23 @@ from .errors import ConfigError
 NFT = "nft"
 
 
+def atomic_load_payload(ruleset: dict[str, Any]) -> dict[str, Any]:
+    """Wrap ``ruleset`` so a load replaces only its own tables in one transaction (ADR-0010).
+
+    For each ``add table`` in the generated ruleset, prepend an idempotent create-then-delete
+    (``add table`` then ``delete table``) so the table is emptied whether or not it pre-existed,
+    then append the full ruleset that re-adds the tables, chains and rules. The scope is derived
+    from the input tables — never ``flush ruleset``, which would clobber co-resident tables.
+    """
+    prelude: list[dict[str, Any]] = []
+    for command in ruleset["nftables"]:
+        table = command.get("add", {}).get("table")
+        if table is not None:
+            prelude.append({"add": {"table": dict(table)}})
+            prelude.append({"delete": {"table": dict(table)}})
+    return {"nftables": [*prelude, *ruleset["nftables"]]}
+
+
 def check_ruleset(ruleset: dict[str, Any]) -> None:
     """Dry-run validate the nftables JSON ``ruleset`` (like ``nft -c``); raise on rejection."""
     result = subprocess.run(
