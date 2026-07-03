@@ -151,9 +151,11 @@ def test_section_attached_to_following_rules() -> None:
 # --- fail-fast ----------------------------------------------------------------
 
 
-def test_unknown_action_fails_fast() -> None:
-    with pytest.raises(ConfigError, match="action"):
-        _one("BOGUS loc net")
+def test_non_verdict_action_passes_through_as_macro_name() -> None:
+    # The parser is macro-unaware (ADR-0020 §2): a non-verdict ACTION is stored verbatim as a
+    # possible macro/action name; the resolver (#184) tells names from verdicts by lookup and
+    # fails fast on an unknown one, so the parser no longer rejects it.
+    assert _one("Web loc net") == Rule(action="Web", source="loc", dest="net")
 
 
 def test_missing_dest_fails_fast_with_location() -> None:
@@ -179,7 +181,7 @@ def test_unsupported_host_form_fails_fast() -> None:
 
 def test_error_carries_source_location() -> None:
     with pytest.raises(ConfigError) as exc:
-        parse_rules(_records("ACCEPT loc net", "BOGUS loc net"), _ZONES)
+        parse_rules(_records("ACCEPT loc net", "ACCEPT bogus net"), _ZONES)
     assert exc.value.line == 2
 
 

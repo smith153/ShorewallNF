@@ -201,6 +201,37 @@ def test_rules_compile_places_feature_rules_before_policy_defaults() -> None:
     assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]
 
 
+# --- macro/action resolution end-to-end (#184) -------------------------------
+#
+# A fixture whose `rules` invoke both a built-in macro (`Web`) and a site-defined
+# `action.Ssh`. The resolver (ADR-0020) expands both into verdict rules before the validator
+# and generator run, so the whole pipeline compiles and passes `nft -c`.
+
+MACRO_FIXTURE = Path(__file__).parent / "fixtures" / "macro_compile_dir"
+
+
+def test_macro_compile_expands_builtin_and_site_actions() -> None:
+    compiled = cli.compile_config(MACRO_FIXTURE)
+    rules = [c["add"]["rule"] for c in compiled["nftables"] if "rule" in c["add"]]
+    input_rules = [r for r in rules if r["chain"] == "input"]
+    dport = {"payload": {"protocol": "tcp", "field": "dport"}}
+
+    def accepts_port(port: int) -> bool:
+        match = {"match": {"op": "==", "left": dport, "right": port}}
+        return any(match in r["expr"] and r["expr"][-1] == {"accept": None} for r in input_rules)
+
+    # `Web` (built-in) expands to tcp 80 + tcp 443; `Ssh` (site action) expands to tcp 22.
+    assert accepts_port(80) and accepts_port(443) and accepts_port(22)
+
+
+@pytest.mark.nft
+def test_macro_compiled_ruleset_passes_nft_check() -> None:
+    gh.require_nft()  # hard-fails under CI if nft can't run; skips locally
+    from shorewallnf.applier import check_ruleset
+
+    check_ruleset(cli.compile_config(MACRO_FIXTURE))  # must not raise
+
+
 def test_parse_config_parses_dnat_rules_into_nats() -> None:
     ruleset = parse_config(
         _streams(
