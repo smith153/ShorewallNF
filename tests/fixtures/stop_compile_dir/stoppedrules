@@ -1,0 +1,2 @@
+# Admin access permitted while the firewall is stopped: SSH from a management host.
+ACCEPT net:192.0.2.0/24 fw tcp 22

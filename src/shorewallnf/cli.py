@@ -25,7 +25,7 @@ from .applier import (
     save_ruleset,
 )
 from .errors import ShorewallNFError
-from .generator import generate
+from .generator import generate, generate_stopped
 from .parser import parse_config
 from .preprocessor import SourceLine, parse_params, preprocess_file
 from .resolver import resolve
@@ -38,6 +38,7 @@ _VERB_HELP = {
     "start": "bring the firewall up: compile, dry-run check, then atomically load the ruleset",
     "reload": "compile, dry-run check, then atomically replace the running ruleset",
     "restart": "alias of reload: atomically replace the running ruleset",
+    "stop": "drop to the stopped safe state: still admits declared admin access, drops the rest",
     "clear": "remove all ShorewallNF tables, leaving traffic unfiltered",
     "restore": "reload the last persisted ruleset from disk, fail-closed",
 }
@@ -78,6 +79,17 @@ def compile_config(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
     return generate(validate(resolve(parse_config(preprocess(config_dir)))))
 
 
+def compile_stopped(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
+    """Compile a config directory into the stopped safe-state ruleset (ADR-0021, JSON).
+
+    The same pre-generation pipeline as :func:`compile_config`, but the generator emits the
+    fail-safe stopped state: only the declared admin-access ``stoppedrules`` plus the no-lockout
+    baseline (loopback + established/related), default-drop otherwise. With zero admin rules the
+    baseline alone still admits the operator, so ``stop`` never silently locks anyone out.
+    """
+    return generate_stopped(validate(resolve(parse_config(preprocess(config_dir)))))
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shorewallnf",
@@ -111,6 +123,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
         print(f"{_LIFECYCLE_MESSAGE[args.verb]}: {args.config_dir}")
+        return 0
+    if args.verb == "stop":
+        ruleset = compile_stopped(args.config_dir)
+        check_ruleset(ruleset)
+        apply_ruleset(ruleset)
+        print(f"stopped: {args.config_dir}")
         return 0
     if args.verb == "restore":
         restore_ruleset()

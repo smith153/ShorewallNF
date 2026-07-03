@@ -1,5 +1,6 @@
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -46,6 +47,7 @@ def test_error_shell_formats_and_exits_one(
 
 
 _COMPILE_DIR = str(Path(__file__).parent / "fixtures" / "compile_dir")
+_STOP_DIR = str(Path(__file__).parent / "fixtures" / "stop_compile_dir")
 
 
 def test_apply_in_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -191,6 +193,95 @@ def test_clear_verb_reports_nft_rejection_and_exits_one(
 
     monkeypatch.setattr(cli, "clear_ruleset", failing_clear)
     assert cli.main(["clear", _COMPILE_DIR]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+# ---- stop verb: install the stopped safe state atomically (task #212, ADR-0021) ----------
+
+
+def test_stop_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "stop" in capsys.readouterr().out
+
+
+def test_stop_verb_checks_then_applies_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: calls.append("check"))
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: calls.append("apply"))
+    assert cli.main(["stop", _COMPILE_DIR]) == 0
+    # Dry-run check precedes the atomic load (fail-closed order).
+    assert calls == ["check", "apply"]
+    out = capsys.readouterr().out
+    assert "stopped" in out
+    assert _COMPILE_DIR in out
+
+
+def test_stop_verb_installs_the_stopped_safe_state_not_the_running_ruleset(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # CLI/generation seam: `stop` compiles and loads the STOPPED safe state
+    # (generate_stopped) — the admin-access stoppedrules, not the running config.
+    applied: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: applied.append(r))
+    assert cli.main(["stop", _STOP_DIR]) == 0
+    [ruleset] = applied
+    assert ruleset == cli.compile_stopped(_STOP_DIR)
+    # Dropping to the safe state is not "starting": with declared stoppedrules the stopped
+    # state carries the admin rule while the running ruleset does not, so they differ.
+    assert ruleset != cli.compile_config(_STOP_DIR)
+
+
+def test_stop_with_no_admin_rules_still_admits_the_no_lockout_baseline(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # compile_dir declares no stoppedrules, yet the stopped state the CLI loads still admits
+    # the documented minimal baseline (no silent lockout) — asserted at the CLI seam.
+    applied: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: applied.append(r))
+    assert cli.main(["stop", _COMPILE_DIR]) == 0
+    [ruleset] = applied
+    accepts = [
+        c
+        for c in ruleset["nftables"]
+        if "rule" in c.get("add", {}) and {"accept": None} in c["add"]["rule"]["expr"]
+    ]
+    assert accepts, "stopped state must admit baseline accepts even with zero admin rules"
+
+
+def test_stop_verb_does_not_load_after_failed_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_check(_r: object) -> None:
+        raise ConfigError("generated ruleset rejected by nft: boom")
+
+    applied = False
+
+    def record_apply(_r: object) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(cli, "check_ruleset", failing_check)
+    monkeypatch.setattr(cli, "apply_ruleset", record_apply)
+    assert cli.main(["stop", _COMPILE_DIR]) == 1
+    assert applied is False
+    assert "error:" in capsys.readouterr().err
+
+
+def test_stop_verb_reports_apply_rejection_and_exits_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A rejected stopped ruleset aborts fail-closed (the atomic load leaves prior state intact).
+    def failing_apply(_r: object) -> None:
+        raise ConfigError("ruleset rejected by nft: boom")
+
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", failing_apply)
+    assert cli.main(["stop", _COMPILE_DIR]) == 1
     assert "error:" in capsys.readouterr().err
 
 
