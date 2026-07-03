@@ -3,7 +3,8 @@
 All ``nft`` invocation lives here (ADR-0003 imperative shell). :func:`check_ruleset` dry-run
 validates the generated JSON ruleset by shelling out to the system ``nft`` binary in check mode
 (``nft --check --json --file -``, the equivalent of ``nft -c``), raising
-:class:`~shorewallnf.errors.ConfigError` if nft rejects it.
+:class:`~shorewallnf.errors.ConfigError` if nft rejects it. :func:`apply_ruleset` is its
+dry-run-OFF twin: it loads the ruleset live in one atomic transaction, fail-closed.
 
 The generator emits the ruleset JSON with the stdlib ``json`` module, so generation needs no
 nftables tooling. ``nft --check`` reads the kernel ruleset cache, so it needs CAP_NET_ADMIN
@@ -48,3 +49,22 @@ def check_ruleset(ruleset: dict[str, Any]) -> None:
     )
     if result.returncode != 0:
         raise ConfigError(f"generated ruleset rejected by nft: {result.stderr.strip()}")
+
+
+def apply_ruleset(ruleset: dict[str, Any]) -> None:
+    """Load ``ruleset`` live, fail-closed (task #179, ADR-0010/0004).
+
+    The dry-run-OFF twin of :func:`check_ruleset`: it scopes the load with
+    :func:`atomic_load_payload` and hands nft the one JSON transaction (``nft --json --file -``,
+    no ``--check``). nftables applies the command list atomically, so a rejected ruleset commits
+    nothing and the live ruleset is left unchanged; a non-zero rc raises
+    :class:`~shorewallnf.errors.ConfigError` carrying nft's error text.
+    """
+    result = subprocess.run(
+        [NFT, "--json", "--file", "-"],
+        input=json.dumps(atomic_load_payload(ruleset)),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(f"ruleset rejected by nft: {result.stderr.strip()}")
