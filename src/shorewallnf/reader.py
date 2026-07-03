@@ -28,16 +28,21 @@ KNOWN_CONFIG_FILES: tuple[str, ...] = (
 
 
 def discover(config_dir: str | Path) -> tuple[str, ...]:
-    """Return the known Shorewall config files present in ``config_dir``.
+    """Return the Shorewall config files ShorewallNF processes in ``config_dir``.
 
-    The result preserves :data:`KNOWN_CONFIG_FILES` order and omits files that are absent,
-    so callers see only what is there to process. A path that is missing or not a directory
-    raises :class:`ConfigError` with that path.
+    The fixed :data:`KNOWN_CONFIG_FILES` come first in their processing order; then the
+    ``actions`` index (if present) and every site-defined ``action.<Name>`` file (glob), in
+    stable, name-sorted order (ADR-0020, #182). Absent files are omitted, so callers see only
+    what is there to process. A path that is missing or not a directory raises
+    :class:`ConfigError` with that path.
     """
     base = Path(config_dir)
     if not base.is_dir():
         raise ConfigError("not a config directory", path=str(base))
-    return tuple(name for name in KNOWN_CONFIG_FILES if (base / name).is_file())
+    known = tuple(name for name in KNOWN_CONFIG_FILES if (base / name).is_file())
+    index = ("actions",) if (base / "actions").is_file() else ()
+    actions = tuple(sorted(p.name for p in base.glob("action.*") if p.is_file()))
+    return known + index + actions
 
 
 def read_file(config_dir: str | Path, name: str) -> str:
