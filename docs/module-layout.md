@@ -29,6 +29,7 @@ Cross-cutting:
 |---------|--------|--------|
 | CLI entrypoint | `shorewallnf/cli.py` | planned |
 | Error types | `shorewallnf/errors.py` | planned |
+| Built-in macro/action registry | `shorewallnf/macros.py` | **present** (documented subset of built-in `MacroDef`s the resolver consults, [ADR-0020](adr/0020-macro-and-action-resolution.md)) |
 
 ## Boundaries (why this split)
 
