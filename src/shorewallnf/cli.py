@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import reader
+from .applier import apply_ruleset, check_ruleset
 from .errors import ShorewallNFError
 from .generator import generate
 from .parser import parse_config
@@ -25,6 +26,7 @@ from .validator import validate
 _VERB_HELP = {
     "check": "preprocess and validate the config; emit no ruleset",
     "compile": "compile the config into an nftables ruleset",
+    "apply": "compile, dry-run check, then load the ruleset onto the running system",
 }
 
 
@@ -73,6 +75,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         streams = preprocess(args.config_dir)
         lines = sum(len(s) for s in streams.values())
         print(f"OK: {args.config_dir}: {len(streams)} files, {lines} preprocessed lines")
+        return 0
+    if args.verb == "apply":
+        ruleset = compile_config(args.config_dir)
+        check_ruleset(ruleset)
+        apply_ruleset(ruleset)
+        print(f"applied: {args.config_dir}")
         return 0
     # compile: emit the base inet ruleset as nftables JSON on stdout.
     print(json.dumps(compile_config(args.config_dir), indent=2))
