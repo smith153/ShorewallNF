@@ -22,6 +22,18 @@ def test_discover_ignores_noise_files() -> None:
     assert "shorewall.conf" not in found
 
 
+def test_discover_finds_stoppedrules_when_present(tmp_path: Path) -> None:
+    (tmp_path / "zones").write_text("net ipv4\n")
+    (tmp_path / "stoppedrules").write_text("ACCEPT net fw tcp 22\n")
+    found = discover(tmp_path)
+    assert found == ("zones", "stoppedrules")
+
+
+def test_discover_omits_stoppedrules_when_absent() -> None:
+    # The fixture config has no stoppedrules file; it must not appear (omitted cleanly).
+    assert "stoppedrules" not in discover(FIXTURE)
+
+
 def test_discover_missing_directory_raises_with_path() -> None:
     with pytest.raises(ConfigError) as exc:
         discover(FIXTURE / "does-not-exist")

@@ -187,6 +187,10 @@ class Ruleset:
     interfaces: tuple[Interface, ...] = ()
     policies: tuple[Policy, ...] = ()
     rules: tuple[Rule, ...] = ()
+    # Admin-access rules from the ``stoppedrules`` file — the traffic permitted while the
+    # firewall is stopped. Kept distinct from ``rules`` so the stopped ruleset is generated
+    # separately (#210/#211), not mixed into the running filter chains.
+    stopped_rules: tuple[Rule, ...] = ()
     nats: tuple[Nat, ...] = ()
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
