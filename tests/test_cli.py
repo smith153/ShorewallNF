@@ -44,6 +44,45 @@ def test_error_shell_formats_and_exits_one(
     assert "error: rules:12: unknown zone 'dmz'" in capsys.readouterr().err
 
 
+_COMPILE_DIR = str(Path(__file__).parent / "fixtures" / "compile_dir")
+
+
+def test_apply_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "apply" in capsys.readouterr().out
+
+
+def test_apply_verb_checks_then_applies_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: calls.append("check"))
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: calls.append("apply"))
+    assert cli.main(["apply", _COMPILE_DIR]) == 0
+    assert calls == ["check", "apply"]
+    assert _COMPILE_DIR in capsys.readouterr().out
+
+
+def test_apply_verb_does_not_load_after_failed_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_check(_r: object) -> None:
+        raise ConfigError("generated ruleset rejected by nft: boom")
+
+    applied = False
+
+    def record_apply(_r: object) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(cli, "check_ruleset", failing_check)
+    monkeypatch.setattr(cli, "apply_ruleset", record_apply)
+    assert cli.main(["apply", _COMPILE_DIR]) == 1
+    assert applied is False
+    assert "error:" in capsys.readouterr().err
+
+
 def test_console_script_entry_point_declared() -> None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
