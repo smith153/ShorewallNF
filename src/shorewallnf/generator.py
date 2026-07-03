@@ -575,13 +575,16 @@ def _mangle_rule(
     ctx = f"mangle {rule.action} {rule.source!r} {rule.dest!r}"
     expr: list[_Command] = []
     src_zone = _zone_of(rule.source)
+    dst_zone = _zone_of(rule.dest)
+    _reject_firewall_zone(rule, src_zone, dst_zone, firewalls, ctx)
     if src_zone and src_zone != "all" and src_zone not in firewalls:
         expr.append(_ifname("iifname", _iface_value(ctx, src_zone, interfaces)))
-    dst_zone = _zone_of(rule.dest)
     if dst_zone and dst_zone != "all" and dst_zone not in firewalls and _host_of(rule.dest) is None:
         raise ConfigError(
             f"{ctx}: mangle DEST {dst_zone!r} is a bare zone — the out-interface is unknown at "
-            "prerouting; narrow DEST to a host (zone:host) or use '-'"
+            "prerouting; narrow DEST to a host (zone:host) or use '-'",
+            path=rule.path,
+            line=rule.line,
         )
     expr += _host_matches(rule.source, rule.dest)
     guard = _NFPROTO.get(rule.family)
@@ -590,6 +593,28 @@ def _mangle_rule(
     expr += _nat_l4_matches(rule.proto, rule.dport, ctx)
     expr += _mangle_action(rule, ctx)
     return _rule(_MANGLE_CHAIN, expr)
+
+
+def _reject_firewall_zone(
+    rule: MangleRule, src_zone: str, dst_zone: str, firewalls: set[str], ctx: str
+) -> None:
+    """Fail closed on a firewall zone as mangle SOURCE or DEST (ADR-0042, ADR-0004).
+
+    The prerouting mangle chain only sees forwarded/ingress traffic; traffic to or from the
+    firewall is routed locally (the ``output`` chain ADR-0042 defers), not seen here. Silently
+    dropping such a zone would mark more — or entirely different — traffic than written, the same
+    footgun the bare-DEST guard prevents, so reject it with a located error.
+    """
+    for role, zone in (("SOURCE", src_zone), ("DEST", dst_zone)):
+        if zone in firewalls:
+            raise ConfigError(
+                f"{ctx}: the firewall zone {zone!r} as mangle {role} isn't supported at "
+                "prerouting — traffic to or from the firewall is routed locally, not forwarded, "
+                "so marking it needs the output chain (deferred, ADR-0042); use a network zone "
+                "or '-'",
+                path=rule.path,
+                line=rule.line,
+            )
 
 
 def _mangle_action(rule: MangleRule, ctx: str) -> list[_Command]:
@@ -607,7 +632,9 @@ def _mangle_action(rule: MangleRule, ctx: str) -> list[_Command]:
         if rule.family is Family.BOTH:
             raise ConfigError(
                 f"{ctx}: TPROXY needs a concrete family — narrow the rule to IPv4 or IPv6 "
-                "(tproxy in an inet table selects ip or ip6)"
+                "(tproxy in an inet table selects ip or ip6)",
+                path=rule.path,
+                line=rule.line,
             )
         proxy: list[_Command] = [_tproxy(rule.family, _require(rule.port, ctx, "a proxy port"))]
         if rule.mark is not None:

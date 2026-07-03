@@ -125,6 +125,27 @@ def test_bare_zone_dest_fails_closed() -> None:
         _cmds(MangleRule(action="MARK", source="net", dest="loc", mark=1))
 
 
+def test_firewall_zone_source_fails_closed() -> None:
+    # A firewall zone as SOURCE is locally-originated traffic — not present at prerouting — so the
+    # rule can't be lowered here; fail closed rather than silently marking all forwarded traffic.
+    with pytest.raises(ConfigError, match="firewall"):
+        _cmds(MangleRule(action="MARK", source="fw", mark=1))
+
+
+def test_firewall_zone_dest_fails_closed() -> None:
+    # A firewall zone as DEST would need the firewall's own addresses / the routing decision; fail
+    # closed rather than silently dropping the dest constraint and marking all traffic from SOURCE.
+    with pytest.raises(ConfigError, match="firewall"):
+        _cmds(MangleRule(action="MARK", source="net", dest="fw", mark=1))
+
+
+def test_mangle_fail_closed_error_is_located() -> None:
+    # The generator threads the rule's source location (#256) into its fail-closed errors.
+    with pytest.raises(ConfigError) as exc:
+        _cmds(MangleRule(action="MARK", source="fw", mark=1, path="mangle", line=7))
+    assert str(exc.value).startswith("mangle:7: ")
+
+
 def test_host_dest_matches_daddr() -> None:
     (rule,) = _prerouting_rules(_cmds(
         MangleRule(action="MARK", source="net", dest="loc:192.0.2.10", mark=1, family=Family.IPV4)))
