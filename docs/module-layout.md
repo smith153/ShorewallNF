@@ -31,6 +31,7 @@ Cross-cutting:
 | CLI entrypoint | `shorewallnf/cli.py` | planned |
 | Error types | `shorewallnf/errors.py` | planned |
 | Built-in macro/action registry | `shorewallnf/macros.py` | **present** (documented subset of built-in `MacroDef`s the resolver consults, [ADR-0020](adr/0020-macro-and-action-resolution.md)) |
+| Built-in conntrack-helper registry | `shorewallnf/conntrack.py` | **present** (documented subset of built-in `HelperDef`s mapping helper name → proto/port + family capability, [ADR-0040](adr/0040-conntrack-helper-ir-and-registry.md)) |
 
 ## Boundaries (why this split)
 

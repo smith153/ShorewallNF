@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from shorewallnf.ir import (
+    ConntrackHelper,
     Family,
     Interface,
     MacroDef,
@@ -119,6 +120,32 @@ def test_macro_def_body_is_an_ordered_tuple() -> None:
     assert [b.action for b in macro.body] == ["DROP", "ACCEPT"]
 
 
+# --- ConntrackHelper (family-aware, ADR-0040) --------------------------------
+
+
+def test_conntrack_helper_shape() -> None:
+    helper = ConntrackHelper(
+        name="ftp", source="loc", dest="net", proto="tcp", dport="21"
+    )
+    assert (helper.name, helper.source, helper.dest, helper.proto, helper.dport) == (
+        "ftp",
+        "loc",
+        "net",
+        "tcp",
+        "21",
+    )
+
+
+def test_conntrack_helper_defaults() -> None:
+    helper = ConntrackHelper(name="ftp")
+    assert (helper.source, helper.dest, helper.proto, helper.dport) == ("", "", None, None)
+    assert helper.family is Family.BOTH
+
+
+def test_conntrack_helper_can_be_scoped_to_a_single_family() -> None:
+    assert ConntrackHelper(name="pptp", family=Family.IPV4).family is Family.IPV4
+
+
 # --- Rule.action carries a macro/action name (ADR-0020) ----------------------
 
 
@@ -146,6 +173,7 @@ def test_rule_action_can_carry_a_macro_or_action_name() -> None:
         (Nat(action="DNAT", source="net", dest="fw"), "action"),
         (MacroRule(action="ACCEPT"), "action"),
         (MacroDef(name="Ping"), "name"),
+        (ConntrackHelper(name="ftp"), "name"),
     ],
 )
 def test_datatypes_are_frozen(instance: object, field: str) -> None:
@@ -165,3 +193,19 @@ def test_ruleset_holds_all_collections_immutably() -> None:
     attr = "rules"  # variable avoids ruff B010 rewriting setattr into a frozen-field assignment
     with pytest.raises(dataclasses.FrozenInstanceError):
         setattr(ruleset, attr, ())
+
+
+def test_ruleset_conntrack_helpers_default_empty() -> None:
+    assert Ruleset().conntrack_helpers == ()
+
+
+def test_ruleset_round_trips_conntrack_helpers() -> None:
+    helpers = (
+        ConntrackHelper(name="ftp", source="loc", dest="net", proto="tcp", dport="21"),
+        ConntrackHelper(name="pptp", family=Family.IPV4),
+    )
+    ruleset = Ruleset(conntrack_helpers=helpers)
+    assert ruleset.conntrack_helpers == helpers
+    assert isinstance(ruleset.conntrack_helpers, tuple)
+    # Value equality (ADR-0001): an equal ruleset built from equal helpers compares equal.
+    assert Ruleset(conntrack_helpers=helpers) == ruleset

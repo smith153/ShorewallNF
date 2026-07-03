@@ -6,8 +6,10 @@ family-aware model; family is data on the IR, scoped as ``both``/``ipv4``/``ipv6
 
 This module holds the datatypes — the :class:`Family` scoping enum, :class:`Zone` (with its
 :class:`ZoneMember` records), the :class:`Interface`, :class:`Policy`, :class:`Rule` and
-:class:`Nat` records the Generator consumes, and the :class:`MacroDef`/:class:`MacroRule`
-records a rule's ``action`` name resolves to (ADR-0020). These are datatype **shapes**; each
+:class:`Nat` records the Generator consumes, the :class:`MacroDef`/:class:`MacroRule`
+records a rule's ``action`` name resolves to (ADR-0020), and the conntrack-helper types
+(:class:`ConntrackHelper`, :class:`HelperDef`, :class:`HelperCapabilities`; ADR-0040).
+These are datatype **shapes**; each
 feature epic owns the deep per-file semantics (which options/actions are valid, how fields are
 populated).
 """
@@ -177,6 +179,60 @@ class Nat:
 
 
 @dataclass(frozen=True, slots=True)
+class ConntrackHelper:
+    """A conntrack helper attached to a flow (the ``conntrack`` file), family-aware (ADR-0040).
+
+    ``name`` is the canonical helper name — a key into the built-in registry
+    (:data:`shorewallnf.conntrack.BUILTIN_HELPERS`). The remaining fields are the flow-scope
+    narrowing from the ``conntrack`` row that restricts which connections the helper attaches
+    to: ``source``/``dest`` are the raw ``zone`` or ``zone:host`` tokens and ``proto``/``dport``
+    the matched protocol / destination port(s), verbatim. ``family`` is the resolved family
+    (ADR-0002): a v4-only helper, or a row narrowed by a v4 literal, scopes to
+    :data:`Family.IPV4`. Populating these is the parser's job (#220), not this stage's.
+    """
+
+    name: str
+    source: str = ""
+    dest: str = ""
+    proto: str | None = None
+    dport: str | None = None
+    family: Family = Family.BOTH
+
+
+@dataclass(frozen=True, slots=True)
+class HelperDef:
+    """A built-in conntrack-helper registry entry: canonical proto/port + family capability.
+
+    Static, documented data (cf. :class:`MacroDef` for macros; ADR-0040). ``name`` is the
+    helper's canonical name, ``proto`` its L4 protocol, ``ports`` its default port(s), and
+    ``family_capability`` the widest family the kernel helper supports — :data:`Family.IPV4`
+    for a v4-only helper, :data:`Family.BOTH` for a v6-capable one (ADR-0002). The instances
+    live in :mod:`shorewallnf.conntrack`.
+    """
+
+    name: str
+    proto: str
+    ports: tuple[str, ...]
+    family_capability: Family
+
+
+@dataclass(frozen=True, slots=True)
+class HelperCapabilities:
+    """Compile-time platform-capability input — which helpers the platform provides (ADR-0040).
+
+    The ``AUTOHELPERS`` / ``__*_HELPER`` equivalent, expressed as pure data: no apply-time
+    module autodetection (out of scope per epic #200). ``available`` is the set of helper
+    names the platform offers; the generator (#221) calls :meth:`provides` to gate emission.
+    """
+
+    available: frozenset[str] = frozenset()
+
+    def provides(self, name: str) -> bool:
+        """Whether the platform provides the named helper."""
+        return name in self.available
+
+
+@dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
 
@@ -192,6 +248,7 @@ class Ruleset:
     # separately (#210/#211), not mixed into the running filter chains.
     stopped_rules: tuple[Rule, ...] = ()
     nats: tuple[Nat, ...] = ()
+    conntrack_helpers: tuple[ConntrackHelper, ...] = ()
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
     actions: Mapping[str, MacroDef] = field(default_factory=dict)
