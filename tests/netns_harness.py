@@ -51,6 +51,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -175,6 +176,25 @@ def load_command(router: str) -> list[str]:
     return [IP, "netns", "exec", router, NFT, "-j", "-f", "-"]
 
 
+# Runs the *production* applier inside the router netns: it wraps the piped ruleset with the
+# ADR-0010 scoped create-then-delete prelude and shells out to ``nft`` — never ``flush ruleset``.
+_APPLY_RUNNER = (
+    "import sys, json; from shorewallnf.applier import apply_ruleset; "
+    "apply_ruleset(json.load(sys.stdin))"
+)
+
+
+def apply_command(router: str, *, python: str = sys.executable) -> list[str]:
+    """Run the real applier's apply path inside ``router``, reading generated JSON from stdin.
+
+    Unlike :func:`load_command`'s ``flush ruleset`` shortcut, this invokes
+    :func:`shorewallnf.applier.apply_ruleset` — the production ADR-0010 scoped replace — so the
+    load leaves co-resident (non-ShorewallNF) tables intact. ``nft`` inherits the current netns,
+    hence the ``ip netns exec`` wrapper puts the apply in the router namespace.
+    """
+    return [IP, "netns", "exec", router, python, "-c", _APPLY_RUNNER]
+
+
 def ping_command(src_ns: str, dst_ip: str, *, count: int = 1, family: int = 4) -> list[str]:
     """A one-second-timeout ping of ``dst_ip`` from ``src_ns`` (``family`` 4 or 6)."""
     return [
@@ -217,6 +237,15 @@ class NetnsSandbox:
     def load(self, ruleset: Ruleset) -> None:
         """Flush and load ``ruleset`` into the router namespace."""
         _run(load_command(self.topo.router), stdin_text=json.dumps(load_payload(ruleset)))
+
+    def apply(self, ruleset: Ruleset) -> None:
+        """Apply ``ruleset`` into the router netns via the real applier (scoped replace, no flush).
+
+        Exercises :func:`shorewallnf.applier.apply_ruleset` end to end — the production apply
+        path the ``shorewallnf apply`` verb uses — so a re-apply replaces only ShorewallNF's own
+        tables and leaves co-resident tables untouched.
+        """
+        _run(apply_command(self.topo.router), stdin_text=json.dumps(render(ruleset)))
 
     def ping(self, src_ns: str, dst_ip: str, *, count: int = 1, family: int = 4) -> bool:
         """True when ``src_ns`` can ping ``dst_ip`` (the packet path is open)."""
