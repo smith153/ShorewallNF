@@ -35,6 +35,15 @@ def test_builtin_actions(action: str) -> None:
     assert _one(f"{action} loc net").action == action
 
 
+def test_rule_carries_source_location() -> None:
+    # #195: the parser threads the record's path and 1-based line onto the Rule so
+    # downstream IR-stage errors can cite path:line.
+    records = _records("ACCEPT loc net", "DROP loc net", path="rules")
+    rules = parse_rules(records, _ZONES).rules
+    assert (rules[0].path, rules[0].line) == ("rules", 1)
+    assert (rules[1].path, rules[1].line) == ("rules", 2)
+
+
 def test_proto_and_dest_port() -> None:
     rule = _one("ACCEPT loc net tcp 22")
     assert (rule.proto, rule.dport, rule.sport) == ("tcp", "22", None)

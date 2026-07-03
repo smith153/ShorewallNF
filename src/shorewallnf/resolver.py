@@ -10,8 +10,8 @@ Registry lookup combines the built-in :data:`~shorewallnf.macros.BUILTIN_MACROS`
 site-defined :attr:`~shorewallnf.ir.Ruleset.actions` (#182); a site definition overrides a
 built-in of the same name (ADR-0020 §6, site wins). An action that is neither a built-in verdict
 nor a ``MacroDef`` in scope, or a narrowing whose per-field intersection is empty, fails fast with
-a :class:`~shorewallnf.errors.ConfigError` (ADR-0004) identified by the rule's content — the IR
-carries no source location, so no ``path:line`` (richer diagnostics deferred to #195).
+a :class:`~shorewallnf.errors.ConfigError` (ADR-0004) that cites the call site's ``path:line`` when
+known (#195) and identifies the rule by content.
 """
 
 from __future__ import annotations
@@ -41,7 +41,9 @@ def resolve(ruleset: Ruleset) -> Ruleset:
             if rule.action not in _VERDICTS:
                 raise ConfigError(
                     f"unknown action {rule.action!r}: not a built-in verdict "
-                    f"(ACCEPT/DROP/REJECT) or a macro/action in scope ({_describe(rule)})"
+                    f"(ACCEPT/DROP/REJECT) or a macro/action in scope ({_describe(rule)})",
+                    path=rule.path,
+                    line=rule.line,
                 )
             expanded.append(rule)
             continue
@@ -61,6 +63,8 @@ def _expand(rule: Rule, body: MacroRule) -> Rule:
         sport=_narrow(rule, body, "sport", rule.sport, body.sport),
         section=rule.section,
         family=_narrow_family(rule, body),
+        path=rule.path,
+        line=rule.line,
     )
 
 
@@ -77,7 +81,9 @@ def _narrow(
         return call
     raise ConfigError(
         f"macro/action {rule.action!r} expansion is unsatisfiable: call-site {field} {call!r} "
-        f"and body {field} {row!r} do not overlap ({_describe(rule)})"
+        f"and body {field} {row!r} do not overlap ({_describe(rule)})",
+        path=rule.path,
+        line=rule.line,
     )
 
 
@@ -93,7 +99,9 @@ def _narrow_family(rule: Rule, body: MacroRule) -> Family:
     raise ConfigError(
         f"macro/action {rule.action!r} expansion is unsatisfiable: call-site family "
         f"{rule.family.value} and body family {body.family.value} do not overlap "
-        f"({_describe(rule)})"
+        f"({_describe(rule)})",
+        path=rule.path,
+        line=rule.line,
     )
 
 

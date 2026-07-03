@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from shorewallnf.ir import Family, Ruleset, Zone, ZoneMember
+from shorewallnf.ir import Family, Rule, Ruleset, Zone, ZoneMember
 
 # --- Family: reconciled with ADR-0002 (both/ipv4/ipv6, no INET) --------------
 
@@ -38,6 +38,30 @@ def test_zone_member_is_frozen() -> None:
     attr = "interface"
     with pytest.raises(dataclasses.FrozenInstanceError):
         setattr(member, attr, "eth1")
+
+
+# --- Rule: source location is metadata, not part of value identity (#195) ----
+
+
+def test_rule_source_location_defaults_to_none() -> None:
+    rule = Rule(action="ACCEPT", source="loc", dest="net")
+    assert rule.path is None
+    assert rule.line is None
+
+
+def test_rule_source_location_does_not_affect_equality() -> None:
+    # path/line are field(compare=False): two otherwise-identical rules are equal and
+    # hash-equal regardless of location, preserving ADR-0001 value semantics.
+    bare = Rule(action="ACCEPT", source="loc", dest="net")
+    located = Rule(action="ACCEPT", source="loc", dest="net", path="rules", line=7)
+    assert bare == located
+    assert hash(bare) == hash(located)
+
+
+def test_rule_carries_source_location_when_given() -> None:
+    rule = Rule(action="ACCEPT", source="loc", dest="net", path="rules", line=7)
+    assert rule.path == "rules"
+    assert rule.line == 7
 
 
 # --- Zone: one family-independent identity, family on its members ------------

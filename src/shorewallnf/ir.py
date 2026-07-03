@@ -94,6 +94,10 @@ class Rule:
     ``source``/``dest`` are the raw ``zone`` or ``zone:host`` tokens; the generator splits the
     ``zone:host`` narrowing. ``sport`` is the SOURCE PORT column and ``section`` the enclosing
     ``?SECTION`` name (``None`` for rules before any section marker), both verbatim.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source. They are ``compare=False`` metadata: location does not participate in
+    equality or hashing, keeping value semantics stable (ADR-0001, #195).
     """
 
     action: str
@@ -104,6 +108,8 @@ class Rule:
     sport: str | None = None
     section: str | None = None
     family: Family = Family.BOTH
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
