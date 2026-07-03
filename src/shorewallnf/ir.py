@@ -233,6 +233,29 @@ class HelperCapabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class Provider:
+    """A policy-routing provider (the ``providers`` file), family-aware (epic #204, ADR-0002).
+
+    Models one provider's routing attributes: ``name`` the provider label, ``number`` its
+    routing-table id, ``mark`` the fwmark steered into that table, ``interface`` the egress
+    interface, ``gateway`` the next-hop (an address literal or a non-literal like ``detect``),
+    and ``options`` the verbatim options tokens. ``family`` follows the gateway (ADR-0002): an
+    IPv4 gateway scopes the provider to :data:`Family.IPV4`, an IPv6 gateway to
+    :data:`Family.IPV6`, and a non-literal gateway leaves it dual-stack (:data:`Family.BOTH`).
+    Populating these is the parser's job (#232); validation (unique mark/table id, known
+    interface) is a later task (#233).
+    """
+
+    name: str
+    number: int
+    mark: int
+    interface: str
+    gateway: str
+    options: tuple[str, ...] = ()
+    family: Family = Family.BOTH
+
+
+@dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
 
@@ -249,6 +272,7 @@ class Ruleset:
     stopped_rules: tuple[Rule, ...] = ()
     nats: tuple[Nat, ...] = ()
     conntrack_helpers: tuple[ConntrackHelper, ...] = ()
+    providers: tuple[Provider, ...] = ()
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
     actions: Mapping[str, MacroDef] = field(default_factory=dict)

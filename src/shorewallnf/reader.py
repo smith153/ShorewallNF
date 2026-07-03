@@ -21,6 +21,9 @@ KNOWN_CONFIG_FILES: tuple[str, ...] = (
     "params",
     "zones",
     "interfaces",
+    # `providers` follows the interface-defining `interfaces` so its interface references can be
+    # cross-checked (validation task #233); policy routing is otherwise independent of filtering.
+    "providers",
     "policy",
     "rules",
     "snat",

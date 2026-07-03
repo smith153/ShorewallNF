@@ -32,6 +32,7 @@ from .ir import (
     MacroRule,
     Nat,
     Policy,
+    Provider,
     Rule,
     Ruleset,
     Zone,
@@ -565,6 +566,72 @@ def _resolve_helper_family(
     return literal
 
 
+# --- providers (policy-routing) parser ---------------------------------------
+
+
+def parse_providers(records: Iterable[Record]) -> tuple[Provider, ...]:
+    """Parse ``providers``-file rows into :class:`~shorewallnf.ir.Provider` IR (epic #204).
+
+    A row is ``NAME NUMBER MARK INTERFACE GATEWAY [OPTIONS]``: ``NUMBER`` is the routing-table id
+    and ``MARK`` the fwmark steered into it (both integers — decimal or ``0x`` hex); ``INTERFACE``
+    the egress interface, ``GATEWAY`` the next-hop (an address literal or a non-literal like
+    ``detect``), and ``OPTIONS`` an optional comma-separated list. File order is preserved. Family
+    follows the gateway literal (ADR-0002). A missing required column, a non-integer number/mark,
+    or an unsupported trailing column fails fast with a located :class:`ConfigError` (ADR-0004).
+    Interface/mark/table-id cross-checks are a later task (#233).
+    """
+    return tuple(_build_provider(record) for record in records)
+
+
+def _build_provider(record: Record) -> Provider:
+    name = require_field(record, 0, "provider name")
+    number = _require_int(record, 1, "provider number")
+    mark = _require_int(record, 2, "provider mark")
+    interface = require_field(record, 3, "provider interface")
+    gateway = require_field(record, 4, "provider gateway")
+    if len(record.fields) > 6:
+        raise ConfigError(
+            f"unsupported trailing providers columns {record.fields[6:]!r} "
+            "(only name, number, mark, interface, gateway, options are supported)",
+            path=record.path,
+            line=record.line,
+        )
+    options_field = _optional(record, 5)
+    options = tuple(options_field.split(",")) if options_field is not None else ()
+    return Provider(
+        name=name,
+        number=number,
+        mark=mark,
+        interface=interface,
+        gateway=gateway,
+        options=options,
+        family=_provider_family(gateway),
+    )
+
+
+def _require_int(record: Record, index: int, name: str) -> int:
+    """Field ``index`` parsed as an integer (decimal or ``0x`` hex), or fail fast (ADR-0004)."""
+    token = require_field(record, index, name)
+    try:
+        return int(token, 0)
+    except ValueError:
+        raise ConfigError(
+            f"{name} must be an integer, got {token!r}",
+            path=record.path,
+            line=record.line,
+        ) from None
+
+
+def _provider_family(gateway: str) -> Family:
+    """A provider's family follows its gateway (ADR-0002): an IPv4/IPv6 literal narrows it; a
+    non-literal gateway (e.g. ``detect``) leaves it dual-stack (:data:`Family.BOTH`)."""
+    try:
+        network = ipaddress.ip_network(gateway, strict=False)
+    except ValueError:
+        return Family.BOTH
+    return Family.IPV4 if network.version == 4 else Family.IPV6
+
+
 # --- action.<Name> (site-defined macro/custom-action) parser -----------------
 
 
@@ -718,6 +785,9 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
     conntrack_helpers: tuple[ConntrackHelper, ...] = ()
     if "conntrack" in streams:
         conntrack_helpers = parse_conntrack(parse(streams["conntrack"]), zones)
+    providers: tuple[Provider, ...] = ()
+    if "providers" in streams:
+        providers = parse_providers(parse(streams["providers"]))
     stopped_rules: tuple[Rule, ...] = ()
     if "stoppedrules" in streams:
         stopped_rules = parse_stopped_rules(parse(streams["stoppedrules"]), zones)
@@ -737,5 +807,6 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         stopped_rules=stopped_rules,
         nats=nats,
         conntrack_helpers=conntrack_helpers,
+        providers=providers,
         actions=actions,
     )

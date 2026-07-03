@@ -53,6 +53,14 @@ def test_discover_finds_conntrack_file(tmp_path: Path) -> None:
     assert discover(tmp_path) == ("snat", "conntrack")
 
 
+def test_discover_finds_providers_file(tmp_path: Path) -> None:
+    # The providers file (policy routing) is a known config file (epic #204); it follows the
+    # interface-defining `interfaces` file so its interface references can be cross-checked (#233).
+    (tmp_path / "interfaces").write_text("net eth0 detect\n")
+    (tmp_path / "providers").write_text("wan 1 1 eth0 192.0.2.1\n")
+    assert discover(tmp_path) == ("interfaces", "providers")
+
+
 def test_discover_finds_action_files_and_index(tmp_path: Path) -> None:
     (tmp_path / "zones").write_text("net ipv4\n")
     (tmp_path / "actions").write_text("Ping\n")
