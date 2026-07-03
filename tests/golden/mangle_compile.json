@@ -1,0 +1,385 @@
+{
+  "nftables": [
+    {
+      "add": {
+        "table": {
+          "family": "inet",
+          "name": "filter"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "input",
+          "type": "filter",
+          "hook": "input",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "forward",
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "output",
+          "type": "filter",
+          "hook": "output",
+          "prio": 0,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "lo"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "prerouting",
+          "type": "filter",
+          "hook": "prerouting",
+          "prio": -150,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "prerouting",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth1"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "ip",
+                    "field": "saddr"
+                  }
+                },
+                "right": {
+                  "prefix": {
+                    "addr": "192.0.2.0",
+                    "len": 24
+                  }
+                }
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "nfproto"
+                  }
+                },
+                "right": "ipv4"
+              }
+            },
+            {
+              "mangle": {
+                "key": {
+                  "meta": {
+                    "key": "mark"
+                  }
+                },
+                "value": 1
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "prerouting",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "dport"
+                  }
+                },
+                "right": 443
+              }
+            },
+            {
+              "mangle": {
+                "key": {
+                  "ct": {
+                    "key": "mark"
+                  }
+                },
+                "value": {
+                  "|": [
+                    {
+                      "&": [
+                        {
+                          "ct": {
+                            "key": "mark"
+                          }
+                        },
+                        4294967040
+                      ]
+                    },
+                    2
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "prerouting",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "l4proto"
+                  }
+                },
+                "right": "tcp"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "socket": {
+                    "key": "transparent"
+                  }
+                },
+                "right": 1
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "prerouting",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "ip",
+                    "field": "saddr"
+                  }
+                },
+                "right": {
+                  "prefix": {
+                    "addr": "198.51.100.0",
+                    "len": 24
+                  }
+                }
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "nfproto"
+                  }
+                },
+                "right": "ipv4"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "dport"
+                  }
+                },
+                "right": 80
+              }
+            },
+            {
+              "tproxy": {
+                "family": "ip",
+                "port": 50080
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

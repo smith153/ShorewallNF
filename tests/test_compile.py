@@ -585,3 +585,49 @@ def test_providers_compiled_nft_ruleset_passes_nft_check() -> None:
     from shorewallnf.applier import check_ruleset
 
     check_ruleset(cli.compile_config(PROVIDERS_FIXTURE))  # must not raise
+
+
+# --- mangle / packet marking end-to-end (#230) -------------------------------
+#
+# A committed fixture exercising MARK, CONNMARK(masked), DIVERT and TPROXY in a meaningful order
+# (DIVERT before TPROXY) compiles preprocess -> parse_config -> validate -> generate into the
+# prerouting mangle chain (ADR-0042), asserted against a golden and accepted by nft --check.
+
+MANGLE_FIXTURE = Path(__file__).parent / "fixtures" / "mangle_compile_dir"
+
+
+def test_mangle_compile_end_to_end_matches_golden() -> None:
+    # Full path -> the prerouting mangle chain + rules; the golden harness also dry-run validates
+    # with nft --check where it can.
+    assert_golden(parse_config(cli.preprocess(MANGLE_FIXTURE)), "mangle_compile")
+
+
+def test_mangle_compile_places_rules_in_prerouting_in_file_order() -> None:
+    adds = cli.compile_config(MANGLE_FIXTURE)["nftables"]
+    # The prerouting mangle chain is present (type filter hook prerouting priority -150)...
+    assert {
+        "add": {"chain": {"family": "inet", "table": "filter", "name": "prerouting",
+                          "type": "filter", "hook": "prerouting", "prio": -150,
+                          "policy": "accept"}}
+    } in adds
+    # ...carrying the four actions in file order: MARK, CONNMARK(masked), DIVERT, TPROXY.
+    rules = [
+        c["add"]["rule"] for c in adds
+        if "rule" in c["add"] and c["add"]["rule"]["chain"] == "prerouting"
+    ]
+    assert len(rules) == 4
+    assert rules[0]["expr"][-1] == {"mangle": {"key": {"meta": {"key": "mark"}}, "value": 1}}
+    assert rules[1]["expr"][-1]["mangle"]["key"] == {"ct": {"key": "mark"}}  # CONNMARK, masked
+    socket = {"match": {"op": "==", "left": {"socket": {"key": "transparent"}}, "right": 1}}
+    assert socket in rules[2]["expr"]  # DIVERT keeps an established proxy socket local
+    assert {"tproxy": {"family": "ip", "port": 50080}} in rules[3]["expr"]  # TPROXY redirect
+
+
+@pytest.mark.nft
+def test_mangle_compiled_ruleset_passes_nft_check() -> None:
+    # The nft channel from a mangle config loads under nft --check (tproxy/socket/masked-mark
+    # schema). Hard-fails under CI if nft can't run; skips locally (needs CAP_NET_ADMIN).
+    gh.require_nft()
+    from shorewallnf.applier import check_ruleset
+
+    check_ruleset(cli.compile_config(MANGLE_FIXTURE))  # must not raise
