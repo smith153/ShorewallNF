@@ -116,6 +116,29 @@ def apply_ruleset(ruleset: dict[str, Any]) -> None:
         raise ConfigError(f"ruleset rejected by nft: {result.stderr.strip()}")
 
 
+def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
+    """Load the persisted ruleset from ``path`` live, fail-closed (task #206, ADR-0030).
+
+    The read half of :func:`save_ruleset`: parse the persisted JSON and hand the exact object
+    to :func:`apply_ruleset` for one atomic load. A missing file, corrupt JSON, or a payload
+    that is not a ruleset is wrapped as :class:`~shorewallnf.errors.ShorewallNFError` *before*
+    any nft call, so a failed restore never flushes the live ruleset to an empty (wide-open)
+    state. An nft-rejected ruleset raises :class:`~shorewallnf.errors.ConfigError` from
+    :func:`apply_ruleset` and commits nothing.
+    """
+    try:
+        text = path.read_text()
+    except OSError as err:
+        raise ShorewallNFError(f"failed to read persisted ruleset from {path}: {err}") from err
+    try:
+        ruleset = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise ShorewallNFError(f"persisted ruleset at {path} is not valid JSON: {err}") from err
+    if not isinstance(ruleset, dict) or not isinstance(ruleset.get("nftables"), list):
+        raise ShorewallNFError(f"persisted ruleset at {path} is not a valid nftables ruleset")
+    apply_ruleset(ruleset)
+
+
 def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> None:
     """Persist the exact applied ``ruleset`` JSON to ``path``, atomically (task #205, ADR-0030).
 

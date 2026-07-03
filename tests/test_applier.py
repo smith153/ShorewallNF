@@ -284,3 +284,107 @@ def test_save_ruleset_raises_shorewallnferror_on_write_failure(tmp_path: Path) -
 
 def test_default_ruleset_path_is_stable_and_documented() -> None:
     assert applier.DEFAULT_RULESET_PATH == Path("/var/lib/shorewallnf/ruleset.json")
+
+
+# --- restore_ruleset: load the persisted ruleset from disk (task #206) ----------------------
+
+
+def test_restore_ruleset_loads_persisted_file_via_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ruleset = {"nftables": [{"add": {"table": {"family": "inet", "name": "filter"}}}]}
+    path = tmp_path / "ruleset.json"
+    path.write_text(json.dumps(ruleset))
+
+    applied: list[Any] = []
+    monkeypatch.setattr(applier, "apply_ruleset", lambda r: applied.append(r))
+    applier.restore_ruleset(path)
+    # The exact persisted object is handed to the atomic applier (round-trip of save).
+    assert applied == [ruleset]
+
+
+def test_restore_ruleset_missing_file_raises_and_never_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    applied = False
+
+    def record(_r: Any) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(applier, "apply_ruleset", record)
+    with pytest.raises(ShorewallNFError):
+        applier.restore_ruleset(tmp_path / "does-not-exist.json")
+    assert applied is False  # aborts before any load — never flushes to an empty ruleset
+
+
+def test_restore_ruleset_corrupt_json_raises_before_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "ruleset.json"
+    path.write_text("{not valid json")
+
+    applied = False
+
+    def record(_r: Any) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(applier, "apply_ruleset", record)
+    with pytest.raises(ShorewallNFError):
+        applier.restore_ruleset(path)
+    assert applied is False
+
+
+def test_restore_ruleset_non_ruleset_json_raises_before_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Valid JSON, but not a ruleset payload — must be rejected before touching nft.
+    path = tmp_path / "ruleset.json"
+    path.write_text('["not", "a", "ruleset"]')
+
+    applied = False
+
+    def record(_r: Any) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(applier, "apply_ruleset", record)
+    with pytest.raises(ShorewallNFError):
+        applier.restore_ruleset(path)
+    assert applied is False
+
+
+def test_restore_ruleset_propagates_nft_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "ruleset.json"
+    path.write_text(json.dumps({"nftables": []}))
+
+    def rejecting_apply(_r: Any) -> None:
+        raise ConfigError("ruleset rejected by nft: boom")
+
+    monkeypatch.setattr(applier, "apply_ruleset", rejecting_apply)
+    with pytest.raises(ConfigError, match="boom"):
+        applier.restore_ruleset(path)
+
+
+@pytest.mark.skipif(
+    not gh.nft_available(),
+    reason="restore_ruleset live round-trip needs a usable nft (CAP_NET_ADMIN)",
+)
+def test_restore_ruleset_round_trips_a_saved_ruleset_live(tmp_path: Path) -> None:
+    # save then restore re-applies the same scoped, uniquely-named probe table.
+    ruleset = {
+        "nftables": [{"add": {"table": {"family": "inet", "name": "snf_restore_probe"}}}]
+    }
+    path = tmp_path / "ruleset.json"
+    applier.save_ruleset(ruleset, path)
+    try:
+        applier.restore_ruleset(path)  # rc 0, no raise
+    finally:
+        subprocess.run(
+            ["nft", "delete", "table", "inet", "snf_restore_probe"],
+            capture_output=True,
+            text=True,
+        )

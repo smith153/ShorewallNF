@@ -16,7 +16,14 @@ from pathlib import Path
 from typing import Any
 
 from . import reader
-from .applier import apply_ruleset, check_ruleset, clear_ruleset, save_ruleset
+from .applier import (
+    DEFAULT_RULESET_PATH,
+    apply_ruleset,
+    check_ruleset,
+    clear_ruleset,
+    restore_ruleset,
+    save_ruleset,
+)
 from .errors import ShorewallNFError
 from .generator import generate
 from .parser import parse_config
@@ -32,7 +39,11 @@ _VERB_HELP = {
     "reload": "compile, dry-run check, then atomically replace the running ruleset",
     "restart": "alias of reload: atomically replace the running ruleset",
     "clear": "remove all ShorewallNF tables, leaving traffic unfiltered",
+    "restore": "reload the last persisted ruleset from disk, fail-closed",
 }
+
+# Verbs that operate on persisted/live state, not a config directory, take no positional.
+_NO_CONFIG_VERBS = frozenset({"restore"})
 
 # start/reload/restart share apply's compile->check->apply mechanism (incremental diff
 # deferred, #175); they differ only in the confirmation line the operator sees.
@@ -75,7 +86,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="verb", required=True)
     for verb, help_text in _VERB_HELP.items():
         verb_parser = sub.add_parser(verb, help=help_text)
-        verb_parser.add_argument("config_dir", help="path to the Shorewall-style config directory")
+        if verb not in _NO_CONFIG_VERBS:
+            verb_parser.add_argument(
+                "config_dir", help="path to the Shorewall-style config directory"
+            )
     return parser
 
 
@@ -97,6 +111,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
         print(f"{_LIFECYCLE_MESSAGE[args.verb]}: {args.config_dir}")
+        return 0
+    if args.verb == "restore":
+        restore_ruleset()
+        print(f"restored: {DEFAULT_RULESET_PATH}")
         return 0
     if args.verb == "clear":
         clear_ruleset()

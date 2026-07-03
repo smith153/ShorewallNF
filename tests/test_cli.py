@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from shorewallnf import cli
-from shorewallnf.errors import ConfigError
+from shorewallnf.applier import DEFAULT_RULESET_PATH
+from shorewallnf.errors import ConfigError, ShorewallNFError
 
 
 def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
@@ -191,6 +192,47 @@ def test_clear_verb_reports_nft_rejection_and_exits_one(
     monkeypatch.setattr(cli, "clear_ruleset", failing_clear)
     assert cli.main(["clear", _COMPILE_DIR]) == 1
     assert "error:" in capsys.readouterr().err
+
+
+def test_restore_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "restore" in capsys.readouterr().out
+
+
+def test_restore_verb_takes_no_config_dir(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "restore_ruleset", lambda: calls.append("restore"))
+    # No positional argument is required or accepted — restore reads the persisted path.
+    assert cli.main(["restore"]) == 0
+    assert calls == ["restore"]
+    assert str(DEFAULT_RULESET_PATH) in capsys.readouterr().out
+
+
+def test_restore_verb_rejects_a_positional_argument() -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["restore", "some-config-dir"])
+    assert exc.value.code == 2  # argparse usage error — restore takes no config_dir
+
+
+def test_restore_verb_reports_failure_and_exits_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_restore() -> None:
+        raise ShorewallNFError("failed to read persisted ruleset")
+
+    monkeypatch.setattr(cli, "restore_ruleset", failing_restore)
+    assert cli.main(["restore"]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_other_verbs_still_require_config_dir() -> None:
+    # Relaxing the parser for restore must not drop the positional from config verbs.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["check"])
+    assert exc.value.code == 2
 
 
 def test_console_script_entry_point_declared() -> None:
