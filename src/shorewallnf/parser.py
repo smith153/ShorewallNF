@@ -315,13 +315,10 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
 
 
 def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Rule:
+    # The ACTION column is a plain str: a built-in verdict or a macro/action name (ADR-0020 §2).
+    # The parser stays purely syntactic and macro-unaware — the resolver (#184) tells them apart
+    # by registry lookup and fails fast on an unknown name, so no verdict check happens here.
     action = require_field(record, 0, "rule action")
-    if action not in _RULE_ACTIONS:
-        raise ConfigError(
-            f"unknown rule action {action!r} (only ACCEPT/DROP/REJECT supported)",
-            path=record.path,
-            line=record.line,
-        )
     source = require_field(record, 1, "source")
     dest = require_field(record, 2, "dest")
     if len(record.fields) > 6:

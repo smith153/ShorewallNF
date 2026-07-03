@@ -7,8 +7,8 @@ core / imperative shell), the IR from [ADR-0001](adr/0001-ir-modeling.md), and t
 from ADR-0004 (error-handling conventions, task #11).
 
 ```
-config dir ─► Reader ─► Preprocessor ─► Parser ─► IR ─► Validator ─► Generator ─► Applier
-             └──────── shell ────────┘  └──────────── pure core ───────────┘  └── shell ──┘
+config dir ─► Reader ─► Preprocessor ─► Parser ─► IR ─► Resolver ─► Validator ─► Generator ─► Applier
+             └──────── shell ────────┘  └─────────────────── pure core ──────────────────┘  └── shell ──┘
 ```
 
 ## Stage → module
@@ -19,6 +19,7 @@ config dir ─► Reader ─► Preprocessor ─► Parser ─► IR ─► Vali
 | Preprocessor | `shorewallnf/preprocessor.py` | core (pure: text → text) | planned |
 | Parser | `shorewallnf/parser.py` | core (pure: text → IR) | planned |
 | IR / model | `shorewallnf/ir.py` | core (immutable data) | **present** |
+| Resolver | `shorewallnf/resolver.py` | core (pure: IR → IR) | **present** (expands macro/action call sites into narrowed verdict rules between Parser and Validator, [ADR-0020](adr/0020-macro-and-action-resolution.md)) |
 | Validator | `shorewallnf/validator.py` | core (pure: IR → IR, or raises) | **present** (semantic checks; e.g. the ESTABLISHED/RELATED base-accept shadow, [ADR-0005](adr/0005-nftables-base-chain-layout.md)) |
 | Generator | `shorewallnf/generator.py` | core (pure: IR → nftables JSON) | **present** (base skeleton [ADR-0005](adr/0005-nftables-base-chain-layout.md); inter-zone policy rules [ADR-0006](adr/0006-inter-zone-policy-compilation.md); per-connection rules [ADR-0007](adr/0007-rules-compilation.md); IPv4 DNAT nat compilation [ADR-0008](adr/0008-nat-compilation.md); IPv4 SNAT/MASQUERADE postrouting [ADR-0009](adr/0009-snat-compilation.md)) |
 | Applier | `shorewallnf/applier.py` | shell (runs `nft -c`, then applies) | planned |

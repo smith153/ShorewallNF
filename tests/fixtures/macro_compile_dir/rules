@@ -1,0 +1,4 @@
+# Feature rules invoking a built-in macro (Web) and a site action (Ssh).
+#ACTION  SOURCE  DEST  PROTO  DPORT
+Web      net     fw
+Ssh      net     fw
