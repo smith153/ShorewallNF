@@ -24,6 +24,8 @@ from .ir import (
     HelperDef,
     Nat,
     Policy,
+    Provider,
+    RoutingArtifact,
     Rule,
     Ruleset,
     Zone,
@@ -79,6 +81,35 @@ def generate_stopped(ruleset: Ruleset) -> dict[str, list[_Command]]:
     commands = _filter_base()
     commands += _translate_rules(ruleset.stopped_rules, interfaces, firewalls)
     return {"nftables": commands}
+
+
+def generate_routing(ruleset: Ruleset) -> tuple[RoutingArtifact, ...]:
+    """Lower each ``providers`` entry into a policy-routing :class:`RoutingArtifact` (ADR-0050).
+
+    The second output channel, distinct from the nftables JSON: policy routing lives in the Linux
+    routing subsystem (``ip rule`` + per-provider routing tables), not nftables. Each provider
+    yields a routing table (id = provider number, default route via its gateway/interface) and the
+    fwmark→table selection rule. File order is preserved. Providers set no nft mark rule — the mark
+    is owned by the mangle epic (#203) and only consumed here. A provider whose gateway is not an
+    address literal (family ``BOTH``) cannot be family-scoped and fails closed (ADR-0004).
+    """
+    return tuple(_provider_routing(provider) for provider in ruleset.providers)
+
+
+def _provider_routing(provider: Provider) -> RoutingArtifact:
+    if provider.family is Family.BOTH:
+        raise ConfigError(
+            f"provider {provider.name!r} has a non-address gateway {provider.gateway!r}: a routing "
+            "table needs a concrete IPv4/IPv6 next-hop (apply-time gateway detection is out of "
+            "scope) — give the provider a literal gateway address"
+        )
+    return RoutingArtifact(
+        table_id=provider.number,
+        fwmark=provider.mark,
+        gateway=provider.gateway,
+        interface=provider.interface,
+        family=provider.family,
+    )
 
 
 def _filter_base() -> list[_Command]:
