@@ -108,6 +108,67 @@ def test_atomic_load_payload_does_not_mutate_input() -> None:
     assert ruleset == original
 
 
+# --- clear_payload / clear_ruleset: wide-open scoped clear (task #208) ---------------------
+
+
+def test_clear_payload_deletes_fixed_owned_table_set() -> None:
+    # Wide-open, config-independent: delete-only prelude for the fixed owned set
+    # (inet filter + inet nat), add-then-delete each, and nothing else.
+    payload = applier.clear_payload()
+    assert payload["nftables"] == [
+        {"add": {"table": {"family": "inet", "name": "filter"}}},
+        {"delete": {"table": {"family": "inet", "name": "filter"}}},
+        {"add": {"table": {"family": "inet", "name": "nat"}}},
+        {"delete": {"table": {"family": "inet", "name": "nat"}}},
+    ]
+
+
+def test_clear_payload_has_no_re_add_and_no_flush() -> None:
+    payload = applier.clear_payload()
+    # Delete-only: exactly two add and two delete commands, no ruleset re-add.
+    assert sum("add" in c for c in payload["nftables"]) == 2
+    assert sum("delete" in c for c in payload["nftables"]) == 2
+    assert not any("flush" in c for c in payload["nftables"])
+
+
+def test_clear_payload_never_names_a_co_resident_table() -> None:
+    payload = applier.clear_payload()
+    names = [
+        next(iter(c.values()))["table"]["name"]
+        for c in payload["nftables"]
+    ]
+    assert "myvpn" not in names
+    assert set(names) == {"filter", "nat"}
+
+
+def test_clear_ruleset_loads_clear_payload_with_dry_run_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        seen["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    applier.clear_ruleset()
+
+    assert seen["cmd"] == ["nft", "--json", "--file", "-"]
+    assert json.loads(seen["input"]) == applier.clear_payload()
+
+
+def test_clear_ruleset_raises_configerror_when_nft_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "nft: boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ConfigError, match="boom"):
+        applier.clear_ruleset()
+
+
 # --- apply_ruleset: fail-closed live load (task #179) --------------------------------------
 
 
