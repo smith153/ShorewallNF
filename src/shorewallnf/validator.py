@@ -41,5 +41,7 @@ def _reject_shadowed_section_rule(rule: Rule) -> None:
             f"rule {rule.action} {rule.source!r} {rule.dest!r}: {rule.action} in the "
             f"{section} section is unreachable — established/related traffic is already "
             f"accepted by the base chain (ADR-0005), so this rule is dead. Remove it "
-            f"(mid-connection DROP/REJECT is not supported)."
+            f"(mid-connection DROP/REJECT is not supported).",
+            path=rule.path,
+            line=rule.line,
         )

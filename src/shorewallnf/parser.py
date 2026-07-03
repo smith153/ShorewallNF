@@ -343,6 +343,8 @@ def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Ru
         sport=_optional(record, 5),
         section=section,
         family=_infer_family(source, dest, proto, record),
+        path=record.path,
+        line=record.line,
     )
 
 

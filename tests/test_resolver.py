@@ -159,6 +159,30 @@ def test_resolution_stops_at_first_unknown() -> None:
     assert "First" in str(err.value) and "Second" not in str(err.value)
 
 
+# --- #195: source location threads through expansion and into errors --------
+
+
+def test_expansion_preserves_call_site_source_location() -> None:
+    # Each expanded verdict rule inherits the invoking rule's path:line so post-expansion
+    # validator errors still cite the originating config line.
+    out = resolve(_rs(Rule(action="Web", source="net", dest="fw", path="rules", line=9)))
+    assert [(r.path, r.line) for r in out.rules] == [("rules", 9), ("rules", 9)]
+
+
+def test_unknown_action_error_cites_path_line() -> None:
+    with pytest.raises(ConfigError) as err:
+        resolve(_rs(Rule(action="Bogus", source="net", dest="fw", path="rules", line=4)))
+    assert str(err.value).startswith("rules:4: ")
+
+
+def test_unsatisfiable_narrowing_error_cites_path_line() -> None:
+    site = MacroDef(name="Svc", body=(MacroRule(action="ACCEPT", proto="tcp", dport="80"),))
+    call = Rule(action="Svc", source="net", dest="fw", dport="443", path="rules", line=5)
+    with pytest.raises(ConfigError) as err:
+        resolve(_rs(call, actions={"Svc": site}))
+    assert str(err.value).startswith("rules:5: ")
+
+
 # --- AC4: site-action precedence overrides a built-in of the same name ------
 
 

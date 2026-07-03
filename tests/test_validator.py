@@ -38,6 +38,15 @@ def test_drop_or_reject_in_shadowed_section_fails_fast(action: str, section: str
     assert "ADR-0005" in msg  # names the base-accept shadow
 
 
+def test_shadowed_section_error_cites_path_line() -> None:
+    # #195: when the offending rule carries a source location, the error prefixes path:line.
+    rule = Rule(action="DROP", source="net", dest="loc", section="ESTABLISHED",
+                path="rules", line=12)
+    with pytest.raises(ConfigError) as exc:
+        validate(Ruleset(rules=(rule,)))
+    assert str(exc.value).startswith("rules:12: ")
+
+
 def test_message_is_actionable() -> None:
     msg = _message(_rs("DROP", "ESTABLISHED")).lower()
     assert "unreachable" in msg or "dead" in msg
