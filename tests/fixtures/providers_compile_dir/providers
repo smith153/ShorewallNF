@@ -1,0 +1,7 @@
+# Multi-uplink policy routing, mirroring the reference config's intent abstractly: two IPv4
+# uplinks plus an IPv6 path, each with a distinct routing-table number and fwmark. Documentation
+# ranges only (RFC 5737 / RFC 3849).
+#NAME  NUMBER  MARK  INTERFACE  GATEWAY        OPTIONS
+wan1   1       1     eth0       192.0.2.1      track
+wan2   2       2     eth1       198.51.100.1   track
+wan6   3       3     eth2       2001:db8::1

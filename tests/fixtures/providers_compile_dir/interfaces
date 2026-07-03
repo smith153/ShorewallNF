@@ -1,0 +1,4 @@
+net eth0 detect
+net eth1 detect
+net eth2 detect
+loc eth3 detect

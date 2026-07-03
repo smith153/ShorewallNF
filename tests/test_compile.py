@@ -6,18 +6,21 @@ import pytest
 
 import tests.golden_harness as gh
 from shorewallnf import cli
-from shorewallnf.generator import generate
+from shorewallnf.generator import generate, generate_routing
 from shorewallnf.ir import (
     ConntrackHelper,
     Family,
     HelperCapabilities,
     Nat,
     Policy,
+    RoutingArtifact,
     Rule,
+    Ruleset,
     ZoneMember,
 )
 from shorewallnf.parser import parse_config
 from shorewallnf.preprocessor import SourceLine, to_source_lines
+from shorewallnf.validator import validate
 from tests.golden_harness import assert_golden
 
 FIXTURE = Path(__file__).parent / "fixtures" / "compile_dir"
@@ -511,3 +514,74 @@ def test_conntrack_compiled_ruleset_passes_nft_check() -> None:
     with pytest.warns(UserWarning, match="not available"):
         capability_off = generate(ruleset, HelperCapabilities(available=frozenset({"ftp", "pptp"})))
     check_ruleset(capability_off)  # a skipped helper still leaves a valid ruleset
+
+
+# --- providers / policy routing end-to-end (#236) ----------------------------
+#
+# A committed multi-uplink fixture (two IPv4 providers + one IPv6 path, RFC 5737 / RFC 3849)
+# compiles preprocess -> parse_config -> validate -> generate_routing into the policy-routing
+# artifacts (ADR-0050). The nft channel stays free of provider rules — providers emit no nft hook
+# (the mark is owned by the mangle epic) — and still passes nft --check. Kept in its own region.
+
+PROVIDERS_FIXTURE = Path(__file__).parent / "fixtures" / "providers_compile_dir"
+
+
+def _providers_ruleset() -> Ruleset:
+    # The compile pre-generation path: preprocess (I/O) -> parse_config -> validate.
+    return validate(parse_config(cli.preprocess(PROVIDERS_FIXTURE)))
+
+
+def _routing_dict(ruleset: Ruleset) -> dict[str, list[dict[str, object]]]:
+    return {
+        "routing": [
+            {
+                "table_id": a.table_id,
+                "fwmark": a.fwmark,
+                "gateway": a.gateway,
+                "interface": a.interface,
+                "family": a.family.value,
+            }
+            for a in generate_routing(ruleset)
+        ]
+    }
+
+
+def test_providers_compile_routing_matches_golden() -> None:
+    # Full path -> the policy-routing artifacts (the second output channel, not nftables JSON).
+    assert_golden(
+        _providers_ruleset(), "providers_compile_routing",
+        check_nft=False, generator=_routing_dict,
+    )
+
+
+def test_providers_compile_carries_the_expected_routing() -> None:
+    assert generate_routing(_providers_ruleset()) == (
+        RoutingArtifact(table_id=1, fwmark=1, gateway="192.0.2.1",
+                        interface="eth0", family=Family.IPV4),
+        RoutingArtifact(table_id=2, fwmark=2, gateway="198.51.100.1",
+                        interface="eth1", family=Family.IPV4),
+        RoutingArtifact(table_id=3, fwmark=3, gateway="2001:db8::1",
+                        interface="eth2", family=Family.IPV6),
+    )
+
+
+def test_providers_add_no_nft_rule() -> None:
+    # ADR-0050: providers emit no nft mark hook, so the nft channel is identical with or without
+    # the providers file — routing lives entirely in the iproute2 artifacts.
+    from shorewallnf.resolver import resolve
+
+    with_providers = cli.compile_config(PROVIDERS_FIXTURE)
+    streams = cli.preprocess(PROVIDERS_FIXTURE)
+    del streams["providers"]
+    without_providers = generate(validate(resolve(parse_config(streams))))
+    assert with_providers == without_providers
+
+
+@pytest.mark.nft
+def test_providers_compiled_nft_ruleset_passes_nft_check() -> None:
+    # The nft channel a providers config produces (base skeleton + policy, no provider rule) loads
+    # under nft --check. Hard-fails under CI if nft can't run; skips locally (needs root).
+    gh.require_nft()
+    from shorewallnf.applier import check_ruleset
+
+    check_ruleset(cli.compile_config(PROVIDERS_FIXTURE))  # must not raise
