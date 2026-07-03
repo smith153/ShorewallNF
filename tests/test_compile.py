@@ -6,7 +6,7 @@ import pytest
 
 import tests.golden_harness as gh
 from shorewallnf import cli
-from shorewallnf.ir import Family, Nat, Policy, Rule, ZoneMember
+from shorewallnf.ir import ConntrackHelper, Family, Nat, Policy, Rule, ZoneMember
 from shorewallnf.parser import parse_config
 from shorewallnf.preprocessor import SourceLine, to_source_lines
 from tests.golden_harness import assert_golden
@@ -268,6 +268,20 @@ def test_parse_config_parses_the_snat_file() -> None:
             action="SNAT", source_nets="192.0.2.0/24", out_interface="eth1",
             snat_to="203.0.113.5", family=Family.IPV4,
         ),
+    )
+
+
+def test_parse_config_carries_conntrack_helpers() -> None:
+    ruleset = parse_config(
+        _streams(
+            zones="fw firewall\nnet ipv4\nloc ipv4\n",
+            interfaces="net eth1 detect\nloc eth0 detect\n",
+            conntrack="CT:helper:ftp - -\nCT:helper:pptp - -\n",
+        )
+    )
+    assert ruleset.conntrack_helpers == (
+        ConntrackHelper(name="ftp", proto="tcp", dport="21", family=Family.BOTH),
+        ConntrackHelper(name="pptp", proto="tcp", dport="1723", family=Family.IPV4),
     )
 
 

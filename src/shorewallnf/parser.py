@@ -21,9 +21,12 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import NamedTuple, TypeVar
 
+from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
 from .ir import (
+    ConntrackHelper,
     Family,
+    HelperDef,
     Interface,
     MacroDef,
     MacroRule,
@@ -470,6 +473,98 @@ def _parse_snat_action(token: str, record: Record) -> tuple[str, str | None]:
     )
 
 
+# --- conntrack (helper assignment) parser ------------------------------------
+
+_CT_HELPER_PREFIX = "CT:helper:"
+
+
+def parse_conntrack(
+    records: Iterable[Record], zones: tuple[Zone, ...]
+) -> tuple[ConntrackHelper, ...]:
+    """Parse ``conntrack``-file ``CT:helper:<name>`` rows into
+    :class:`~shorewallnf.ir.ConntrackHelper` IR entries (epic #200, ADR-0040).
+
+    A row is ``CT:helper:<name> <SOURCE> <DEST> [PROTO] [DEST PORT]``. ``<name>`` is resolved
+    against the built-in registry (:data:`shorewallnf.conntrack.BUILTIN_HELPERS`) for its
+    default proto/port and family capability. ``SOURCE``/``DEST`` are ``-`` or a
+    ``zone``/``zone:host`` narrowing token; ``PROTO``/``DEST PORT`` override the registry
+    defaults when given. Family follows the registry capability (ADR-0002), narrowed further by
+    a v4/v6 host literal in ``SOURCE``/``DEST``. An unknown helper name, a non-``CT:helper``
+    action (``notrack``/raw-table exemptions are out of scope for this epic), an unknown zone,
+    a v6 literal on a v4-only helper, or a trailing (SPORT/…) column fails fast with a located
+    :class:`ConfigError` rather than being silently dropped.
+    """
+    zone_names = {zone.name for zone in zones}
+    return tuple(_build_conntrack_helper(record, zone_names) for record in records)
+
+
+def _build_conntrack_helper(record: Record, zone_names: set[str]) -> ConntrackHelper:
+    action = require_field(record, 0, "conntrack action")
+    if not action.startswith(_CT_HELPER_PREFIX):
+        raise ConfigError(
+            f"unsupported conntrack action {action!r} "
+            f"(only {_CT_HELPER_PREFIX}<name> helper assignment is supported; "
+            "notrack/raw-table exemptions are out of scope)",
+            path=record.path,
+            line=record.line,
+        )
+    name = action[len(_CT_HELPER_PREFIX) :]
+    helper = BUILTIN_HELPERS.get(name)
+    if helper is None:
+        raise ConfigError(
+            f"unknown conntrack helper {name!r} (known helpers: {sorted(BUILTIN_HELPERS)})",
+            path=record.path,
+            line=record.line,
+        )
+    if len(record.fields) > 5:
+        raise ConfigError(
+            f"unsupported trailing conntrack columns {record.fields[5:]!r} "
+            "(only action, source, dest, proto, dest-port are supported)",
+            path=record.path,
+            line=record.line,
+        )
+    source = _optional(record, 1)
+    dest = _optional(record, 2)
+    for token in (source, dest):  # `-` (unspecified) is not a zone reference to validate
+        if token is not None:
+            zone = token.split(":", 1)[0]
+            if zone != "all" and zone not in zone_names:
+                raise ConfigError(
+                    f"unknown zone {zone!r}", path=record.path, line=record.line
+                )
+    proto = _optional(record, 3)
+    proto = proto.lower() if proto is not None else helper.proto
+    dport = _optional(record, 4) or ",".join(helper.ports)
+    return ConntrackHelper(
+        name=name,
+        source=source or "",
+        dest=dest or "",
+        proto=proto,
+        dport=dport,
+        family=_resolve_helper_family(helper, source, dest, record),
+    )
+
+
+def _resolve_helper_family(
+    helper: HelperDef, source: str | None, dest: str | None, record: Record
+) -> Family:
+    """Resolve a helper row's family: the registry capability (ADR-0002), narrowed by a v4/v6
+    host literal in ``SOURCE``/``DEST``. A literal that conflicts with the capability (e.g. a v6
+    address on a v4-only helper) fails fast."""
+    capability = helper.family_capability
+    literal = _infer_family(source or _UNSET, dest or _UNSET, None, record)
+    if literal is Family.BOTH:
+        return capability
+    if capability is not Family.BOTH and literal is not capability:
+        raise ConfigError(
+            f"conntrack helper {helper.name!r} supports {capability.value} only, "
+            f"but the row is narrowed to {literal.value}",
+            path=record.path,
+            line=record.line,
+        )
+    return literal
+
+
 # --- action.<Name> (site-defined macro/custom-action) parser -----------------
 
 
@@ -620,6 +715,9 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         rules, nats = parsed_rules.rules, parsed_rules.nats
     if "snat" in streams:
         nats += parse_snat(parse(streams["snat"]))
+    conntrack_helpers: tuple[ConntrackHelper, ...] = ()
+    if "conntrack" in streams:
+        conntrack_helpers = parse_conntrack(parse(streams["conntrack"]), zones)
     stopped_rules: tuple[Rule, ...] = ()
     if "stoppedrules" in streams:
         stopped_rules = parse_stopped_rules(parse(streams["stoppedrules"]), zones)
@@ -638,5 +736,6 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         rules=rules,
         stopped_rules=stopped_rules,
         nats=nats,
+        conntrack_helpers=conntrack_helpers,
         actions=actions,
     )
