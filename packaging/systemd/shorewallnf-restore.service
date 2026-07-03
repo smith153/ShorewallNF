@@ -1,0 +1,40 @@
+# ShorewallNF boot-time firewall restore (task #207, epic #202, ADR-0030).
+#
+# Loads the persisted ruleset (/var/lib/shorewallnf/ruleset.json) before any network
+# interface is configured, so the host is never briefly reachable without its firewall.
+# See docs/lifecycle.md for the save -> persist -> restore-at-boot lifecycle.
+#
+# Enable with:  systemctl enable shorewallnf-restore.service
+# Packagers may need to adjust the ExecStart path to where `shorewallnf` is installed.
+
+[Unit]
+Description=ShorewallNF: restore the persisted firewall ruleset before the network comes up
+Documentation=https://github.com/smith153/ShorewallNF/blob/master/docs/lifecycle.md
+
+# Run before interfaces are configured (systemd.special(7): the documented "before the
+# network" ordering). DefaultDependencies=no lifts the default late ordering so we can slot
+# ahead of network-pre.target rather than after basic.target.
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target
+
+# The persisted ruleset lives under /var/lib; make sure that filesystem is mounted first.
+After=local-fs.target
+RequiresMountsFor=/var/lib/shorewallnf
+
+# Stop cleanly at shutdown (required once DefaultDependencies=no drops the implicit ordering).
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Fail-closed: `restore` exits non-zero if the saved ruleset is missing, corrupt, or rejected
+# by nft, which fails the unit loudly. There is no `ExecStart=-` prefix to swallow the error,
+# and the restore verb is atomic and never flushes to an empty ruleset — so a failed boot
+# leaves the prior state, never a wide-open host.
+ExecStart=/usr/bin/shorewallnf restore
+
+[Install]
+WantedBy=multi-user.target

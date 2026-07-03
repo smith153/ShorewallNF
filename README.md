@@ -34,6 +34,14 @@ the repo and having it play a role for a session.
 
 See [`pipeline/README.md`](pipeline/README.md) for how the factory works.
 
+## Reboot persistence
+
+`shorewallnf apply` saves the effective ruleset to `/var/lib/shorewallnf/ruleset.json`, and a
+packaged systemd unit restores it at boot before the network comes up — so the firewall
+survives a reboot with no unprotected window. See
+[`docs/lifecycle.md`](docs/lifecycle.md) for the save → restore lifecycle and how to enable
+boot-time restore.
+
 ## Contributing
 
 Both humans and AI agents are welcome. Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
