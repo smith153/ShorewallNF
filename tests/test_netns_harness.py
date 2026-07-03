@@ -56,6 +56,15 @@ def test_load_payload_flushes_then_renders() -> None:
     assert payload["nftables"][1:] == generate(rs)["nftables"]
 
 
+def test_render_accepts_a_custom_generator() -> None:
+    # The stopped safe state (#213) loads through the same seam via generate_stopped.
+    from shorewallnf.generator import generate_stopped
+
+    rs = Ruleset(zones=(Zone(name="fw", is_firewall=True),))
+    assert nh.render(rs, generate_stopped) == generate_stopped(rs)
+    assert nh.load_payload(rs, generate_stopped)["nftables"][1:] == generate_stopped(rs)["nftables"]
+
+
 # ---- topology -> command planning -------------------------------------------------------
 
 
