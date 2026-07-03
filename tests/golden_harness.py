@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,7 @@ def assert_golden(
     golden_dir: Path = GOLDEN_DIR,
     update: bool | None = None,
     check_nft: bool = True,
+    generator: Callable[[Ruleset], dict[str, Any]] = generate,
 ) -> dict[str, Any]:
     """Render ``ruleset`` and assert it matches ``<golden_dir>/<name>.json``.
 
@@ -99,9 +101,11 @@ def assert_golden(
     the ``UPDATE_GOLDEN`` env var) the fixture is rewritten instead of compared. Where ``nft``
     can run the rendered output is also dry-run validated (``nft --check``) unless ``check_nft``
     is false; where it cannot the diff still runs (the non-vacuous CI guarantee comes from the
-    ``require_nft``-gated tests, task #165). Returns the rendered ruleset.
+    ``require_nft``-gated tests, task #165). ``generator`` selects the render entry point (the
+    running ruleset by default; ``generate_stopped`` for the stopped safe state). Returns the
+    rendered ruleset.
     """
-    actual = generate(ruleset)
+    actual = generator(ruleset)
     path = golden_dir / f"{name}.json"
     if update is None:
         update = _update_requested()
