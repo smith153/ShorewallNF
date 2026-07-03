@@ -19,6 +19,7 @@ import pytest
 import tests.golden_harness as gh
 from shorewallnf import applier
 from shorewallnf.errors import ConfigError, ShorewallNFError
+from shorewallnf.ir import Family, RoutingArtifact
 
 
 def test_check_ruleset_invokes_nft_check_json_with_ruleset_on_stdin(
@@ -388,3 +389,83 @@ def test_restore_ruleset_round_trips_a_saved_ruleset_live(tmp_path: Path) -> Non
             capture_output=True,
             text=True,
         )
+
+
+# --- provider routing artifacts via iproute2 (#235, ADR-0050) ----------------
+#
+# The applier lowers ADR-0050 RoutingArtifacts to `ip route`/`ip rule` argv, per family, and
+# runs them idempotently and fail-closed. These tests capture the argv without a live network.
+
+_ARTS = (
+    RoutingArtifact(table_id=1, fwmark=1, gateway="192.0.2.1", interface="eth0",
+                    family=Family.IPV4),
+    RoutingArtifact(table_id=3, fwmark=3, gateway="2001:db8::1", interface="eth2",
+                    family=Family.IPV6),
+)
+
+
+def _record_run(monkeypatch: pytest.MonkeyPatch, rc_for: Any = None) -> list[list[str]]:
+    """Stub subprocess.run to record argv; rc_for(cmd) -> returncode (default 0)."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        rc = rc_for(cmd) if rc_for is not None else 0
+        return subprocess.CompletedProcess(cmd, rc, "", "ip: boom" if rc else "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_routing_install_argv_populates_table_then_selects_it_per_family() -> None:
+    assert applier.routing_install_argv(_ARTS) == [
+        ["ip", "-4", "route", "add", "default", "via", "192.0.2.1", "dev", "eth0", "table", "1"],
+        ["ip", "-4", "rule", "add", "fwmark", "1", "table", "1"],
+        ["ip", "-6", "route", "add", "default", "via", "2001:db8::1", "dev", "eth2", "table", "3"],
+        ["ip", "-6", "rule", "add", "fwmark", "3", "table", "3"],
+    ]
+
+
+def test_routing_teardown_argv_drops_rule_then_flushes_table_per_family() -> None:
+    assert applier.routing_teardown_argv(_ARTS) == [
+        ["ip", "-4", "rule", "del", "fwmark", "1", "table", "1"],
+        ["ip", "-4", "route", "flush", "table", "1"],
+        ["ip", "-6", "rule", "del", "fwmark", "3", "table", "3"],
+        ["ip", "-6", "route", "flush", "table", "3"],
+    ]
+
+
+def test_apply_routing_tears_down_before_installing(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_run(monkeypatch)
+    applier.apply_routing(_ARTS)
+    assert calls == applier.routing_teardown_argv(_ARTS) + applier.routing_install_argv(_ARTS)
+
+
+def test_apply_routing_ignores_teardown_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On a clean system the teardown del/flush return non-zero (nothing to remove); apply_routing
+    # treats teardown as best-effort and still installs, without raising.
+    _record_run(monkeypatch, rc_for=lambda cmd: 2 if ("del" in cmd or "flush" in cmd) else 0)
+    applier.apply_routing(_ARTS)  # must not raise
+
+
+def test_apply_routing_install_failure_raises_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_run(monkeypatch, rc_for=lambda cmd: 1 if cmd[2:4] == ["route", "add"] else 0)
+    with pytest.raises(ConfigError, match="boom"):
+        applier.apply_routing(_ARTS)
+    # a rollback teardown ran after the failed install, leaving no partial provider routing
+    teardown = applier.routing_teardown_argv(_ARTS)
+    assert calls[-len(teardown):] == teardown
+
+
+def test_teardown_routing_runs_the_removal_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_run(monkeypatch, rc_for=lambda cmd: 2)  # nothing to remove; must not raise
+    applier.teardown_routing(_ARTS)
+    assert calls == applier.routing_teardown_argv(_ARTS)
+
+
+def test_apply_routing_with_no_providers_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_run(monkeypatch)
+    applier.apply_routing(())
+    assert calls == []
