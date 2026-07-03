@@ -611,16 +611,11 @@ def _build_provider(record: Record) -> Provider:
 
 
 def _require_int(record: Record, index: int, name: str) -> int:
-    """Field ``index`` parsed as an integer (decimal or ``0x`` hex), or fail fast (ADR-0004)."""
-    token = require_field(record, index, name)
-    try:
-        return int(token, 0)
-    except ValueError:
-        raise ConfigError(
-            f"{name} must be an integer, got {token!r}",
-            path=record.path,
-            line=record.line,
-        ) from None
+    """Required field ``index`` parsed as an integer (decimal or ``0x`` hex), else fail fast.
+
+    The field-reading counterpart to :func:`_int_or_fail` (which parses an already-extracted
+    token): read the field, then defer the parse/error to the shared helper (ADR-0004)."""
+    return _int_or_fail(require_field(record, index, name), name, record)
 
 
 def _provider_family(gateway: str) -> Family:
