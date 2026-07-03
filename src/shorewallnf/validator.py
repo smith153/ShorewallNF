@@ -18,7 +18,7 @@ Checks so far:
 from __future__ import annotations
 
 from .errors import ConfigError
-from .ir import Rule, Ruleset
+from .ir import Provider, Rule, Ruleset
 
 # ESTABLISHED/RELATED are accepted by the ADR-0005 base chain before any feature rule; INVALID
 # and NEW are not, so a DROP/REJECT there is reachable and unaffected.
@@ -30,7 +30,40 @@ def validate(ruleset: Ruleset) -> Ruleset:
     """Run every semantic check over ``ruleset``; return it unchanged, or raise ``ConfigError``."""
     for rule in ruleset.rules:
         _reject_shadowed_section_rule(rule)
+    _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
     return ruleset
+
+
+def _validate_providers(
+    providers: tuple[Provider, ...], interface_names: set[str]
+) -> None:
+    """Reject inconsistent ``providers`` definitions (#233, ADR-0004, epic #204).
+
+    Fail fast on a fwmark or routing-table number reused across providers (both must be unique to
+    steer traffic deterministically) or an interface naming no configured ``Interface``. Each is a
+    single actionable error naming the collision / unknown reference.
+    """
+    marks: dict[int, str] = {}
+    numbers: dict[int, str] = {}
+    for provider in providers:
+        if provider.mark in marks:
+            raise ConfigError(
+                f"provider {provider.name!r} reuses fwmark {provider.mark} already assigned to "
+                f"provider {marks[provider.mark]!r} — each provider needs a distinct mark"
+            )
+        marks[provider.mark] = provider.name
+        if provider.number in numbers:
+            raise ConfigError(
+                f"provider {provider.name!r} reuses routing-table number {provider.number} "
+                f"already assigned to provider {numbers[provider.number]!r} — each provider needs "
+                f"a distinct number"
+            )
+        numbers[provider.number] = provider.name
+        if provider.interface not in interface_names:
+            raise ConfigError(
+                f"provider {provider.name!r} names unknown interface {provider.interface!r} "
+                f"(no such interface is configured)"
+            )
 
 
 def _reject_shadowed_section_rule(rule: Rule) -> None:
