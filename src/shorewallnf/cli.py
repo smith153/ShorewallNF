@@ -28,7 +28,14 @@ _VERB_HELP = {
     "check": "preprocess and validate the config; emit no ruleset",
     "compile": "compile the config into an nftables ruleset",
     "apply": "compile, dry-run check, then load the ruleset onto the running system",
+    "start": "bring the firewall up: compile, dry-run check, then atomically load the ruleset",
+    "reload": "compile, dry-run check, then atomically replace the running ruleset",
+    "restart": "alias of reload: atomically replace the running ruleset",
 }
+
+# start/reload/restart share apply's compile->check->apply mechanism (incremental diff
+# deferred, #175); they differ only in the confirmation line the operator sees.
+_LIFECYCLE_MESSAGE = {"start": "started", "reload": "reloaded", "restart": "reloaded"}
 
 
 def preprocess(config_dir: str | Path) -> dict[str, list[SourceLine]]:
@@ -82,6 +89,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
         print(f"applied: {args.config_dir}")
+        return 0
+    if args.verb in _LIFECYCLE_MESSAGE:
+        ruleset = compile_config(args.config_dir)
+        check_ruleset(ruleset)
+        apply_ruleset(ruleset)
+        print(f"{_LIFECYCLE_MESSAGE[args.verb]}: {args.config_dir}")
         return 0
     # compile: emit the base inet ruleset as nftables JSON on stdout.
     print(json.dumps(compile_config(args.config_dir), indent=2))
