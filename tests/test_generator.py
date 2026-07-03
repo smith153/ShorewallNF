@@ -6,7 +6,17 @@ import pytest
 
 from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate, generate_stopped
-from shorewallnf.ir import Family, Nat, Policy, Rule, Ruleset, Zone, ZoneMember
+from shorewallnf.ir import (
+    ConntrackHelper,
+    Family,
+    HelperCapabilities,
+    Nat,
+    Policy,
+    Rule,
+    Ruleset,
+    Zone,
+    ZoneMember,
+)
 from tests.golden_harness import assert_golden
 
 POLICY_GOLDEN = Path(__file__).parent / "golden" / "policy_default_rules.json"
@@ -1408,3 +1418,228 @@ def test_stopped_state_matches_golden() -> None:
         ),
     )
     assert_golden(rs, "stopped_safe_state", generator=generate_stopped)
+
+
+# ---- conntrack helper objects + assignment rules (task #221, ADR-0041) ------------------
+#
+# A ConntrackHelper IR entry (#219/ADR-0040) compiles to a per-table `ct helper` object plus a
+# `ct helper set` assignment rule in the correct base chain, family-scoped (ADR-0002) and gated
+# on the compile-time HelperCapabilities surface (AUTOHELPERS-equivalent). A v6-capable helper
+# gets an `l3proto inet` object with an unguarded rule; a v4-only helper gets an `l3proto ip`
+# object with a `meta nfproto ipv4`-scoped rule (no v6 path); an unavailable helper is skipped
+# with a warning, never emitted. Object JSON per /usr/share/doc/nftables/examples/ct_helpers.nft.
+
+# Every documented helper available — the "kernel provides them all" capability surface.
+_ALL_HELPERS = HelperCapabilities(available=frozenset({"ftp", "tftp", "sip", "pptp"}))
+
+# net(eth0) faces the firewall; loc(eth1) is the internal zone a forwarded helper flows toward.
+_NFW = (_FW, _zone("net", "eth0"))
+_NLC = (_FW, _zone("net", "eth0"), _zone("loc", "eth1"))
+
+
+def _nfproto(fam: str) -> dict[str, Any]:
+    return {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": fam}}
+
+
+def _cth_objects(rs: Ruleset, caps: HelperCapabilities = _ALL_HELPERS) -> list[dict[str, Any]]:
+    return [
+        c["add"]["ct helper"]
+        for c in generate(rs, capabilities=caps)["nftables"]
+        if "ct helper" in c["add"]
+    ]
+
+
+def _cth_rules(rs: Ruleset, caps: HelperCapabilities = _ALL_HELPERS) -> list[dict[str, Any]]:
+    return [
+        c["add"]["rule"] for c in generate(rs, capabilities=caps)["nftables"] if "rule" in c["add"]
+    ]
+
+
+def _added_helper_rules(rs: Ruleset, zones: tuple[Zone, ...]) -> list[dict[str, Any]]:
+    """The assignment rules `rs` adds beyond the base skeleton (which has no helpers)."""
+    base = _rules(Ruleset(zones=zones))
+    return _cth_rules(rs)[len(base) :]
+
+
+def _ftp(source: str = "net", dest: str = "fw", **kw: Any) -> ConntrackHelper:
+    return ConntrackHelper(name="ftp", source=source, dest=dest, family=Family.BOTH, **kw)
+
+
+def test_v6_capable_helper_emits_inet_object() -> None:
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(),))
+    assert _cth_objects(rs) == [
+        {
+            "family": "inet",
+            "table": "filter",
+            "name": "ftp",
+            "type": "ftp",
+            "protocol": "tcp",
+            "l3proto": "inet",
+        }
+    ]
+
+
+def test_v6_capable_helper_assignment_rule_is_unguarded_in_input() -> None:
+    # dest=fw → input chain; iifname matches the source zone; no meta nfproto guard (dual-stack).
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(),))
+    added = _added_helper_rules(rs, _NFW)
+    assert len(added) == 1
+    assert added[0]["chain"] == "input"
+    assert added[0]["expr"] == [_iif("eth0"), _dport("tcp", 21), {"ct helper": "ftp"}]
+
+
+def test_helper_default_port_comes_from_the_registry() -> None:
+    # No per-row proto/dport → the assignment matches the helper's canonical proto/default port.
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(),))
+    assert _dport("tcp", 21) in _added_helper_rules(rs, _NFW)[0]["expr"]
+
+
+def test_per_row_dport_narrows_the_match() -> None:
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(proto="tcp", dport="2121"),))
+    expr = _added_helper_rules(rs, _NFW)[0]["expr"]
+    assert _dport("tcp", 2121) in expr
+    assert _dport("tcp", 21) not in expr
+
+
+def test_helper_through_firewall_lands_in_forward_matching_both_interfaces() -> None:
+    rs = Ruleset(zones=_NLC, conntrack_helpers=(_ftp(source="net", dest="loc"),))
+    added = _added_helper_rules(rs, _NLC)
+    assert added[0]["chain"] == "forward"
+    assert added[0]["expr"] == [_iif("eth0"), _oif("eth1"), _dport("tcp", 21), {"ct helper": "ftp"}]
+
+
+def test_v4_only_helper_object_is_l3proto_ip() -> None:
+    rs = Ruleset(
+        zones=_NFW,
+        conntrack_helpers=(
+            ConntrackHelper(name="pptp", source="net", dest="fw", family=Family.IPV4),
+        ),
+    )
+    assert _cth_objects(rs) == [
+        {
+            "family": "inet",
+            "table": "filter",
+            "name": "pptp",
+            "type": "pptp",
+            "protocol": "tcp",
+            "l3proto": "ip",
+        }
+    ]
+
+
+def test_v4_only_helper_rule_is_v4_scoped_with_no_v6_path() -> None:
+    rs = Ruleset(
+        zones=_NFW,
+        conntrack_helpers=(
+            ConntrackHelper(name="pptp", source="net", dest="fw", family=Family.IPV4),
+        ),
+    )
+    added = _added_helper_rules(rs, _NFW)
+    assert len(added) == 1
+    assert added[0]["expr"] == [
+        _iif("eth0"),
+        _nfproto("ipv4"),
+        _dport("tcp", 1723),
+        {"ct helper": "pptp"},
+    ]
+    # A v6-incapable helper emits no v6 path at all (ADR-0002).
+    blob = json.dumps(added)
+    assert "ip6" not in blob and "ipv6" not in blob
+
+
+def test_dual_stack_and_v4_only_helpers_coexist() -> None:
+    # One v6-capable + one v4-only helper in the one inet table: only the v4-only rule is guarded.
+    rs = Ruleset(
+        zones=_NLC,
+        conntrack_helpers=(
+            _ftp(source="net", dest="fw"),
+            ConntrackHelper(name="pptp", source="net", dest="loc", family=Family.IPV4),
+        ),
+    )
+    objects = {o["name"]: o for o in _cth_objects(rs)}
+    assert objects["ftp"]["l3proto"] == "inet"
+    assert objects["pptp"]["l3proto"] == "ip"
+    added = _added_helper_rules(rs, _NLC)
+    guards = [any("nfproto" in json.dumps(e) for e in r["expr"]) for r in added]
+    assert guards == [False, True]
+
+
+def test_unavailable_helper_is_skipped_with_warning() -> None:
+    # Capability gating (AUTOHELPERS-equivalent): an unprovided helper is skipped with a warning
+    # and nothing is emitted — the remaining ruleset is exactly the well-formed base skeleton.
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(),))
+    with pytest.warns(UserWarning, match="ftp"):
+        out = generate(rs, capabilities=HelperCapabilities())
+    assert out == generate(Ruleset(zones=_NFW))
+
+
+def test_default_capabilities_provide_nothing_so_helpers_are_skipped() -> None:
+    # The generator defaults to the empty capability surface: a helper is emitted only when the
+    # caller declares the platform provides it (fail-closed).
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(),))
+    with pytest.warns(UserWarning, match="ftp"):
+        out = generate(rs)
+    assert not [c for c in out["nftables"] if "ct helper" in c["add"]]
+
+
+def test_unknown_helper_name_fails_fast_even_if_marked_available() -> None:
+    # A helper name absent from the built-in registry is malformed IR the generator cannot lower:
+    # fail closed (ADR-0004), independent of the capability surface.
+    rs = Ruleset(
+        zones=_NFW,
+        conntrack_helpers=(ConntrackHelper(name="bogus", source="net", dest="fw"),),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs, capabilities=HelperCapabilities(available=frozenset({"bogus"})))
+    assert "bogus" in str(exc.value)
+
+
+def test_object_deduped_when_a_helper_is_used_by_several_rows() -> None:
+    rs = Ruleset(
+        zones=_NLC,
+        conntrack_helpers=(_ftp(source="net", dest="fw"), _ftp(source="loc", dest="fw")),
+    )
+    assert len(_cth_objects(rs)) == 1
+    assert len(_added_helper_rules(rs, _NLC)) == 2
+
+
+def test_object_is_emitted_before_the_rule_that_sets_it() -> None:
+    # nft loads top-to-bottom: the object must exist before any rule references it.
+    rs = Ruleset(zones=_NFW, conntrack_helpers=(_ftp(),))
+    cmds = generate(rs, capabilities=_ALL_HELPERS)["nftables"]
+    obj_idx = next(i for i, c in enumerate(cmds) if "ct helper" in c["add"])
+    rule_idx = next(
+        i
+        for i, c in enumerate(cmds)
+        if "rule" in c["add"] and c["add"]["rule"]["expr"][-1] == {"ct helper": "ftp"}
+    )
+    assert obj_idx < rule_idx
+
+
+def test_assignment_rule_precedes_the_policy_default() -> None:
+    # The non-terminal `ct helper set` must run before the zone-pair fall-through can drop it.
+    rs = Ruleset(
+        zones=_NFW,
+        conntrack_helpers=(_ftp(),),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    rules = _cth_rules(rs)
+    set_idx = next(i for i, r in enumerate(rules) if r["expr"][-1] == {"ct helper": "ftp"})
+    drop_idx = next(i for i, r in enumerate(rules) if r["expr"][-1] == {"drop": None})
+    assert set_idx < drop_idx
+
+
+def test_ct_helpers_match_golden() -> None:
+    rs = Ruleset(
+        zones=_NLC,
+        conntrack_helpers=(
+            _ftp(source="net", dest="fw"),
+            ConntrackHelper(name="pptp", source="net", dest="loc", family=Family.IPV4),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+
+    def gen(r: Ruleset) -> dict[str, Any]:
+        return generate(r, capabilities=_ALL_HELPERS)
+
+    assert_golden(rs, "ct_helpers", generator=gen)
