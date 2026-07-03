@@ -256,6 +256,33 @@ class Provider:
 
 
 @dataclass(frozen=True, slots=True)
+class MangleRule:
+    """A packet-marking rule (the ``mangle`` file), family-aware (epic #203, ADR-0001/0002).
+
+    A tagged union over ``action`` — which fields are populated depends on it:
+
+    - **MARK** / **CONNMARK**: ``mark`` is the mark value and ``mask`` an optional mask (a packet
+      mark for MARK, a connection mark for CONNMARK).
+    - **DIVERT**: no parameters — the match criteria alone divert the flow to the local socket.
+    - **TPROXY**: ``port`` is the transparent-proxy destination port and ``mark`` an optional mark.
+
+    ``source``/``dest`` are the raw ``zone``/``zone:host`` match tokens and ``proto``/``dport`` the
+    matched protocol / destination port(s), verbatim. ``family`` is inferred from the rule content
+    (ADR-0002), defaulting to :data:`Family.BOTH`. The generator (#229) consumes this IR.
+    """
+
+    action: str
+    source: str = ""
+    dest: str = ""
+    proto: str | None = None
+    dport: str | None = None
+    mark: int | None = None
+    mask: int | None = None
+    port: int | None = None
+    family: Family = Family.BOTH
+
+
+@dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
 
@@ -273,6 +300,7 @@ class Ruleset:
     nats: tuple[Nat, ...] = ()
     conntrack_helpers: tuple[ConntrackHelper, ...] = ()
     providers: tuple[Provider, ...] = ()
+    mangle_rules: tuple[MangleRule, ...] = ()
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
     actions: Mapping[str, MacroDef] = field(default_factory=dict)

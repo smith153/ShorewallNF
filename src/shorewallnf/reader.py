@@ -28,6 +28,7 @@ KNOWN_CONFIG_FILES: tuple[str, ...] = (
     "rules",
     "snat",
     "conntrack",
+    "mangle",
     "stoppedrules",
 )
 
