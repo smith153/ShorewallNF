@@ -1,0 +1,9 @@
+# Packet marking mirroring the reference config's intent abstractly (RFC 5737 / RFC 3849 ranges).
+# Order is meaningful: DIVERT (keep an established transparent-proxy socket local) precedes TPROXY
+# (redirect a new connection to the local proxy). DEST is '-' or a host — at prerouting the
+# out-interface isn't known, so a bare-zone DEST is rejected (ADR-0042).
+#ACTION              SOURCE                DEST   PROTO   DPORT
+MARK(0x1)            loc:192.0.2.0/24      -      -       -
+CONNMARK(0x2/0xff)   net                   -      tcp     443
+DIVERT               net                   -      tcp     -
+TPROXY(50080)        net:198.51.100.0/24   -      tcp     80
