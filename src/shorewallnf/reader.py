@@ -24,6 +24,7 @@ KNOWN_CONFIG_FILES: tuple[str, ...] = (
     "policy",
     "rules",
     "snat",
+    "stoppedrules",
 )
 
 

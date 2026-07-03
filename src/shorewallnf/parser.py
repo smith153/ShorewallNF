@@ -386,6 +386,29 @@ def _build_nat(record: Record, zone_names: set[str]) -> Nat:
     )
 
 
+def parse_stopped_rules(
+    records: Iterable[Record], zones: tuple[Zone, ...]
+) -> tuple[Rule, ...]:
+    """Parse ``stoppedrules``-file rows into admin-access filter :class:`~shorewallnf.ir.Rule`s.
+
+    The ``stoppedrules`` file declares the traffic permitted while the firewall is stopped
+    (e.g. SSH from a management host). It shares the ``rules``-file grammar, so this reuses
+    :func:`parse_rules` — but it is filter-only: a ``DNAT`` row has no meaning in the stopped
+    safe state and fails fast with a located :class:`ConfigError` (ADR-0004). Family is inferred
+    per ADR-0002 exactly as for ``rules``. An empty/absent file yields an empty tuple.
+    """
+    records = list(records)
+    for record in records:
+        if record.fields[0] in _NAT_ACTIONS:
+            raise ConfigError(
+                f"{record.fields[0]} is not allowed in stoppedrules "
+                "(admin-access filter rules only)",
+                path=record.path,
+                line=record.line,
+            )
+    return parse_rules(records, zones).rules
+
+
 def parse_snat(records: Iterable[Record]) -> tuple[Nat, ...]:
     """Parse ``snat``-file rows (``MASQUERADE``/``SNAT(<addr>)``) into source-NAT
     :class:`~shorewallnf.ir.Nat` entries (epic #76).
@@ -597,6 +620,9 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         rules, nats = parsed_rules.rules, parsed_rules.nats
     if "snat" in streams:
         nats += parse_snat(parse(streams["snat"]))
+    stopped_rules: tuple[Rule, ...] = ()
+    if "stoppedrules" in streams:
+        stopped_rules = parse_stopped_rules(parse(streams["stoppedrules"]), zones)
     # Site-defined action.<Name> files → a name-keyed MacroDef registry (ADR-0020, #182),
     # built in name-sorted order so the registry is deterministic. The `actions` index file
     # is discovered by the reader but not a MacroDef, so it is not parsed here.
@@ -610,6 +636,7 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         interfaces=interfaces,
         policies=policies,
         rules=rules,
+        stopped_rules=stopped_rules,
         nats=nats,
         actions=actions,
     )
