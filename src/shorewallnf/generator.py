@@ -22,6 +22,7 @@ from .ir import (
     Family,
     HelperCapabilities,
     HelperDef,
+    MangleRule,
     Nat,
     Policy,
     Provider,
@@ -59,6 +60,7 @@ def generate(
     declares the platform provides it.
     """
     commands = _filter_base()
+    commands += _mangle_rules(ruleset)
     commands += _nat_base(ruleset)
     commands += _ct_helpers(ruleset, capabilities)
     commands += _feature_rules(ruleset)
@@ -518,6 +520,128 @@ def _ct_helper_rule(
 
 def _nfproto_match(nfproto: str) -> _Command:
     return {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": nfproto}}
+
+
+# ---- mangle: prerouting mark / divert / tproxy rules (ADR-0042) -------------------------
+
+# The mangle chain hooks prerouting at priority mangle (-150) — ahead of dstnat (-100) and the
+# routing decision, so a mark is set before a provider's ip rule (ADR-0050) selects a table.
+_MANGLE_CHAIN = "prerouting"
+_MANGLE_PRIO = -150
+_U32_MASK = 0xFFFFFFFF
+
+
+def _mangle_rules(ruleset: Ruleset) -> list[_Command]:
+    """Compile ``mangle_rules`` into the prerouting mangle chain (ADR-0042).
+
+    Emits the chain once (only when there are rules), then one rule per ``MangleRule`` in file
+    order — the operator's ordering (e.g. DIVERT before TPROXY) is preserved.
+    """
+    if not ruleset.mangle_rules:
+        return []
+    interfaces = _zone_interfaces(ruleset.zones)
+    firewalls = _firewalls(ruleset)
+    commands: list[_Command] = [_mangle_chain()]
+    commands += [_mangle_rule(rule, interfaces, firewalls) for rule in ruleset.mangle_rules]
+    return commands
+
+
+def _mangle_chain() -> _Command:
+    return {
+        "add": {
+            "chain": {
+                "family": _FAMILY,
+                "table": _TABLE,
+                "name": _MANGLE_CHAIN,
+                "type": "filter",
+                "hook": "prerouting",
+                "prio": _MANGLE_PRIO,
+                "policy": "accept",
+            }
+        }
+    }
+
+
+def _mangle_rule(
+    rule: MangleRule, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
+) -> _Command:
+    """One prerouting rule for a ``MangleRule``: match criteria then the non-terminal action.
+
+    Matches the source zone (``iifname``), source/dest host literals (``saddr``/``daddr``) and
+    proto/port, plus a ``meta nfproto`` guard for a family-scoped rule. A DEST given as a bare zone
+    fails closed — ``oifname`` isn't known at prerouting, so honouring it is impossible and silently
+    dropping it would mark more traffic than written (ADR-0004).
+    """
+    ctx = f"mangle {rule.action} {rule.source!r} {rule.dest!r}"
+    expr: list[_Command] = []
+    src_zone = _zone_of(rule.source)
+    if src_zone and src_zone != "all" and src_zone not in firewalls:
+        expr.append(_ifname("iifname", _iface_value(ctx, src_zone, interfaces)))
+    dst_zone = _zone_of(rule.dest)
+    if dst_zone and dst_zone != "all" and dst_zone not in firewalls and _host_of(rule.dest) is None:
+        raise ConfigError(
+            f"{ctx}: mangle DEST {dst_zone!r} is a bare zone — the out-interface is unknown at "
+            "prerouting; narrow DEST to a host (zone:host) or use '-'"
+        )
+    expr += _host_matches(rule.source, rule.dest)
+    guard = _NFPROTO.get(rule.family)
+    if guard is not None:
+        expr.append(_nfproto_match(guard))
+    expr += _nat_l4_matches(rule.proto, rule.dport, ctx)
+    expr += _mangle_action(rule, ctx)
+    return _rule(_MANGLE_CHAIN, expr)
+
+
+def _mangle_action(rule: MangleRule, ctx: str) -> list[_Command]:
+    """The non-terminal action statement(s): set a mark, or divert/tproxy to a local socket."""
+    if rule.action in ("MARK", "CONNMARK"):
+        kind = "meta" if rule.action == "MARK" else "ct"
+        return [_mark_set(kind, _require(rule.mark, ctx, "a mark value"), rule.mask)]
+    if rule.action == "DIVERT":
+        stmts: list[_Command] = [_socket_transparent()]
+        if rule.mark is not None:
+            stmts.append(_mark_set("meta", rule.mark, None))
+        stmts.append(_accept())
+        return stmts
+    if rule.action == "TPROXY":
+        if rule.family is Family.BOTH:
+            raise ConfigError(
+                f"{ctx}: TPROXY needs a concrete family — narrow the rule to IPv4 or IPv6 "
+                "(tproxy in an inet table selects ip or ip6)"
+            )
+        proxy: list[_Command] = [_tproxy(rule.family, _require(rule.port, ctx, "a proxy port"))]
+        if rule.mark is not None:
+            proxy.append(_mark_set("meta", rule.mark, None))
+        proxy.append(_accept())
+        return proxy
+    raise ConfigError(f"{ctx}: unsupported mangle action {rule.action!r}")  # parser gates this
+
+
+def _require(value: int | None, ctx: str, what: str) -> int:
+    """Narrow an action parameter the parser guarantees present (defensive, ADR-0004)."""
+    if value is None:
+        raise ConfigError(f"{ctx}: this action needs {what}")
+    return value
+
+
+def _mark_set(kind: str, value: int, mask: int | None) -> _Command:
+    """A ``meta``/``ct`` ``mark set``: a plain value, or a masked read-modify-write (ADR-0042).
+
+    With a mask only the masked bits change: ``mark = (mark & ~mask) | value``.
+    """
+    key = {kind: {"key": "mark"}}
+    if mask is None:
+        return {"mangle": {"key": key, "value": value}}
+    keep = (~mask) & _U32_MASK
+    return {"mangle": {"key": key, "value": {"|": [{"&": [{kind: {"key": "mark"}}, keep]}, value]}}}
+
+
+def _socket_transparent() -> _Command:
+    return {"match": {"op": "==", "left": {"socket": {"key": "transparent"}}, "right": 1}}
+
+
+def _tproxy(family: Family, port: int) -> _Command:
+    return {"tproxy": {"family": "ip" if family is Family.IPV4 else "ip6", "port": port}}
 
 
 # ---- IPv4 DNAT: nat prerouting + forward accept (ADR-0008) -------------------------------
