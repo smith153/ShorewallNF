@@ -1,0 +1,8 @@
+# Attach conntrack application helpers to their control channels, mirroring the reference
+# config's helper intent abstractly. FTP is narrowed to an RFC 5737 host (so it scopes to
+# IPv4); TFTP is left dual-stack; PPTP is IPv4-only by its kernel helper. Documentation ranges
+# only (RFC 5737).
+#ACTION            SOURCE   DEST                 PROTO   DPORT
+CT:helper:ftp      net      loc:198.51.100.10    tcp     21
+CT:helper:tftp     net      loc
+CT:helper:pptp     net      loc
