@@ -52,7 +52,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -202,14 +202,19 @@ def ping_command(src_ns: str, dst_ip: str, *, count: int = 1, family: int = 4) -
     ]
 
 
-def render(ruleset: Ruleset) -> dict[str, Any]:
-    """Render an IR ``Ruleset`` to nftables JSON — reuses the generator (task #114 seam)."""
-    return generate(ruleset)
+#: Render an IR ``Ruleset`` to nftables JSON. Defaults to the running generator; pass
+#: ``generate_stopped`` to drive the stopped safe state (#213) through the same load seam.
+Generator = Callable[[Ruleset], dict[str, Any]]
 
 
-def load_payload(ruleset: Ruleset) -> dict[str, Any]:
+def render(ruleset: Ruleset, generator: Generator = generate) -> dict[str, Any]:
+    """Render an IR ``Ruleset`` to nftables JSON — reuses ``generator`` (task #114 seam)."""
+    return generator(ruleset)
+
+
+def load_payload(ruleset: Ruleset, generator: Generator = generate) -> dict[str, Any]:
     """The rendered ruleset prefixed with ``flush ruleset`` so a reload is deterministic."""
-    rendered = render(ruleset)
+    rendered = render(ruleset, generator)
     return {"nftables": [{"flush": {"ruleset": None}}, *rendered["nftables"]]}
 
 
@@ -234,9 +239,13 @@ class NetnsSandbox:
         for cmd in teardown_commands(self.topo):
             _run(cmd, check=False)
 
-    def load(self, ruleset: Ruleset) -> None:
-        """Flush and load ``ruleset`` into the router namespace."""
-        _run(load_command(self.topo.router), stdin_text=json.dumps(load_payload(ruleset)))
+    def load(self, ruleset: Ruleset, generator: Generator = generate) -> None:
+        """Flush and load ``ruleset`` into the router namespace (``generator`` selects the render
+        entry point — ``generate_stopped`` for the stopped safe state, #213)."""
+        _run(
+            load_command(self.topo.router),
+            stdin_text=json.dumps(load_payload(ruleset, generator)),
+        )
 
     def apply(self, ruleset: Ruleset) -> None:
         """Apply ``ruleset`` into the router netns via the real applier (scoped replace, no flush).
