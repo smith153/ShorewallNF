@@ -450,3 +450,116 @@ def test_malformed_issue_is_flagged_not_otherwise_mutated() -> None:
     acts = _kinds(_run(board), 9)
     assert (ActionKind.ADD_LABEL, "needs-human") in acts
     assert (ActionKind.REMOVE_LABEL, "status:blocked") not in acts
+
+
+# --- R5: self-heal a stale claim status superseded by a later primary (#227) ---------------
+
+
+def test_stale_implementation_ready_stripped_when_review_passed_present() -> None:
+    # #195/#219: implementation-ready lingered into review-passed. Self-heal strips it instead
+    # of flagging needs-human — the leftover claim label was a silent merge-gate stall.
+    board = _board([_issue(9, {"status:implementation-ready", "status:review-passed"})])
+    acts = _kinds(_run(board), 9)
+    assert (ActionKind.REMOVE_LABEL, "status:implementation-ready") in acts
+    assert (ActionKind.ADD_LABEL, "needs-human") not in acts
+    assert (ActionKind.REMOVE_LABEL, "status:review-passed") not in acts
+
+
+def test_stale_in_progress_stripped_when_in_review_present() -> None:
+    # The PR-opened swap should drop in-progress; if it lingers under in-review, self-heal it.
+    board = _board([_issue(9, {"status:in-progress", "status:in-review"})])
+    acts = _kinds(_run(board), 9)
+    assert (ActionKind.REMOVE_LABEL, "status:in-progress") in acts
+    assert (ActionKind.ADD_LABEL, "needs-human") not in acts
+    assert (ActionKind.REMOVE_LABEL, "status:in-review") not in acts
+
+
+def test_self_heal_reports_a_signed_reason_comment() -> None:
+    board = _board([_issue(9, {"status:implementation-ready", "status:review-passed"})])
+    comments = [
+        a for a in _run(board) if a.kind is ActionKind.COMMENT and a.reason == "stale-status"
+    ]
+    assert len(comments) == 1
+    assert AGENT_SIGN in comments[0].value
+
+
+def test_self_heal_is_a_noop_on_a_clean_single_status() -> None:
+    board = _board([_issue(9, {"status:review-passed"})], [_pr(20, task=9)])
+    assert not any(a.reason == "stale-status" for a in _run(board))
+
+
+def test_self_healed_issue_promotes_on_next_pass() -> None:
+    # Level-triggered: pass 1 only strips the stale label (issue skipped from the sweeps this
+    # pass so a strip and a promote can't fight over the same labels); pass 2 — label gone —
+    # promotes. The unlabeled event re-triggers reconcile, and cron backstops it.
+    stale = _board(
+        [_issue(9, {"status:implementation-ready", "status:review-passed"})], [_pr(20, task=9)]
+    )
+    acts1 = _kinds(_run(stale), 9)
+    assert (ActionKind.REMOVE_LABEL, "status:implementation-ready") in acts1
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in acts1
+    healed = _board([_issue(9, {"status:review-passed"})], [_pr(20, task=9)])
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") in _kinds(_run(healed), 9)
+
+
+def test_ambiguous_two_late_primaries_still_flags_needs_human() -> None:
+    # No strippable pre-review claim label -> self-heal can't decide -> flag for a human (R5).
+    board = _board([_issue(9, {"status:review-passed", "status:changes-requested"})])
+    acts = _kinds(_run(board), 9)
+    assert (ActionKind.ADD_LABEL, "needs-human") in acts
+    assert not any(a.reason == "stale-status" for a in _run(board))
+
+
+def test_stale_stripped_and_remainder_flagged_when_still_ambiguous() -> None:
+    # Strip the obvious stale claim label AND flag the genuinely ambiguous remainder.
+    board = _board(
+        [
+            _issue(
+                9,
+                {
+                    "status:implementation-ready",
+                    "status:review-passed",
+                    "status:changes-requested",
+                },
+            )
+        ]
+    )
+    acts = _kinds(_run(board), 9)
+    assert (ActionKind.REMOVE_LABEL, "status:implementation-ready") in acts
+    assert (ActionKind.ADD_LABEL, "needs-human") in acts
+
+
+def test_self_heal_never_strips_status_blocked() -> None:
+    # #227 clarification: status:blocked is an orthogonal MODIFIER, not a primary — self-heal
+    # strips the stale claim label and leaves status:blocked intact.
+    board = _board(
+        [
+            _issue(
+                9,
+                {"status:implementation-ready", "status:review-passed", "status:blocked"},
+                blocked_by=(2,),
+            )
+        ],
+        blocker_state={2: BlockerState.OPEN},
+    )
+    acts = _kinds(_run(board), 9)
+    assert (ActionKind.REMOVE_LABEL, "status:implementation-ready") in acts
+    assert (ActionKind.REMOVE_LABEL, "status:blocked") not in acts
+    assert (ActionKind.ADD_LABEL, "needs-human") not in acts
+
+
+def test_self_heal_defers_to_a_human_flag() -> None:
+    # A human-added needs-human is respected (consistent with unblock/reap) — don't auto-mutate.
+    board = _board(
+        [_issue(9, {"status:implementation-ready", "status:review-passed", "needs-human"})]
+    )
+    assert _run(board) == []
+
+
+def test_earlier_primary_below_the_claim_labels_is_not_self_healed() -> None:
+    # proposed + implementation-ready: the *earlier* label isn't a stale claim, and stripping
+    # implementation-ready would keep the wrong one — so this stays a human-flagged violation.
+    board = _board([_issue(9, {"status:proposed", "status:implementation-ready"})])
+    acts = _kinds(_run(board), 9)
+    assert (ActionKind.ADD_LABEL, "needs-human") in acts
+    assert not any(a.reason == "stale-status" for a in _run(board))
