@@ -26,10 +26,6 @@ that fails to fire is caught as ``DEF`` rather than passing silently. Gated on t
 
 from __future__ import annotations
 
-import subprocess
-import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -84,38 +80,6 @@ _requires_netns = pytest.mark.skipif(
     not nh.netns_available(), reason="netns behavioral tier needs root + ip/nft (epics #77/#78)"
 )
 
-# A one-shot TCP probe with **no** SO_MARK: connect to host:port and print the tag the listener
-# echoes back. Any mark on the flow can only come from ShorewallNF's compiled mangle rule. A timeout
-# (the SYN was routed somewhere with no listener) reads as ``filtered``.
-_PROBE = (
-    "import socket,sys\n"
-    "s=socket.socket()\n"
-    "s.settimeout(float(sys.argv[3]))\n"
-    "try:\n"
-    "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
-    "    print(s.recv(16).decode() or 'empty')\n"
-    "except OSError:\n"
-    "    print('filtered')\n"
-)
-
-# A TCP listener that echoes its identity tag on each accept, so a probe can read which namespace
-# answered (i.e. which interface the router egressed).
-_LISTEN = (
-    "import socket,sys\n"
-    "tag=sys.argv[2].encode()\n"
-    "s=socket.socket()\n"
-    "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
-    "s.bind(('0.0.0.0', int(sys.argv[1])))\n"
-    "s.listen(16)\n"
-    "while True:\n"
-    "    try:\n"
-    "        c, _ = s.accept()\n"
-    "        c.sendall(tag)\n"
-    "        c.close()\n"
-    "    except OSError:\n"
-    "        break\n"
-)
-
 
 def _compile_ruleset() -> Ruleset:
     """Compile the committed fixture through the real pipeline (preprocess -> validate)."""
@@ -123,47 +87,9 @@ def _compile_ruleset() -> Ruleset:
 
 
 def _probe(sb: nh.NetnsSandbox, port: int, *, timeout: float = 2.0) -> str:
-    """Probe ``_TARGET:port`` from the client namespace; return the echoed tag."""
-    result = sb.exec(
-        CLIENT.name,
-        ["python3", "-c", _PROBE, _TARGET, str(port), str(timeout)],
-        check=False,
-    )
-    return result.stdout.strip()
-
-
-@contextmanager
-def _egress_listeners(sb: nh.NetnsSandbox) -> Iterator[None]:
-    """Run each ``_LISTENERS`` listener in its namespace, waiting until each is accepting."""
-    procs = [
-        subprocess.Popen(
-            ["ip", "netns", "exec", ns, "python3", "-c", _LISTEN, str(port), tag]
-        )
-        for ns, port, tag in _LISTENERS
-    ]
-    try:
-        for ns, port, tag in _LISTENERS:
-            _await_listener(sb, ns, port, tag)
-        yield
-    finally:
-        for proc in procs:
-            proc.terminate()
-        for proc in procs:
-            proc.wait()
-
-
-def _await_listener(
-    sb: nh.NetnsSandbox, ns: str, port: int, tag: str, *, attempts: int = 50
-) -> None:
-    """Block until a loopback probe inside ``ns`` gets ``tag`` back (the listener is accepting)."""
-    for _ in range(attempts):
-        result = sb.exec(
-            ns, ["python3", "-c", _PROBE, "127.0.0.1", str(port), "0.2"], check=False
-        )
-        if result.stdout.strip() == tag:
-            return
-        time.sleep(0.1)
-    raise RuntimeError(f"listener on {ns}:{port} never came up")
+    """Probe ``_TARGET:port`` from the client namespace (no SO_MARK — any mark on the flow can only
+    come from ShorewallNF's compiled mangle rule); return the echoed tag."""
+    return sb.probe(CLIENT.name, _TARGET, port, timeout=timeout)
 
 
 def _install_routing(sb: nh.NetnsSandbox, ruleset: Ruleset) -> None:
@@ -194,6 +120,6 @@ def test_mangle_mark_steers_matched_flow_out_provider_unmatched_takes_default() 
     with nh.NetnsSandbox(TOPO) as sb:
         sb.load(ruleset)  # the compiled nft ruleset (with the mangle mark rule) loads here
         _install_routing(sb, ruleset)
-        with _egress_listeners(sb):
+        with nh.echo_listeners(sb, _LISTENERS):
             assert _probe(sb, _MARK_PORT) == "A"
             assert _probe(sb, _CTRL_PORT) == "DEF"

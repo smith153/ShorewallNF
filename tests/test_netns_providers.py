@@ -21,11 +21,6 @@ filter while ``ip rule fwmark`` alone decides the egress interface.
 
 from __future__ import annotations
 
-import subprocess
-import time
-from collections.abc import Iterator
-from contextlib import contextmanager
-
 import pytest
 
 from shorewallnf.applier import routing_install_argv
@@ -75,82 +70,18 @@ _requires_netns = pytest.mark.skipif(
     not nh.netns_available(), reason="netns behavioral tier needs root + ip/nft (epics #77/#78)"
 )
 
-# A one-shot TCP probe: connect to host:port, optionally stamping the socket with SO_MARK (the
-# minimal, mangle-independent mark), and print the identity tag the listener echoes back. A timeout
-# (the SYN was routed somewhere with no listener) reads as ``filtered``.
-_MARKPROBE = (
-    "import socket,sys\n"
-    "mark=int(sys.argv[3])\n"
-    "s=socket.socket()\n"
-    "s.settimeout(float(sys.argv[4]))\n"
-    "if mark:\n"
-    "    s.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, mark)\n"
-    "try:\n"
-    "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
-    "    print(s.recv(16).decode() or 'empty')\n"
-    "except OSError:\n"
-    "    print('filtered')\n"
-)
-
-# A TCP listener bound to every interface that echoes its identity tag on each accept, so a probe
-# can read which namespace answered (i.e. which interface the router egressed).
-_LISTEN = (
-    "import socket,sys\n"
-    "tag=sys.argv[2].encode()\n"
-    "s=socket.socket()\n"
-    "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
-    "s.bind(('0.0.0.0', int(sys.argv[1])))\n"
-    "s.listen(16)\n"
-    "while True:\n"
-    "    try:\n"
-    "        c, _ = s.accept()\n"
-    "        c.sendall(tag)\n"
-    "        c.close()\n"
-    "    except OSError:\n"
-    "        break\n"
+# The egress listeners as harness ``(namespace, port, tag)`` specs — one per provider plus the
+# default uplink, all on the shared probe port.
+_LISTENERS = (
+    (PROV_A.name, _PORT, _TAGS[1]),
+    (PROV_B.name, _PORT, _TAGS[2]),
+    (DEFAULT.name, _PORT, _TAGS[0]),
 )
 
 
 def _probe(sb: nh.NetnsSandbox, mark: int, *, timeout: float = 1.0) -> str:
     """Probe ``_TARGET`` from the router with ``mark`` on the socket; return the echoed tag."""
-    result = sb.exec(
-        TOPO.router,
-        ["python3", "-c", _MARKPROBE, _TARGET, str(_PORT), str(mark), str(timeout)],
-        check=False,
-    )
-    return result.stdout.strip()
-
-
-@contextmanager
-def _egress_listeners(sb: nh.NetnsSandbox) -> Iterator[None]:
-    """Run a tag-echoing listener in each egress namespace, waiting until each is accepting."""
-    procs = [
-        subprocess.Popen(
-            ["ip", "netns", "exec", ep.name, "python3", "-c", _LISTEN, str(_PORT), _TAGS[mark]]
-        )
-        for mark, ep in ((1, PROV_A), (2, PROV_B), (0, DEFAULT))
-    ]
-    try:
-        for ep, tag in ((PROV_A, "A"), (PROV_B, "B"), (DEFAULT, "DEF")):
-            _await_listener(sb, ep.name, tag)
-        yield
-    finally:
-        for proc in procs:
-            proc.terminate()
-        for proc in procs:
-            proc.wait()
-
-
-def _await_listener(sb: nh.NetnsSandbox, ns: str, tag: str, *, attempts: int = 50) -> None:
-    """Block until a loopback probe inside ``ns`` gets ``tag`` back (the listener is accepting)."""
-    for _ in range(attempts):
-        result = sb.exec(
-            ns, ["python3", "-c", _MARKPROBE, "127.0.0.1", str(_PORT), "0", "0.2"], check=False
-        )
-        if result.stdout.strip() == tag:
-            return
-        time.sleep(0.1)
-    raise RuntimeError(f"listener on {ns}:{_PORT} never came up")
+    return sb.probe(TOPO.router, _TARGET, _PORT, mark=mark, timeout=timeout)
 
 
 def _install_routing(sb: nh.NetnsSandbox) -> None:
@@ -180,7 +111,7 @@ def test_marked_traffic_egresses_its_provider_unmarked_follows_default() -> None
     with nh.NetnsSandbox(TOPO) as sb:
         sb.load(_PROVIDERS)  # the compiled nft ruleset loads alongside the routing artifacts
         _install_routing(sb)
-        with _egress_listeners(sb):
+        with nh.echo_listeners(sb, _LISTENERS):
             assert _probe(sb, mark=1) == "A"
             assert _probe(sb, mark=2) == "B"
             assert _probe(sb, mark=0) == "DEF"

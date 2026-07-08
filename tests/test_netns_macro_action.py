@@ -14,11 +14,6 @@ cleanly in the hermetic tier and runs in the privileged/netns CI tier (epics #77
 
 from __future__ import annotations
 
-import subprocess
-import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-
 import pytest
 
 from shorewallnf.ir import Family, MacroDef, MacroRule, Rule, Ruleset, Zone, ZoneMember
@@ -57,75 +52,6 @@ _requires_netns = pytest.mark.skipif(
     not nh.netns_available(), reason="netns behavioral tier needs root + ip/nft (epics #77/#78)"
 )
 
-# One-shot TCP connect run inside a namespace: prints the reachability of ``host:port``.
-# ``ConnectionRefusedError`` (RST) is distinguished from any other ``OSError`` (a timeout means
-# the SYN was silently dropped) so a blocked port reads as ``filtered``, not ``refused``.
-_CONNECT = (
-    "import socket,sys\n"
-    "s=socket.socket()\n"
-    "s.settimeout(float(sys.argv[3]))\n"
-    "try:\n"
-    "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
-    "    print('open')\n"
-    "except ConnectionRefusedError:\n"
-    "    print('refused')\n"
-    "except OSError:\n"
-    "    print('filtered')\n"
-)
-
-# A trivial accept-and-close TCP listener bound to every interface, run in the server namespace.
-_LISTEN = (
-    "import socket,sys\n"
-    "s=socket.socket()\n"
-    "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
-    "s.bind(('0.0.0.0', int(sys.argv[1])))\n"
-    "s.listen(16)\n"
-    "while True:\n"
-    "    try:\n"
-    "        c, _ = s.accept()\n"
-    "        c.close()\n"
-    "    except OSError:\n"
-    "        break\n"
-)
-
-
-def _connect(
-    sb: nh.NetnsSandbox, src_ns: str, host: str, port: int, *, timeout: float = 1.0
-) -> str:
-    """Probe ``host:port`` from ``src_ns``: ``open`` / ``refused`` / ``filtered`` (timed out)."""
-    result = sb.exec(
-        src_ns, ["python3", "-c", _CONNECT, host, str(port), str(timeout)], check=False
-    )
-    return result.stdout.strip()
-
-
-@contextmanager
-def _listeners(sb: nh.NetnsSandbox, ns: str, ports: Sequence[int]) -> Iterator[None]:
-    """Run a TCP listener per port in ``ns`` for the duration of the block, waiting until each is
-    accepting before yielding so a probe can never race the bind."""
-    procs = [
-        subprocess.Popen(["ip", "netns", "exec", ns, "python3", "-c", _LISTEN, str(port)])
-        for port in ports
-    ]
-    try:
-        for port in ports:
-            _await_listener(sb, ns, port)
-        yield
-    finally:
-        for proc in procs:
-            proc.terminate()
-        for proc in procs:
-            proc.wait()
-
-
-def _await_listener(sb: nh.NetnsSandbox, ns: str, port: int, *, attempts: int = 50) -> None:
-    """Block until a loopback connect inside ``ns`` reaches the listener (bind is not filtered)."""
-    for _ in range(attempts):
-        if _connect(sb, ns, "127.0.0.1", port, timeout=0.2) == "open":
-            return
-        time.sleep(0.1)
-    raise RuntimeError(f"listener on {ns}:{port} never came up")
-
 
 @pytest.mark.netns
 @_requires_netns
@@ -136,10 +62,10 @@ def test_builtin_macro_opens_its_ports() -> None:
     )
     with nh.NetnsSandbox(TOPO) as sb:
         sb.load(ruleset)
-        with _listeners(sb, SERVER.name, (80, 443, _BLOCKED_PORT)):
-            assert _connect(sb, CLIENT.name, SERVER.host_ip4, 80) == "open"
-            assert _connect(sb, CLIENT.name, SERVER.host_ip4, 443) == "open"
-            assert _connect(sb, CLIENT.name, SERVER.host_ip4, _BLOCKED_PORT) == "filtered"
+        with nh.listeners(sb, SERVER.name, (80, 443, _BLOCKED_PORT)):
+            assert sb.connect(CLIENT.name, SERVER.host_ip4, 80) == "open"
+            assert sb.connect(CLIENT.name, SERVER.host_ip4, 443) == "open"
+            assert sb.connect(CLIENT.name, SERVER.host_ip4, _BLOCKED_PORT) == "filtered"
 
 
 @pytest.mark.netns
@@ -155,6 +81,6 @@ def test_site_action_opens_its_port() -> None:
     )
     with nh.NetnsSandbox(TOPO) as sb:
         sb.load(ruleset)
-        with _listeners(sb, SERVER.name, (2222, _BLOCKED_PORT)):
-            assert _connect(sb, CLIENT.name, SERVER.host_ip4, 2222) == "open"
-            assert _connect(sb, CLIENT.name, SERVER.host_ip4, _BLOCKED_PORT) == "filtered"
+        with nh.listeners(sb, SERVER.name, (2222, _BLOCKED_PORT)):
+            assert sb.connect(CLIENT.name, SERVER.host_ip4, 2222) == "open"
+            assert sb.connect(CLIENT.name, SERVER.host_ip4, _BLOCKED_PORT) == "filtered"

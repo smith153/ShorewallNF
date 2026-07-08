@@ -160,6 +160,45 @@ def test_ping_command_v6() -> None:
     assert cmd[-1] == "2001:db8:3::2"
 
 
+# ---- probe command planning (pure, root-free) -------------------------------------------
+
+
+def test_connect_command_shape() -> None:
+    cmd = nh.connect_command("snf_client", "198.51.100.2", 80, timeout=1.0)
+    assert cmd[:6] == ["ip", "netns", "exec", "snf_client", "python3", "-c"]
+    assert cmd[6] == nh._CONNECT
+    assert cmd[7:] == ["198.51.100.2", "80", "1.0"]
+
+
+def test_connect_command_default_timeout() -> None:
+    assert nh.connect_command("ns", "127.0.0.1", 22)[-3:] == ["127.0.0.1", "22", "1.0"]
+
+
+def test_listen_command_shape() -> None:
+    cmd = nh.listen_command("snf_server", 443)
+    assert cmd[:6] == ["ip", "netns", "exec", "snf_server", "python3", "-c"]
+    assert cmd[6] == nh._LISTEN
+    assert cmd[7:] == ["443"]
+
+
+def test_echo_listen_command_shape() -> None:
+    cmd = nh.echo_listen_command("snf_a", 9237, "A")
+    assert cmd[:6] == ["ip", "netns", "exec", "snf_a", "python3", "-c"]
+    assert cmd[6] == nh._ECHO_LISTEN
+    assert cmd[7:] == ["9237", "A"]
+
+
+def test_probe_command_carries_mark_and_timeout() -> None:
+    cmd = nh.probe_command("snf_r", "203.0.113.100", 9237, mark=1, timeout=2.0)
+    assert cmd[:6] == ["ip", "netns", "exec", "snf_r", "python3", "-c"]
+    assert cmd[6] == nh._MARKPROBE
+    assert cmd[7:] == ["203.0.113.100", "9237", "1", "2.0"]
+
+
+def test_probe_command_defaults_to_unmarked() -> None:
+    assert nh.probe_command("ns", "127.0.0.1", 9239)[7:] == ["127.0.0.1", "9239", "0", "1.0"]
+
+
 # ---- behavioral tier (gated: root + ip/nft) ---------------------------------------------
 
 _ZONES = (
