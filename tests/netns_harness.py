@@ -52,7 +52,9 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +63,7 @@ from shorewallnf.ir import Ruleset
 
 IP = "ip"
 NFT = "nft"
+PY3 = "python3"  # in-namespace interpreter for the socket probes/listeners below
 
 
 # ---- availability -----------------------------------------------------------------------
@@ -218,6 +221,113 @@ def load_payload(ruleset: Ruleset, generator: Generator = generate) -> dict[str,
     return {"nftables": [{"flush": {"ruleset": None}}, *rendered["nftables"]]}
 
 
+# ---- TCP socket probes (pure planners + scripts) ----------------------------------------
+#
+# Two probe patterns, shared by every netns behavioral module:
+#   * plain reachability — :data:`_CONNECT` prints ``open``/``refused``/``filtered`` (a RST is
+#     distinguished from a silently-dropped SYN), driven by :meth:`NetnsSandbox.connect`;
+#   * tag echo — :data:`_ECHO_LISTEN` sends its identity tag on accept and :data:`_MARKPROBE`
+#     (optionally stamping ``SO_MARK``) prints it back, so a probe names the interface a packet
+#     left by. Driven by :meth:`NetnsSandbox.probe`.
+# The ``*_command`` planners return the exact ``ip netns exec … python3 -c …`` argv and are
+# unit-tested without root, matching the other pure planners above.
+
+#: One-shot TCP connect run inside a namespace: prints the reachability of ``host:port``.
+#: ``ConnectionRefusedError`` (RST) is distinguished from any other ``OSError`` (a timeout means
+#: the SYN was silently dropped) so a blocked port reads as ``filtered``, not ``refused``.
+_CONNECT = (
+    "import socket,sys\n"
+    "s=socket.socket()\n"
+    "s.settimeout(float(sys.argv[3]))\n"
+    "try:\n"
+    "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
+    "    print('open')\n"
+    "except ConnectionRefusedError:\n"
+    "    print('refused')\n"
+    "except OSError:\n"
+    "    print('filtered')\n"
+)
+
+#: A trivial accept-and-close TCP listener bound to every interface (argv: ``port``).
+_LISTEN = (
+    "import socket,sys\n"
+    "s=socket.socket()\n"
+    "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+    "s.bind(('0.0.0.0', int(sys.argv[1])))\n"
+    "s.listen(16)\n"
+    "while True:\n"
+    "    try:\n"
+    "        c, _ = s.accept()\n"
+    "        c.close()\n"
+    "    except OSError:\n"
+    "        break\n"
+)
+
+#: A TCP listener that echoes its identity tag on each accept (argv: ``port tag``), so a probe
+#: can read which namespace answered — i.e. which interface the router egressed by.
+_ECHO_LISTEN = (
+    "import socket,sys\n"
+    "tag=sys.argv[2].encode()\n"
+    "s=socket.socket()\n"
+    "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+    "s.bind(('0.0.0.0', int(sys.argv[1])))\n"
+    "s.listen(16)\n"
+    "while True:\n"
+    "    try:\n"
+    "        c, _ = s.accept()\n"
+    "        c.sendall(tag)\n"
+    "        c.close()\n"
+    "    except OSError:\n"
+    "        break\n"
+)
+
+#: A one-shot TCP probe (argv: ``host port mark timeout``): connect to ``host:port``, optionally
+#: stamping the socket with ``SO_MARK`` (``mark`` 0 = unmarked), and print the tag the listener
+#: echoes back. A timeout (routed somewhere with no listener) reads as ``filtered``.
+_MARKPROBE = (
+    "import socket,sys\n"
+    "mark=int(sys.argv[3])\n"
+    "s=socket.socket()\n"
+    "s.settimeout(float(sys.argv[4]))\n"
+    "if mark:\n"
+    "    s.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, mark)\n"
+    "try:\n"
+    "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
+    "    print(s.recv(16).decode() or 'empty')\n"
+    "except OSError:\n"
+    "    print('filtered')\n"
+)
+
+#: One tag-echoing listener: the namespace it runs in, the port it binds, and the tag it echoes.
+ListenerSpec = tuple[str, int, str]
+
+
+def connect_command(src_ns: str, host: str, port: int, *, timeout: float = 1.0) -> list[str]:
+    """The argv that probes ``host:port`` from ``src_ns`` for ``open``/``refused``/``filtered``."""
+    return [IP, "netns", "exec", src_ns, PY3, "-c", _CONNECT, host, str(port), str(timeout)]
+
+
+def listen_command(ns: str, port: int) -> list[str]:
+    """The argv that runs an accept-and-close TCP listener on ``port`` inside ``ns``."""
+    return [IP, "netns", "exec", ns, PY3, "-c", _LISTEN, str(port)]
+
+
+def echo_listen_command(ns: str, port: int, tag: str) -> list[str]:
+    """The argv that runs a ``tag``-echoing TCP listener on ``port`` inside ``ns``."""
+    return [IP, "netns", "exec", ns, PY3, "-c", _ECHO_LISTEN, str(port), tag]
+
+
+def probe_command(
+    src_ns: str, host: str, port: int, *, mark: int = 0, timeout: float = 1.0
+) -> list[str]:
+    """The argv that probes ``host:port`` from ``src_ns`` (optionally ``SO_MARK``-stamped) and
+    prints the tag the listener echoes back."""
+    return [
+        IP, "netns", "exec", src_ns, PY3, "-c", _MARKPROBE,
+        host, str(port), str(mark), str(timeout),
+    ]
+
+
 # ---- imperative shell -------------------------------------------------------------------
 
 
@@ -267,6 +377,22 @@ class NetnsSandbox:
         """Run an arbitrary command inside ``ns`` (extension point for DNAT/SNAT probes)."""
         return _run([IP, "netns", "exec", ns, *argv], check=check)
 
+    def connect(
+        self, src_ns: str, host: str, port: int, *, timeout: float = 1.0
+    ) -> str:
+        """Probe ``host:port`` from ``src_ns``: ``open``/``refused``/``filtered`` (timed out)."""
+        cmd = connect_command(src_ns, host, port, timeout=timeout)
+        return _run(cmd, check=False).stdout.strip()
+
+    def probe(
+        self, src_ns: str, host: str, port: int, *, mark: int = 0, timeout: float = 1.0
+    ) -> str:
+        """Probe ``host:port`` from ``src_ns`` (optionally ``SO_MARK`` ``mark``) and return the tag
+        the listener echoes back (``filtered`` on timeout)."""
+        return _run(
+            probe_command(src_ns, host, port, mark=mark, timeout=timeout), check=False
+        ).stdout.strip()
+
 
 def _run(
     cmd: Sequence[str], *, check: bool = True, stdin_text: str | None = None
@@ -274,3 +400,56 @@ def _run(
     return subprocess.run(
         list(cmd), check=check, input=stdin_text, capture_output=True, text=True
     )
+
+
+# ---- listener lifecycles (imperative) ---------------------------------------------------
+
+
+@contextmanager
+def listeners(sb: NetnsSandbox, ns: str, ports: Sequence[int]) -> Iterator[None]:
+    """Run one accept-and-close TCP listener per port in ``ns`` for the duration of the block,
+    waiting until each is accepting before yielding so a probe can never race the bind."""
+    procs = [subprocess.Popen(listen_command(ns, port)) for port in ports]
+    try:
+        for port in ports:
+            _await(sb, ns, port, "open")
+        yield
+    finally:
+        _reap(procs)
+
+
+@contextmanager
+def echo_listeners(sb: NetnsSandbox, specs: Sequence[ListenerSpec]) -> Iterator[None]:
+    """Run each ``(ns, port, tag)`` tag-echoing listener for the duration of the block, waiting
+    until each is accepting (its tag comes back on a loopback probe) before yielding."""
+    procs = [subprocess.Popen(echo_listen_command(ns, port, tag)) for ns, port, tag in specs]
+    try:
+        for ns, port, tag in specs:
+            _await(sb, ns, port, tag)
+        yield
+    finally:
+        _reap(procs)
+
+
+def _await(sb: NetnsSandbox, ns: str, port: int, expect: str, *, attempts: int = 50) -> None:
+    """Block until a loopback probe inside ``ns`` sees its listener accept. ``expect`` is ``open``
+    for a plain :func:`listeners` port (polled via :meth:`NetnsSandbox.connect`) or the echoed tag
+    for an :func:`echo_listeners` port (polled via :meth:`NetnsSandbox.probe`); the loopback hop is
+    admitted by the no-lockout baseline, so this confirms the bind, not the firewall."""
+    for _ in range(attempts):
+        got = (
+            sb.connect(ns, "127.0.0.1", port, timeout=0.2)
+            if expect == "open"
+            else sb.probe(ns, "127.0.0.1", port, timeout=0.2)
+        )
+        if got == expect:
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"listener on {ns}:{port} never came up")
+
+
+def _reap(procs: Sequence[subprocess.Popen[bytes]]) -> None:
+    for proc in procs:
+        proc.terminate()
+    for proc in procs:
+        proc.wait()
