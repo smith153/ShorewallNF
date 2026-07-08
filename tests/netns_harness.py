@@ -348,8 +348,14 @@ class NetnsSandbox:
         self.topo = topo
 
     def __enter__(self) -> NetnsSandbox:
-        for cmd in setup_commands(self.topo):
-            _run(cmd)
+        try:
+            for cmd in setup_commands(self.topo):
+                _run(cmd)
+        except BaseException:
+            # A mid-setup failure leaves a partial sandbox; tear it down (check=False, safe over
+            # partial state) before re-raising so namespaces never leak into the next run (#273).
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
