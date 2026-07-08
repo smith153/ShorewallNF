@@ -177,8 +177,17 @@ def _endpoint_commands(router: str, e: Endpoint, index: int) -> list[list[str]]:
 
 
 def teardown_commands(topo: Topology) -> list[list[str]]:
-    """Delete every namespace — which frees its veths — reversing :func:`setup_commands`."""
-    return [[IP, "netns", "del", ns] for ns in topo.namespaces]
+    """Delete every namespace — which frees its veths — reversing :func:`setup_commands`.
+
+    Then best-effort delete each endpoint's root-ns temp veth. `ip netns del` only frees veths
+    already *moved* into a namespace; a setup that failed after `ip link add snfv{i}a …` but
+    before that end's `link set … netns` move leaves both temp ends stranded in the root ns, and
+    a re-run hard-fails on `ip link add … : File exists`. A veth deletes as a unit, so one
+    `del snfv{i}a` per index removes the pair. On the happy path these are `check=False` no-ops
+    (`Cannot find device`) — the veths were already renamed away (issue #279)."""
+    cmds = [[IP, "netns", "del", ns] for ns in topo.namespaces]
+    cmds += [[IP, "link", "del", f"snfv{index}a"] for index in range(len(topo.endpoints))]
+    return cmds
 
 
 def load_command(router: str) -> list[str]:

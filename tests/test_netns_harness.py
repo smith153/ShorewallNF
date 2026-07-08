@@ -149,10 +149,15 @@ def test_v4_only_endpoint_adds_no_v6_commands() -> None:
 
 
 def test_teardown_deletes_every_namespace() -> None:
+    # Namespaces free the veths moved *into* them; the trailing root-ns `link del snfv{i}a`
+    # per endpoint index sweeps any temp veth still stranded in the root ns from a partial
+    # setup (a veth deletes as a unit, so one end per index suffices) — issue #279.
     assert nh.teardown_commands(TOPO) == [
         ["ip", "netns", "del", "snf_r"],
         ["ip", "netns", "del", "snf_client"],
         ["ip", "netns", "del", "snf_server"],
+        ["ip", "link", "del", "snfv0a"],
+        ["ip", "link", "del", "snfv1a"],
     ]
 
 
@@ -248,6 +253,32 @@ def test_enter_tears_down_when_setup_fails_midway(monkeypatch: pytest.MonkeyPatc
     # Every teardown argv ran, and each ran only after the setup failure.
     for cmd in teardown:
         assert cmd in calls[failure_index + 1 :], f"teardown missing after failure: {cmd}"
+
+
+def test_enter_deletes_temp_veth_when_first_netns_move_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If setup dies right after `ip link add snfv0a … peer snfv0b` but before the FIRST
+    `link set snfv0a netns <router>` move, both temp ends orphan in the root ns; teardown's
+    trailing `link del snfv0a` must sweep them so a re-run doesn't hard-fail on `File exists`
+    (issue #279). Proven root-free by failing that first move via injected ``_run``."""
+    first_move = ["ip", "link", "set", "snfv0a", "netns", TOPO.router]
+    assert first_move in nh.setup_commands(TOPO)  # guards against a planner rename
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: Sequence[str], *, check: bool = True, stdin_text: str | None = None) -> None:
+        calls.append(list(cmd))
+        if list(cmd) == first_move:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(nh, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with nh.NetnsSandbox(TOPO):
+            pass
+
+    failure_index = calls.index(first_move)
+    assert ["ip", "link", "del", "snfv0a"] in calls[failure_index + 1 :]
 
 
 # ---- behavioral tier (gated: root + ip/nft) ---------------------------------------------
