@@ -248,7 +248,7 @@ def test_tproxy_reaches_listener_divert_keeps_flow_local_mark_observable() -> No
 @pytest.mark.xfail(
     reason="re-steer observation keys on the reserved TPROXY_MARK, which the generator injects "
     "only once #292 lands; the netns fwmark-path rework is #295",
-    strict=False,
+    strict=True,
 )
 @pytest.mark.netns
 @_requires_tproxy
