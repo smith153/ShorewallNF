@@ -15,21 +15,21 @@ config dir ─► Reader ─► Preprocessor ─► Parser ─► IR ─► Reso
 
 | Stage | Module | Layer | Status |
 |-------|--------|-------|--------|
-| Reader | `shorewallnf/reader.py` | shell (reads the config dir) | planned |
-| Preprocessor | `shorewallnf/preprocessor.py` | core (pure: text → text) | planned |
-| Parser | `shorewallnf/parser.py` | core (pure: text → IR) | planned |
+| Reader | `shorewallnf/reader.py` | shell (reads the config dir) | **present** (discovers the known config files in `KNOWN_CONFIG_FILES`, reads their text) |
+| Preprocessor | `shorewallnf/preprocessor.py` | core (pure: text → text) | **present** (`params` substitution, `?if` conditionals, `?FORMAT`/`?SECTION`) |
+| Parser | `shorewallnf/parser.py` | core (pure: text → IR) | **present** (per-file parsers for `zones`/`interfaces`/`policy`/`rules`/`snat`/`conntrack`/`providers`/`mangle`/`stoppedrules`) |
 | IR / model | `shorewallnf/ir.py` | core (immutable data) | **present** |
 | Resolver | `shorewallnf/resolver.py` | core (pure: IR → IR) | **present** (expands macro/action call sites into narrowed verdict rules between Parser and Validator, [ADR-0020](adr/0020-macro-and-action-resolution.md)) |
 | Validator | `shorewallnf/validator.py` | core (pure: IR → IR, or raises) | **present** (semantic checks; e.g. the ESTABLISHED/RELATED base-accept shadow, [ADR-0005](adr/0005-nftables-base-chain-layout.md)) |
-| Generator | `shorewallnf/generator.py` | core (pure: IR → nftables JSON) | **present** (base skeleton [ADR-0005](adr/0005-nftables-base-chain-layout.md); inter-zone policy rules [ADR-0006](adr/0006-inter-zone-policy-compilation.md); per-connection rules [ADR-0007](adr/0007-rules-compilation.md); IPv4 DNAT nat compilation [ADR-0008](adr/0008-nat-compilation.md); IPv4 SNAT/MASQUERADE postrouting [ADR-0009](adr/0009-snat-compilation.md); stopped safe-state ruleset [ADR-0021](adr/0021-stopped-safe-state.md); conntrack helper objects + assignment rules [ADR-0041](adr/0041-conntrack-helper-compilation.md)) |
-| Applier | `shorewallnf/applier.py` | shell (runs `nft -c`, then applies) | planned |
+| Generator | `shorewallnf/generator.py` | core (pure: IR → nftables JSON) | **present** (base skeleton [ADR-0005](adr/0005-nftables-base-chain-layout.md); inter-zone policy rules [ADR-0006](adr/0006-inter-zone-policy-compilation.md); per-connection rules [ADR-0007](adr/0007-rules-compilation.md); IPv4 DNAT nat compilation [ADR-0008](adr/0008-nat-compilation.md); IPv4 SNAT/MASQUERADE postrouting [ADR-0009](adr/0009-snat-compilation.md); stopped safe-state ruleset [ADR-0021](adr/0021-stopped-safe-state.md); conntrack helper objects + assignment rules [ADR-0041](adr/0041-conntrack-helper-compilation.md); mangle/mark rules [ADR-0042](adr/0042-mangle-compilation.md); policy-routing artifacts + TPROXY local delivery [ADR-0050](adr/0050-policy-routing-artifact-model.md)/[ADR-0051](adr/0051-transparent-proxy-mark-and-local-delivery-routing.md)) |
+| Applier | `shorewallnf/applier.py` | shell (runs `nft --check`, atomically loads, saves/restores the persisted ruleset, [ADR-0010](adr/0010-atomic-scoped-replace.md)/[ADR-0030](adr/0030-reboot-persistence-model.md)) | **present** |
 
 Cross-cutting:
 
 | Concern | Module | Status |
 |---------|--------|--------|
-| CLI entrypoint | `shorewallnf/cli.py` | planned |
-| Error types | `shorewallnf/errors.py` | planned |
+| CLI entrypoint | `shorewallnf/cli.py` | **present** (`check`/`compile`/`apply`/`start`/`reload`/`restart`/`stop`/`clear`/`restore` verbs) |
+| Error types | `shorewallnf/errors.py` | **present** (`ShorewallNFError` hierarchy, [ADR-0004](adr/0004-error-handling.md)) |
 | Built-in macro/action registry | `shorewallnf/macros.py` | **present** (documented subset of built-in `MacroDef`s the resolver consults, [ADR-0020](adr/0020-macro-and-action-resolution.md)) |
 | Built-in conntrack-helper registry | `shorewallnf/conntrack.py` | **present** (documented subset of built-in `HelperDef`s mapping helper name → proto/port + family capability, [ADR-0040](adr/0040-conntrack-helper-ir-and-registry.md)) |
 
