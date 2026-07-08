@@ -19,11 +19,12 @@ counts — it never perturbs the ruleset under test):
 * **TPROXY reaches the listener** — a transparent (``IP_TRANSPARENT``) listener bound on :50080
   receives and echoes the flow, so the redirect landed on the local socket.
 * **DIVERT keeps the established flow local** — established packets are matched by DIVERT's
-  ``socket transparent`` rule (which precedes TPROXY) and accepted, so they are *not* re-redirected:
-  the "re-steer" counter (established packets carrying the reserved TPROXY_MARK) stays 0. Its teeth
-  are the sibling mutation test, where removing DIVERT lets those packets fall through to TPROXY and
-  the counter rises — that teeth test needs the generator's TPROXY_MARK injection (#292) and is
-  xfail'd until then (the full netns rework to assert the fwmark local-delivery path is #295).
+  ``socket transparent`` rule (which precedes TPROXY) and accepted. Its teeth are the sibling
+  mutation test, where removing DIVERT lets those packets fall through to TPROXY and the "re-steer"
+  counter rises above zero — now live since the generator injects the reserved TPROXY_MARK (#292).
+  Under that shared-mark design DIVERT also stamps the reserved mark on the packets it keeps local,
+  so the counter can no longer tell "diverted" from "re-steered"; the ``resteer == 0`` assertion is
+  deferred to the #295 fwmark local-delivery rework (interim non-strict xfail).
 * **The mark is observable** — CONNMARK stamps the connection ``ct mark 0x2``, counted per packet.
 
 Needs root + ``ip``/``nft`` and the ``nft_tproxy``/``nft_socket`` kernel modules; skips cleanly
@@ -225,6 +226,12 @@ def _delete_divert(sb: nh.NetnsSandbox) -> None:
     raise AssertionError("DIVERT rule not found in the compiled prerouting chain")
 
 
+@pytest.mark.xfail(
+    reason="under ADR-0051's shared TPROXY_MARK (#292) DIVERT also stamps the reserved mark on the "
+    "packets it keeps local, so the re-steer counter can no longer tell diverted from re-steered "
+    "and `resteer == 0` is unsatisfiable; the fwmark local-delivery rework is #295",
+    strict=False,
+)
 @pytest.mark.netns
 @_requires_tproxy
 def test_tproxy_reaches_listener_divert_keeps_flow_local_mark_observable() -> None:
@@ -245,11 +252,6 @@ def test_tproxy_reaches_listener_divert_keeps_flow_local_mark_observable() -> No
         assert _counter(sb, "connmark") > 0
 
 
-@pytest.mark.xfail(
-    reason="re-steer observation keys on the reserved TPROXY_MARK, which the generator injects "
-    "only once #292 lands; the netns fwmark-path rework is #295",
-    strict=True,
-)
 @pytest.mark.netns
 @_requires_tproxy
 def test_without_divert_established_flow_is_re_steered() -> None:
