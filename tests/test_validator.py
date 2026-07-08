@@ -16,7 +16,7 @@ import pytest
 
 from shorewallnf import cli
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Interface, Provider, Rule, Ruleset
+from shorewallnf.ir import Family, Interface, Provider, Rule, Ruleset
 from shorewallnf.validator import validate
 
 
@@ -247,3 +247,80 @@ def test_reserved_tproxy_table_id_fails_fast() -> None:
     with pytest.raises(ConfigError, match="number") as exc:
         validate(rs)
     assert "0xffffffff" in str(exc.value).lower() and "tproxy" in str(exc.value).lower()
+
+
+# --- malformed proto/port combinations in rules (#317) -----------------------
+
+
+def _rule_rs(**kw: object) -> Ruleset:
+    base: dict[str, object] = {"action": "ACCEPT", "source": "net", "dest": "loc"}
+    base.update(kw)
+    return Ruleset(rules=(Rule(**base),))  # type: ignore[arg-type]
+
+
+def test_dport_without_proto_fails_fast() -> None:
+    msg = _message(_rule_rs(dport="80"))
+    assert "80" in msg  # names the offending port
+    assert "proto" in msg.lower()  # points at the missing protocol column
+
+
+def test_sport_without_proto_fails_fast() -> None:
+    msg = _message(_rule_rs(sport="1024"))
+    assert "1024" in msg
+    assert "proto" in msg.lower()
+
+
+def test_portless_proto_only_rule_is_allowed() -> None:
+    rs = _rule_rs(proto="tcp")  # a bare proto with no port is fine
+    assert validate(rs) is rs
+
+
+def test_tcp_with_ports_is_allowed() -> None:
+    rs = _rule_rs(proto="tcp", dport="80", sport="1024")
+    assert validate(rs) is rs
+
+
+def test_port_without_proto_cites_path_line() -> None:
+    rule = Rule(action="ACCEPT", source="net", dest="loc", dport="80",
+                path="rules", line=7)
+    with pytest.raises(ConfigError) as exc:
+        validate(Ruleset(rules=(rule,)))
+    assert str(exc.value).startswith("rules:7: ")
+
+
+@pytest.mark.parametrize("proto", ["icmp", "ipv6-icmp"])
+def test_icmp_with_source_port_fails_fast(proto: str) -> None:
+    fam = Family.IPV4 if proto == "icmp" else Family.IPV6
+    msg = _message(_rule_rs(proto=proto, sport="80", family=fam))
+    assert proto in msg  # names the port-less protocol
+    assert "source port" in msg.lower() or "sport" in msg.lower()
+
+
+@pytest.mark.parametrize("proto", ["icmp", "ipv6-icmp"])
+def test_icmp_with_dest_port_type_is_allowed(proto: str) -> None:
+    # For ICMP the DEST PORT column carries the ICMP *type*, not a port (ADR-0007) — allowed.
+    fam = Family.IPV4 if proto == "icmp" else Family.IPV6
+    rs = _rule_rs(proto=proto, dport="8", family=fam)
+    assert validate(rs) is rs
+
+
+def test_icmp_source_port_error_cites_path_line() -> None:
+    rule = Rule(action="ACCEPT", source="net", dest="loc", proto="icmp",
+                sport="80", family=Family.IPV4, path="rules", line=9)
+    with pytest.raises(ConfigError) as exc:
+        validate(Ruleset(rules=(rule,)))
+    assert str(exc.value).startswith("rules:9: ")
+
+
+def test_compile_rejects_port_without_proto(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "ACCEPT net loc - 80\n")  # dest-port, empty proto column
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    assert "80" in str(exc.value)
+
+
+def test_compile_rejects_icmp_source_port(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "ACCEPT net loc icmp - 80\n")  # sport on icmp
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    assert "icmp" in str(exc.value)

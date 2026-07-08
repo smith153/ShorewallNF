@@ -13,6 +13,11 @@ Checks so far:
   ESTABLISHED or RELATED ``?SECTION`` is unreachable. Reject it; an ``ACCEPT`` there is a
   redundant no-op and is allowed. (A FASTACCEPT-off mode that made the base accept conditional
   is out of scope — a future ADR if a real need for mid-connection policy arrives.)
+- **Malformed proto/port combinations (#317).** A ``dport``/``sport`` needs a port-bearing
+  protocol: reject a port given with no ``proto``, and a source port given with ``icmp``/
+  ``ipv6-icmp`` (which carry a *type* in the dest-port column, not a port — ADR-0007). Both
+  are high-signal user mistakes the Generator would otherwise reject unlocated; catching them
+  here cites ``file:line``. Full port-semantics modelling is out of scope (YAGNI).
 """
 
 from __future__ import annotations
@@ -25,13 +30,43 @@ from .ir import Provider, Rule, Ruleset
 _BASE_ACCEPTED_SECTIONS = frozenset({"ESTABLISHED", "RELATED"})
 _REJECTING_ACTIONS = frozenset({"DROP", "REJECT"})
 
+# ICMP/ICMPv6 have no L4 ports: the DEST PORT column carries an ICMP *type* (ADR-0007), so a
+# SOURCE PORT is meaningless there.
+_PORTLESS_PROTOS = frozenset({"icmp", "ipv6-icmp"})
+
 
 def validate(ruleset: Ruleset) -> Ruleset:
     """Run every semantic check over ``ruleset``; return it unchanged, or raise ``ConfigError``."""
     for rule in ruleset.rules:
         _reject_shadowed_section_rule(rule)
+        _reject_malformed_proto_port(rule)
     _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
     return ruleset
+
+
+def _reject_malformed_proto_port(rule: Rule) -> None:
+    """Fail fast on a port that its protocol can't carry (#317, ADR-0004).
+
+    Two high-signal mistakes: a ``dport``/``sport`` with no ``proto`` at all, and a source port
+    on ``icmp``/``ipv6-icmp`` (which have no ports — the dest-port column is the ICMP type).
+    """
+    if rule.proto is None:
+        if rule.dport is not None or rule.sport is not None:
+            port = rule.dport if rule.dport is not None else rule.sport
+            raise ConfigError(
+                f"rule {rule.action} {rule.source!r} {rule.dest!r}: port {port!r} needs a "
+                f"protocol — add a port-bearing proto (e.g. tcp/udp) to the PROTO column",
+                path=rule.path,
+                line=rule.line,
+            )
+        return
+    if rule.proto in _PORTLESS_PROTOS and rule.sport is not None:
+        raise ConfigError(
+            f"rule {rule.action} {rule.source!r} {rule.dest!r}: {rule.proto} has no source "
+            f"port {rule.sport!r} — ICMP carries a type in the dest-port column, not a port",
+            path=rule.path,
+            line=rule.line,
+        )
 
 
 def _validate_providers(
