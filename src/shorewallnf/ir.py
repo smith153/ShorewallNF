@@ -323,6 +323,26 @@ class RoutingArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class TproxyRoutingArtifact:
+    """Transparent-proxy local delivery lowered into a routing artifact (ADR-0051 Part B).
+
+    A sibling of :class:`RoutingArtifact` on the same second output channel (ADR-0050), but a
+    different route type from a different source: a ``local`` route out ``lo`` rather than a
+    default route via a gateway. It renders to ``ip -N rule add fwmark <fwmark> table <table_id>``
+    + ``ip -N route add local 0.0.0.0/0 dev lo table <table_id>`` (v6: ``::/0``). ``table_id`` is
+    the reserved :data:`TPROXY_TABLE_ID` and ``fwmark`` the reserved :data:`TPROXY_MARK` (both
+    ``0xFFFFFFFF``), injected by the generator; a tproxy'd packet carries that mark and is selected
+    only into that table. ``family`` is :data:`Family.IPV4` or :data:`Family.IPV6` — never
+    :data:`Family.BOTH`; a routing table is family-specific (ADR-0002). Not part of the nftables
+    JSON channel.
+    """
+
+    table_id: int
+    fwmark: int
+    family: Family
+
+
+@dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
 
