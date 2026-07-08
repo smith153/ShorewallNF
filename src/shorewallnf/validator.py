@@ -78,6 +78,14 @@ def _validate_providers(
 # table. Marks and table ids are 32-bit unsigned.
 _RESERVED_TABLE_IDS = frozenset({0, 253, 254, 255})
 _MAX_U32 = 0xFFFFFFFF
+# The top 32-bit value is reserved for the transparent-proxy mark/table (ADR-0051): the generator
+# injects fwmark 0xFFFFFFFF into table 0xFFFFFFFF for TPROXY/DIVERT local delivery. A provider
+# claiming it would let a tproxy'd packet select the provider's table instead of the local-delivery
+# table (silent misroute), so we cap the provider space one below it. ir.TPROXY_MARK/TPROXY_TABLE_ID
+# (added under #289) is the same value; use the literal here to avoid coupling to that concurrent
+# change.
+_TPROXY_RESERVED = 0xFFFFFFFF
+_MAX_PROVIDER = _MAX_U32 - 1  # 0xFFFFFFFE
 
 
 def _reject_reserved_or_out_of_range(provider: Provider) -> None:
@@ -86,21 +94,25 @@ def _reject_reserved_or_out_of_range(provider: Provider) -> None:
     A reserved table id (0/253/254/255) would let teardown flush a system routing table, and
     fwmark 0 matches unmarked traffic (silently routing everything out the provider) — both
     footguns the applier (#235) would faithfully carry out, so the gate belongs here (#255,
-    ADR-0004).
+    ADR-0004). The top value 0xFFFFFFFF is reserved for the tproxy mark/table (ADR-0051, #290),
+    so the accepted provider range stops at 0xFFFFFFFE.
     """
-    if provider.number in _RESERVED_TABLE_IDS or not 1 <= provider.number <= _MAX_U32:
+    if provider.number in _RESERVED_TABLE_IDS or not 1 <= provider.number <= _MAX_PROVIDER:
         raise ConfigError(
             f"provider {provider.name!r} uses reserved/invalid routing-table number "
-            f"{provider.number} — use 1..{_MAX_U32} excluding the kernel-reserved "
-            f"{sorted(_RESERVED_TABLE_IDS)} (unspec/default/main/local); one of those would let "
-            "teardown flush a system routing table",
+            f"{provider.number} — use 1..{_MAX_PROVIDER} (0x{_MAX_PROVIDER:x}) excluding the "
+            f"kernel-reserved {sorted(_RESERVED_TABLE_IDS)} (unspec/default/main/local) and "
+            f"0x{_TPROXY_RESERVED:x} (reserved for the tproxy table, ADR-0051); one of those "
+            "would let teardown flush a system routing table or steal tproxy local delivery",
             path=provider.path,
             line=provider.line,
         )
-    if not 1 <= provider.mark <= _MAX_U32:
+    if not 1 <= provider.mark <= _MAX_PROVIDER:
         raise ConfigError(
-            f"provider {provider.name!r} uses invalid fwmark {provider.mark} — use 1..{_MAX_U32} "
-            "(fwmark 0 matches unmarked traffic, silently routing everything out this provider)",
+            f"provider {provider.name!r} uses invalid fwmark {provider.mark} — use "
+            f"1..{_MAX_PROVIDER} (0x{_MAX_PROVIDER:x}); 0 matches unmarked traffic (silently "
+            f"routing everything out this provider) and 0x{_TPROXY_RESERVED:x} is reserved for "
+            "the tproxy mark (ADR-0051)",
             path=provider.path,
             line=provider.line,
         )
