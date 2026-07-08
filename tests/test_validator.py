@@ -216,9 +216,34 @@ def test_out_of_range_fwmark_fails_fast() -> None:
 
 
 def test_valid_boundary_number_and_mark_pass() -> None:
-    # The largest valid values (2^32-1) and a non-reserved id pass unchanged.
+    # 0xFFFFFFFF is reserved for tproxy (ADR-0051), so the largest valid provider values are
+    # now 0xFFFFFFFE for both number and mark; a non-reserved id passes unchanged.
     rs = _providers_rs(
-        Provider(name="wan", number=2**32 - 1, mark=2**32 - 1, interface="eth0",
+        Provider(name="wan", number=0xFFFFFFFE, mark=0xFFFFFFFE, interface="eth0",
                  gateway="192.0.2.1"),
     )
     assert validate(rs) is rs
+
+
+# --- 0xFFFFFFFF reserved for the transparent-proxy mark/table (ADR-0051, #290) -----------
+
+
+def test_reserved_tproxy_fwmark_fails_fast() -> None:
+    # 0xFFFFFFFF == TPROXY_MARK; a provider claiming it would let a tproxy'd packet select the
+    # provider table instead of the local-delivery table (silent misroute).
+    rs = _providers_rs(
+        Provider(name="wan", number=1, mark=0xFFFFFFFF, interface="eth0", gateway="192.0.2.1"),
+    )
+    with pytest.raises(ConfigError, match="fwmark") as exc:
+        validate(rs)
+    assert "0xffffffff" in str(exc.value).lower() and "tproxy" in str(exc.value).lower()
+
+
+def test_reserved_tproxy_table_id_fails_fast() -> None:
+    # 0xFFFFFFFF == TPROXY_TABLE_ID; reserved for tproxy local delivery alongside the kernel ids.
+    rs = _providers_rs(
+        Provider(name="wan", number=0xFFFFFFFF, mark=1, interface="eth0", gateway="192.0.2.1"),
+    )
+    with pytest.raises(ConfigError, match="number") as exc:
+        validate(rs)
+    assert "0xffffffff" in str(exc.value).lower() and "tproxy" in str(exc.value).lower()
