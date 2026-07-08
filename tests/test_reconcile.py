@@ -19,6 +19,10 @@ from reconcile.core import (
     Issue,
     Mergeability,
     PullRequest,
+    batch_candidates,
+    batch_conflict_actions,
+    batch_gate_red_actions,
+    batch_promote_actions,
     reconcile,
 )
 
@@ -563,3 +567,98 @@ def test_earlier_primary_below_the_claim_labels_is_not_self_healed() -> None:
     acts = _kinds(_run(board), 9)
     assert (ActionKind.ADD_LABEL, "needs-human") in acts
     assert not any(a.reason == "stale-status" for a in _run(board))
+
+
+# --- batch test-merge gate (#247): 2+ promote-eligible PRs are gated together ---------------
+#
+# The R3 gate above vets each PR in isolation. When 2+ PRs are promote-eligible in one pass they
+# must be test-merged *together* before any is promoted (the shell runs the git merge + gate).
+# The pure core here (a) selects the candidate batch and (b) builds the promote / hold+flag
+# action sets from the batch outcome the shell computes. No git/test I/O leaks into the core.
+
+
+def _ready_board(*tasks: int) -> Board:
+    # N independently promote-eligible review-passed PRs (green, current, READY, on master).
+    issues = [_issue(t, {"status:review-passed"}) for t in tasks]
+    pulls = [_pr(100 + t, task=t) for t in tasks]
+    return _board(issues, pulls)
+
+
+def test_single_promote_eligible_pr_is_not_a_batch(   # 8d
+) -> None:
+    board = _ready_board(7)
+    assert batch_candidates(board) == []
+    # ...and reconcile promotes it inline exactly as today (no test-merge).
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") in _kinds(_run(board), 7)
+
+
+def test_two_promote_eligible_prs_form_a_batch() -> None:
+    board = _ready_board(7, 8)
+    batch = batch_candidates(board)
+    assert {pr.task for pr in batch} == {7, 8}
+
+
+def test_batch_members_are_not_promoted_inline_by_reconcile() -> None:
+    # The whole point: a 2+ batch must be test-merged first, so reconcile must NOT emit an
+    # inline ready-to-merge for any batch member (the shell promotes survivors after the merge).
+    board = _ready_board(7, 8)
+    acts = _run(board)
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(acts, 7)
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(acts, 8)
+
+
+def test_batch_candidates_excludes_non_promotable_prs() -> None:
+    # Only the fully-eligible PRs are batched; a behind / red / blocked / stacked / stale-review
+    # PR is not a candidate (so a lone eligible PR beside them still promotes inline, not batched).
+    board = _board(
+        [
+            _issue(7, {"status:review-passed"}),  # eligible
+            _issue(8, {"status:review-passed"}),  # behind — not eligible
+            _issue(9, {"status:review-passed", "status:blocked"}, blocked_by=(2,)),  # blocked
+        ],
+        [
+            _pr(107, task=7),
+            _pr(108, task=8, mergeability=Mergeability.BEHIND),
+            _pr(109, task=9),
+        ],
+        blocker_state={2: BlockerState.OPEN},
+    )
+    assert batch_candidates(board) == []  # only one eligible -> no batch
+    # and that lone eligible PR promotes inline
+    assert (ActionKind.ADD_LABEL, "status:ready-to-merge") in _kinds(_run(board), 7)
+
+
+def test_batch_promote_actions_promotes_every_survivor() -> None:  # 8a
+    board = _ready_board(7, 8)
+    batch = batch_candidates(board)
+    acts = batch_promote_actions(batch, board)
+    for task, pr in ((7, 107), (8, 108)):
+        assert (ActionKind.REMOVE_LABEL, "status:review-passed") in _kinds(acts, task)
+        assert (ActionKind.ADD_LABEL, "status:ready-to-merge") in _kinds(acts, task)
+        comments = [a for a in acts if a.kind is ActionKind.COMMENT and a.on_pr and a.number == pr]
+        assert len(comments) == 1 and AGENT_SIGN in comments[0].value
+
+
+def test_batch_conflict_actions_holds_and_flags_each_pr() -> None:  # 8b
+    board = _ready_board(7, 8)
+    batch = batch_candidates(board)
+    acts = batch_conflict_actions(batch, "task/8")
+    # neither task is promoted; each stays review-passed (no label edits at all)
+    assert not any(a.kind in (ActionKind.ADD_LABEL, ActionKind.REMOVE_LABEL) for a in acts)
+    # a signed conflict comment on each PR
+    for pr in (107, 108):
+        cs = [a for a in acts if a.kind is ActionKind.COMMENT and a.on_pr and a.number == pr]
+        assert len(cs) == 1 and AGENT_SIGN in cs[0].value and cs[0].reason == "batch-conflict"
+
+
+def test_batch_gate_red_actions_holds_flags_and_needs_human() -> None:  # 8c
+    board = _ready_board(7, 8)
+    batch = batch_candidates(board)
+    acts = batch_gate_red_actions(batch, "pytest")
+    # neither promoted; each task gets needs-human and a signed comment naming the failing gate
+    for task, pr in ((7, 107), (8, 108)):
+        assert (ActionKind.ADD_LABEL, "status:ready-to-merge") not in _kinds(acts, task)
+        assert (ActionKind.ADD_LABEL, "needs-human") in _kinds(acts, task)
+        cs = [a for a in acts if a.kind is ActionKind.COMMENT and a.on_pr and a.number == pr]
+        assert len(cs) == 1 and AGENT_SIGN in cs[0].value and "pytest" in cs[0].value
+        assert cs[0].reason == "batch-gate-red"

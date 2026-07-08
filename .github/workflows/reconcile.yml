@@ -2,8 +2,10 @@ name: pipeline-reconcile
 
 # Idempotent, level-triggered reconcile of the pipeline's judgment-free state transitions
 # (issue #106): un-block, stale-claim reap, ready-to-merge promotion, review-freshness reset,
-# and one-status-invariant flagging. Correctness comes from the cron pass; the event triggers
-# just cut latency. The whole board is re-derived each run, so a missed event self-heals.
+# and one-status-invariant flagging. When 2+ PRs are promote-eligible in one pass, a batch
+# test-merge gate (#247) merges them together onto the current master tip and re-runs the gate,
+# promoting only if the combined tree is green. Correctness comes from the cron pass; the event
+# triggers just cut latency. The whole board is re-derived each run, so a missed event self-heals.
 #
 # SAFE BY DEFAULT: it only mutates when the repo variable (or dispatch input) RECONCILE_APPLY
 # == "true"; otherwise it prints the actions it would take (dry-run). pull_request events ALWAYS
@@ -40,18 +42,30 @@ concurrency:
 jobs:
   reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 10 # a hung gh/API call must not hold the concurrency slot for 6h
+    # Bumped from 10m for the #247 batch test-merge gate: when 2+ PRs are promote-eligible in one
+    # pass it merges them together and runs ruff/mypy/pytest on the combined tree (mirrors CI's
+    # non-privileged tier). Still bounded so a hung gh/API call can't hold the slot for 6h.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + all branches so the batch gate can `git worktree add` and merge the
+          # candidate PR branches together onto the current master tip.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # ruff/mypy/pytest for the batch test-merge gate (the normal reconcile path needs only
+      # stdlib + gh; the merged-tree gate needs the dev tools).
+      - run: python -m pip install -e ".[dev]"
       - name: Reconcile pipeline state
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
           # Never apply on pull_request events — they check out the PR's unmerged code. Only
-          # master's reviewed code applies (cron / workflow_dispatch / issues / check_suite).
+          # master's reviewed code applies (cron / workflow_dispatch / issues / check_suite). The
+          # #247 batch gate honors this same flag: a test-merge runs UNREVIEWED PR code, so its
+          # result must never drive a mutation from an unsafe (pull_request) context.
           RECONCILE_APPLY: ${{ github.event_name != 'pull_request' && (inputs.apply == 'true' || vars.RECONCILE_APPLY == 'true') }}
           RECONCILE_STALE_DAYS: ${{ vars.RECONCILE_STALE_DAYS || '2' }}
         run: python -m reconcile.run
