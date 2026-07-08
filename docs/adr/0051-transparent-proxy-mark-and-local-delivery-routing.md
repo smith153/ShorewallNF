@@ -1,12 +1,13 @@
 # ADR-0051: Transparent-proxy mark reservation and local-delivery routing
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-08
 
-> **PROPOSAL — awaiting owner approval.** This ADR frames one architecture decision with an
-> explicit **fork** the owner must resolve (see *Decision → the open fork*). It is not accepted;
-> nothing downstream should be built until it is. Numbering `0051` is provisional; confirm it is
-> not reserved by another in-flight task before merge.
+> **Decision:** the owner (Sam) approved **Option (a) — a single reserved `TPROXY_MARK` constant**
+> on 2026-07-08. The mark-model fork below is settled in its favour; the other options are recorded
+> under *Alternatives considered*. The `#272` issue stays open — it closes when the implementation
+> lands, not this ADR. Numbering `0051` is provisional; confirm it is not reserved by another
+> in-flight task before merge.
 
 ## Context
 
@@ -57,63 +58,54 @@ Forces:
 
 ## Decision
 
-Two parts. Part B (the routing-artifact model) is stable and recommended as written; **Part A is an
-open fork the owner must choose.**
+Two parts: Part A reserves the tproxy mark and table id; Part B is the routing-artifact model.
 
-### Part A — reserving the tproxy mark (THE OPEN FORK)
+### Part A — a single reserved `TPROXY_MARK` constant (Option a, chosen)
 
-A transparent proxy needs a mark that DIVERT and TPROXY both set and one `ip rule fwmark` consumes,
-which must be **collision-safe against provider fwmarks** (ADR-0050's single-owner rule). Three
-options, each a different point on the simplicity ↔ flexibility ↔ coexistence-with-providers axis:
+We will use **one compiler-supplied reserved mark** that `DIVERT` and `TPROXY(<port>)` both set and
+a single `ip rule fwmark` consumes — Shorewall's `TPROXY_MARK` analogue. The mark is **not** a
+per-rule operator value: `DIVERT` and `TPROXY(<port>)` are markless in surface syntax (`DIVERT` gains
+an optional `DIVERT(<mark>)` form only for symmetry/overrides if a later need arises — not required
+here), and the generator injects `TPROXY_MARK`. This keeps the [ADR-0050](0050-policy-routing-artifact-model.md)
+single-owner-of-the-mark rule intact: exactly one well-known value belongs to tproxy, and the
+validator forbids any provider from claiming it.
 
-**Option 1 — a single reserved constant `TPROXY_MARK` (Shorewall's analogue).**
-One fixed value (e.g. `0x1`), a named constant in the generator; `DIVERT` and `TPROXY(<port>)` both
-set it, one emitted `ip rule fwmark 0x1 lookup <tproxy-table>`. The parser stops accepting a
-per-rule mark entirely — `DIVERT` and `TPROXY(<port>)` are markless in surface syntax; the compiler
-supplies the mark.
-- *Pros:* simplest; matches Shorewall; nothing for the operator to get wrong; one obvious value to
-  document as reserved. Collision-safety reduces to "the validator rejects any provider using the
-  reserved value."
-- *Cons:* a bare integer can still collide with the *full* 32-bit provider fwmark if a provider
-  picks it; must reserve it globally and validate. Inflexible if two independent tproxy setups ever
-  need distinct marks (no current requirement — YAGNI).
+**Concrete reserved constants.** The provider space is *open-ended* — the validator today accepts a
+provider `fwmark` of `1..0xFFFFFFFF` (`_MAX_U32`) and a routing-table `number` of `1..0xFFFFFFFF`
+excluding the kernel-reserved `{0, 253, 254, 255}` (`validator.py` `_reject_reserved_or_out_of_range`).
+There is no low "reserved end" to slot into, so we reserve the **top** of each space and shrink the
+provider ranges by one:
 
-**Option 2 — a reserved high-bit / mask carved out of the mark space.**
-Partition `meta mark`: reserve one high bit (e.g. `0x80000000`, or a small top mask) for tproxy,
-leave the low bits to providers. TPROXY/DIVERT set the reserved bit with a masked write
-(`mark & ~M | bit`); the `ip rule` matches `fwmark 0x80000000/0x80000000`; the validator constrains
-provider fwmarks to the un-reserved range.
-- *Pros:* structurally collision-proof — tproxy and provider marks live in disjoint bit ranges and
-  can coexist on the same packet (a packet can be both provider-marked and tproxy-marked). No shared
-  scalar to accidentally reuse.
-- *Cons:* shrinks the provider fwmark space and imposes a mask convention providers must obey;
-  masked reads/writes are more machinery than any current config needs (masks already exist for
-  MARK/CONNMARK, so not foreign, but still added surface). Over-engineered if tproxy and providers
-  are never used together in the reference config.
+- **`TPROXY_MARK = 0xFFFFFFFF`** — the maximum 32-bit fwmark. TPROXY and DIVERT emit
+  `meta mark set 0xffffffff` (a plain full-width set, matching ADR-0042's existing plain
+  `meta mark set` for these actions); the routing rule matches `fwmark 0xffffffff`.
+- **`TPROXY_TABLE_ID = 0xFFFFFFFF`** — the maximum 32-bit routing-table id, not one of the
+  kernel-reserved ids `{0, 253, 254, 255}`, so teardown's `ip route flush table 0xffffffff` can never
+  wipe a system table. (The mark and the table id share the numeral but live in disjoint namespaces —
+  fwmark vs. routing-table id — so they cannot collide with *each other*.)
 
-**Option 3 — a configurable mark with validation against provider marks.**
-Keep `TPROXY(<port>,<mark>)`/`DIVERT(<mark>)` per-rule (or a single global setting), but add a
-validator pass that rejects any tproxy mark equal to a provider fwmark (extend the existing
-`validator.py` uniqueness check to span both sources).
-- *Pros:* flexible; no reserved constant baked in; reuses the validator's existing mark-uniqueness
-  machinery, just widening its scope.
-- *Cons:* pushes correctness onto the operator + a cross-cutting validation rule; is exactly the
-  "per-rule values that can collide with provider fwmarks" model the #272 reporter warns against;
-  more moving parts for a feature with one known shape.
+**Why these are provably collision-safe (this becomes the validator rule).** Provider fwmarks and
+table ids are matched by *exact* value (no masks), so a collision is possible only if some provider
+is assigned the identical value. The follow-up validator change (§follow-ups) narrows the accepted
+provider ranges to exclude the reserved constants:
+- provider `fwmark`: `1..0xFFFFFFFE` (was `1..0xFFFFFFFF`) — `0xFFFFFFFF` now reserved for tproxy;
+- provider `number` (table id): `1..0xFFFFFFFE` excluding `{253, 254, 255}` (was `1..0xFFFFFFFF`) —
+  `0xFFFFFFFF` now reserved for tproxy, alongside the existing kernel reservations.
 
-**Recommendation: Option 1 (single reserved `TPROXY_MARK` constant), with the mask mechanics of
-Option 2 held in reserve.** It is the least machinery for the only shape the project needs today
-(YAGNI), matches the well-understood Shorewall model, and makes collision-safety a one-line
-validator rule ("no provider may use the reserved tproxy mark"). If a real need for provider +
-tproxy coexistence on the same packet ever arrives, Option 2's reserved-bit scheme is the clean
-upgrade and can supersede this ADR then. Option 3 is declined: it bakes in the collision-prone
-per-rule model the report explicitly cautions against.
+With those two range caps, no valid provider can ever carry `TPROXY_MARK` or use `TPROXY_TABLE_ID`,
+so a tproxy'd packet (mark `0xffffffff`) is selected *only* by the tproxy `ip rule` into
+`TPROXY_TABLE_ID`, never a provider table — collision-safety by construction, enforced fail-closed
+([ADR-0004](0004-error-handling.md)) at validate time. Reserving the extreme top end also makes an
+accidental clash astronomically unlikely in practice (provider numbers are realistically small), so
+the range cap is a backstop, not a routine rejection.
 
-*Owner decision required:* pick 1, 2, or 3 (and, if 1/2, the concrete reserved value/bit and the
-tproxy routing-table id). The rest of this ADR assumes the chosen mark is a single value the
-generator knows.
+**Note on same-packet coexistence.** A plain `meta mark set 0xffffffff` overwrites any prior mark, so
+a packet cannot be *both* provider-marked and tproxy-marked — acceptable here (transparent proxy and
+provider routing on the same packet is not a supported combined scenario). If that need ever arrives,
+a reserved-*bit*/mask partition of the mark space (see *Alternatives*) is the clean upgrade and would
+supersede this ADR.
 
-### Part B — the local-delivery routing artifact (recommended as written)
+### Part B — the local-delivery routing artifact
 
 We will emit the transparent-proxy local delivery as an **inert routing artifact on the existing
 second channel** ([ADR-0050](0050-policy-routing-artifact-model.md)), applied and torn down exactly
@@ -124,9 +116,9 @@ like provider routing:
   (`TproxyRoutingArtifact`, in `ir.py`) is cleaner than overloading `RoutingArtifact` with optional
   gateway/`local` fields (ADR-0050 chose one record *per provider* precisely to avoid a union;
   a distinct source and route type here argues for a sibling type, not a widened one). It carries:
-  `table_id` (the dedicated tproxy routing table), `fwmark` (the reserved tproxy mark from Part A),
-  and `family`. It renders to `ip -N rule add fwmark <fwmark> table <table_id>` +
-  `ip -N route add local 0.0.0.0/0 dev lo table <table_id>` (v6: `::/0`).
+  `table_id` (= `TPROXY_TABLE_ID`, `0xFFFFFFFF`), `fwmark` (= `TPROXY_MARK`, `0xFFFFFFFF`), and
+  `family`. It renders to `ip -N rule add fwmark 0xffffffff table 0xffffffff` +
+  `ip -N route add local 0.0.0.0/0 dev lo table 0xffffffff` (v6: `::/0`).
 - **Generation.** `generate_routing` (or a sibling `generate_tproxy_routing`) emits **one artifact
   per family that has any TPROXY rule** — not one per rule (all tproxy rules share the one reserved
   mark and one local table). Pure `IR → data`, no I/O.
@@ -137,9 +129,8 @@ like provider routing:
   idempotently, in the same install-after-nft-load / teardown-before-reinstall order as
   provider routing (`applier.py` `routing_install_argv`/`routing_teardown_argv`), so stop/clear
   removes them cleanly (fail-closed rollback on a rejected `ip`, [ADR-0004](0004-error-handling.md)).
-- **Table-id collision-safety.** The tproxy table id must not collide with a provider table id
-  (= provider number). Reserve a dedicated id (paired with the Part A decision) and extend the
-  validator's table-id uniqueness check to cover it.
+- **Table-id collision-safety.** The tproxy table id is the reserved `TPROXY_TABLE_ID` (`0xFFFFFFFF`,
+  Part A); the validator caps provider table ids at `1..0xFFFFFFFE` so no provider can claim it.
 
 ## Consequences
 
@@ -147,32 +138,53 @@ like provider routing:
   redirect *and* the fwmark local-delivery routing, so a TPROXY'd packet reaches the local listener
   with no hand-installed glue. The #231 netns test can **drop its `iif <iface>` workaround** and
   assert the idiomatic fwmark path end to end.
-- The generator's dead DIVERT-mark branch becomes live (fed by the compiler-supplied reserved mark,
-  not a user integer under Options 1/2).
-- A reserved tproxy mark **and** table id are carved out of the provider space; the validator gains
-  one cross-source collision rule. Providers and tproxy coexist safely only to the degree the chosen
-  option guarantees (Option 2 fully; Options 1/3 by validation).
+- The generator's dead DIVERT-mark branch becomes live (fed by the compiler-supplied `TPROXY_MARK`,
+  not a user integer).
+- `TPROXY_MARK` (`0xFFFFFFFF`) and `TPROXY_TABLE_ID` (`0xFFFFFFFF`) are carved out of the top of the
+  provider mark/table-id space; the validator's accepted provider ranges shrink to `1..0xFFFFFFFE`
+  (mark) and `1..0xFFFFFFFE` excluding `{253, 254, 255}` (table id). A tproxy'd packet is thereby
+  guaranteed to select only the tproxy table, never a provider's — collision-safe by construction.
+  Same-packet provider+tproxy marking is not supported (the plain full-width `meta mark set`
+  overwrites); a mask partition would be the upgrade if ever needed.
 - A second routing artifact type lives alongside `RoutingArtifact`; `generator.py`'s routing channel
   now lowers two sources. Acceptable (ADR-0050 already anticipated the channel growing); split into a
   package later if it grows unwieldy.
 
-### Post-approval mechanical follow-ups (NOT part of this ADR; decompose after acceptance)
+### Mechanical follow-ups (NOT part of this ADR; the Epic Decomposer files these)
 
-Once the owner picks an option, these fall out as small, individually-testable tasks — filed by the
+Now the decision is settled, these fall out as small, individually-testable tasks — filed by the
 Epic Decomposer, not here:
 
-1. **Parser:** accept `DIVERT(<mark>)` (and drop/keep per-rule TPROXY mark per the chosen option);
-   wire the reserved mark through so `MangleRule.mark` is populated for DIVERT.
-2. **Generator (nft):** the existing DIVERT-mark branch goes live; TPROXY sets the reserved mark;
-   both use the single `TPROXY_MARK`.
-3. **Generator (routing):** emit the `TproxyRoutingArtifact`(s) (one per family with any TPROXY).
+1. **Parser:** the generator injects `TPROXY_MARK` for DIVERT/TPROXY (no per-rule value needed);
+   populate `MangleRule.mark` for DIVERT so the generator branch fires. (An optional `DIVERT(<mark>)`
+   surface form is not required by this ADR — add only if a real override need appears.)
+2. **Generator (nft):** the existing DIVERT-mark branch goes live; TPROXY sets the mark; both use
+   the single `TPROXY_MARK = 0xFFFFFFFF`.
+3. **Generator (routing):** emit the `TproxyRoutingArtifact`(s) (one per family with any TPROXY),
+   `fwmark`/`table_id` = `0xFFFFFFFF`.
 4. **Applier:** install/tear down the fwmark rule + `local` route, ordered like provider routing.
-5. **Validator:** reject a provider fwmark / table id that collides with the reserved tproxy
-   mark / table (and, for Option 2, enforce the mask partition).
+5. **Validator:** cap provider `fwmark` at `1..0xFFFFFFFE` and provider table `number` at
+   `1..0xFFFFFFFE` excluding `{253, 254, 255}`, reserving `0xFFFFFFFF` for tproxy (extend
+   `_reject_reserved_or_out_of_range`).
 6. **Netns test (#231 follow-up):** drop the `iif` workaround; assert TPROXY delivery via the
    compiled fwmark local-delivery routing.
 
 ## Alternatives considered
+
+The mark-model fork the owner resolved in favour of Option (a) above:
+
+- **(b) A reserved high-bit / mask carved out of the mark space** (e.g. reserve `0x80000000`;
+  TPROXY/DIVERT set the bit with a masked write, `ip rule` matches `fwmark 0x80000000/0x80000000`,
+  providers keep the low bits). Structurally collision-proof and lets a packet be *both*
+  provider-marked and tproxy-marked — but shrinks the provider space and imposes a mask convention
+  that no current config needs (YAGNI). Held in reserve: this is the clean upgrade if same-packet
+  provider+tproxy coexistence is ever required, and would supersede this ADR then.
+- **(c) A configurable per-rule mark validated against provider marks** (`TPROXY(<port>,<mark>)` /
+  `DIVERT(<mark>)` plus a cross-source uniqueness check). Rejected: it bakes in exactly the
+  per-rule model the #272 reporter cautions against, pushing collision-safety onto the operator and
+  a cross-cutting validation rule for a feature with one known shape.
+
+On the routing artifact:
 
 - **Overload `RoutingArtifact` with optional gateway/`local` fields** rather than a sibling type.
   Rejected: it reintroduces the tagged-union shape ADR-0050 deliberately avoided; a `local`-out-`lo`
