@@ -143,16 +143,23 @@ def setup_commands(topo: Topology) -> list[list[str]]:
     cmds.append(
         [IP, "netns", "exec", topo.router, "sysctl", "-qw", "net.ipv6.conf.all.forwarding=1"]
     )
-    for endpoint in topo.endpoints:
-        cmds += _endpoint_commands(topo.router, endpoint)
+    for index, endpoint in enumerate(topo.endpoints):
+        cmds += _endpoint_commands(topo.router, endpoint, index)
     return cmds
 
 
-def _endpoint_commands(router: str, e: Endpoint) -> list[list[str]]:
+def _endpoint_commands(router: str, e: Endpoint, index: int) -> list[list[str]]:
+    # Create the pair under collision-proof temp names in the root ns, move each end into its
+    # target namespace, then rename it to the caller's name *inside* that namespace. Naming the
+    # veths in the root ns after the caller's (`e.iface`/`e.peer`) would collide with any host
+    # device of the same name — e.g. a real `eth0` — and hard-fail (`ip link add` exit 2).
+    tmp_router, tmp_peer = f"snfv{index}a", f"snfv{index}b"
     cmds = [
-        [IP, "link", "add", e.iface, "type", "veth", "peer", "name", e.peer],
-        [IP, "link", "set", e.iface, "netns", router],
-        [IP, "link", "set", e.peer, "netns", e.name],
+        [IP, "link", "add", tmp_router, "type", "veth", "peer", "name", tmp_peer],
+        [IP, "link", "set", tmp_router, "netns", router],
+        [IP, "link", "set", tmp_peer, "netns", e.name],
+        [IP, "-n", router, "link", "set", tmp_router, "name", e.iface],
+        [IP, "-n", e.name, "link", "set", tmp_peer, "name", e.peer],
         [IP, "-n", router, "addr", "add", e.router4, "dev", e.iface],
         [IP, "-n", e.name, "addr", "add", e.addr4, "dev", e.peer],
         [IP, "-n", router, "link", "set", e.iface, "up"],

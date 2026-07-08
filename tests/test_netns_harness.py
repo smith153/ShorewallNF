@@ -86,9 +86,28 @@ def test_setup_creates_namespaces_first() -> None:
 
 def test_setup_creates_and_moves_veth_pairs() -> None:
     cmds = nh.setup_commands(TOPO)
-    assert ["ip", "link", "add", "v_cli", "type", "veth", "peer", "name", "p_cli"] in cmds
-    assert ["ip", "link", "set", "v_cli", "netns", "snf_r"] in cmds
-    assert ["ip", "link", "set", "p_cli", "netns", "snf_client"] in cmds
+    # The pair is created under collision-proof temp names in the root ns, moved into place, then
+    # renamed to the caller's names *inside* each namespace (never `ip link add v_cli` in root).
+    tmp_r, tmp_e = "snfv0a", "snfv0b"
+    assert ["ip", "link", "add", tmp_r, "type", "veth", "peer", "name", tmp_e] in cmds
+    assert ["ip", "link", "set", tmp_r, "netns", "snf_r"] in cmds
+    assert ["ip", "link", "set", tmp_e, "netns", "snf_client"] in cmds
+    assert ["ip", "-n", "snf_r", "link", "set", tmp_r, "name", "v_cli"] in cmds
+    assert ["ip", "-n", "snf_client", "link", "set", tmp_e, "name", "p_cli"] in cmds
+
+
+def test_root_namespace_creation_never_uses_caller_device_names() -> None:
+    # Regression (PR #270): a caller may name its router-side veth after a real device (e.g. `eth0`,
+    # to match a fixture's `iifname`). Creating that name in the root ns collides with a host device
+    # of the same name and hard-fails, so the harness must only ever touch caller names *inside* a
+    # namespace (an `ip -n <ns> …` command), never in the root ns.
+    ep = nh.Endpoint(
+        name="ns_a", iface="eth0", peer="eth1", addr4="192.0.2.2/24", router4="192.0.2.1/24"
+    )
+    cmds = nh.setup_commands(nh.Topology(router="r", endpoints=(ep,)))
+    for cmd in cmds:
+        if "eth0" in cmd or "eth1" in cmd:
+            assert cmd[:2] == ["ip", "-n"], f"caller device name used in root namespace: {cmd}"
 
 
 def test_setup_assigns_addresses_and_default_route() -> None:
