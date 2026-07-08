@@ -94,7 +94,7 @@ to "a stranger can install and trust it":
 
 ### Post-MVP backlog
 
-- QoS / traffic shaping (`tc*`)
+- QoS / traffic shaping (`tc*`) — out of scope; traffic shaping is delegated to the systemd level (systemd-networkd), see [ADR-0060](docs/adr/0060-qos-out-of-scope-delegate-to-systemd.md)
 - Advanced interface hardening options
 - Shorewall-corpus comparison spike (nft↔iptables behavioral diffing)
 
