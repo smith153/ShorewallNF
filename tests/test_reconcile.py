@@ -23,6 +23,7 @@ from reconcile.core import (
     batch_conflict_actions,
     batch_gate_red_actions,
     batch_promote_actions,
+    gate_env,
     reconcile,
 )
 
@@ -662,3 +663,70 @@ def test_batch_gate_red_actions_holds_flags_and_needs_human() -> None:  # 8c
         cs = [a for a in acts if a.kind is ActionKind.COMMENT and a.on_pr and a.number == pr]
         assert len(cs) == 1 and AGENT_SIGN in cs[0].value and "pytest" in cs[0].value
         assert cs[0].reason == "batch-gate-red"
+
+
+# --- gate_env: default-deny allow-list for the batch-gate subprocess (#277) ----------------
+
+# A synthetic environ that mixes essentials with the exact credential shapes the gate must
+# never leak to the merged, unreviewed code it executes. Never uses the real os.environ.
+_DIRTY_ENVIRON = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/home/runner",
+    "LANG": "en_US.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+    "TMPDIR": "/tmp/scratch",
+    "VIRTUAL_ENV": "/work/.venv",
+    "CI": "true",
+    "PYTHONPATH": "/work/src",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "GH_TOKEN": "ghp_secret",
+    "GITHUB_TOKEN": "ghs_secret",
+    "GITHUB_REPOSITORY": "smith153/ShorewallNF",
+    "ACTIONS_RUNTIME_TOKEN": "runtime_secret",
+    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://example/idtoken",
+    "AWS_SECRET_ACCESS_KEY": "aws_secret",
+    "SOME_TOKEN": "opaque",
+}
+
+
+def test_gate_env_strips_every_credential() -> None:
+    scrubbed = gate_env(_DIRTY_ENVIRON)
+    for leaked in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GITHUB_REPOSITORY",
+        "ACTIONS_RUNTIME_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "AWS_SECRET_ACCESS_KEY",
+        "SOME_TOKEN",
+    ):
+        assert leaked not in scrubbed
+    # nothing matching the credential shapes survives, whatever the name
+    assert not any(
+        k.startswith(("GITHUB_", "ACTIONS_")) or k.endswith(("_TOKEN", "_SECRET"))
+        for k in scrubbed
+    )
+
+
+def test_gate_env_keeps_the_essentials() -> None:
+    scrubbed = gate_env(_DIRTY_ENVIRON)
+    for kept in (
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "TMPDIR",
+        "VIRTUAL_ENV",
+        "CI",
+        "PYTHONPATH",
+        "PYTHONDONTWRITEBYTECODE",
+    ):
+        assert scrubbed[kept] == _DIRTY_ENVIRON[kept]
+
+
+def test_gate_env_only_passes_present_keys() -> None:
+    # default-deny: an allow-listed name that isn't in the source environ isn't invented.
+    assert gate_env({"PATH": "/bin"}) == {"PATH": "/bin"}
+    assert "VIRTUAL_ENV" not in gate_env({"PATH": "/bin"})
