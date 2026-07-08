@@ -7,6 +7,8 @@ a ping) is gated on :func:`netns_harness.netns_available` and skipped cleanly wi
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
 from shorewallnf.generator import generate
@@ -216,6 +218,36 @@ def test_probe_command_carries_mark_and_timeout() -> None:
 
 def test_probe_command_defaults_to_unmarked() -> None:
     assert nh.probe_command("ns", "127.0.0.1", 9239)[7:] == ["127.0.0.1", "9239", "0", "1.0"]
+
+
+# ---- teardown-on-failure (hermetic, root-free via _run injection) -----------------------
+
+
+def test_enter_tears_down_when_setup_fails_midway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mid-setup command failure must tear down what was created before re-raising, so a
+    partially-built sandbox never leaks namespaces into the next run (issue #273). Proven without
+    root by injecting a failing ``_run``: assert the original error re-raises and every
+    ``teardown_commands`` argv is invoked afterward."""
+    setup = nh.setup_commands(TOPO)
+    fail_at = setup[2]  # a mid-setup command, after some namespaces already exist
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: Sequence[str], *, check: bool = True, stdin_text: str | None = None) -> None:
+        calls.append(list(cmd))
+        if list(cmd) == fail_at:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(nh, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with nh.NetnsSandbox(TOPO):
+            pass
+
+    failure_index = calls.index(fail_at)
+    teardown = nh.teardown_commands(TOPO)
+    # Every teardown argv ran, and each ran only after the setup failure.
+    for cmd in teardown:
+        assert cmd in calls[failure_index + 1 :], f"teardown missing after failure: {cmd}"
 
 
 # ---- behavioral tier (gated: root + ip/nft) ---------------------------------------------
