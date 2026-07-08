@@ -87,6 +87,18 @@ There is no separate "AI memory" — the tracker and these docs are the shared s
 
 ## Dev setup
 
+The `Makefile` is the entry point — the first `make` bootstraps a per-worktree `.venv`
+(mirrors CI: `--system-site-packages` so `python3-nftables` is importable, editable install so
+the netns subprocess resolves with no `PYTHONPATH`); later runs are instant.
+
+```bash
+make check    # lint + type + test (as your user)
+make netns    # privileged behavioral tier (uses sudo)
+make nft      # privileged `nft --check` dry-run tier (uses sudo)
+```
+
+Equivalent raw commands, if you prefer to drive them yourself:
+
 ```bash
 python -m pip install -e ".[dev]"
 python -m ruff check . && python -m mypy && python -m pytest -v
