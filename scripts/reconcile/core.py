@@ -32,9 +32,40 @@ The rules mirror the judgment-free half of pipeline/roles/merge-readiness.md:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+
+#: Environment names the batch-gate subprocess is allowed to inherit, plus the prefixes
+#: :func:`gate_env` also keeps (``LC_*`` locale categories; ``PYTHON*`` interpreter tuning like
+#: ``PYTHONPATH``). Everything else is dropped — a default-deny allow-list, not a deny-list — so
+#: the merged, *unreviewed* contributor code the gate executes can read only what ruff/mypy/
+#: pytest need, never a runner credential (``GITHUB_*``, ``ACTIONS_*``, ``*_TOKEN``, ``*_SECRET``).
+GATE_ENV_ALLOW = frozenset(
+    {"PATH", "HOME", "LANG", "TZ", "TMPDIR", "VIRTUAL_ENV", "CI"}
+)
+GATE_ENV_ALLOW_PREFIXES = ("LC_", "PYTHON")
+
+
+def gate_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """The scrubbed environment for the batch-gate subprocess: ``environ`` filtered to the
+    :data:`GATE_ENV_ALLOW` names and :data:`GATE_ENV_ALLOW_PREFIXES` prefixes only (default-deny).
+
+    Pure (data-in → data-out, no I/O) so it can be unit-tested over a synthetic dict without
+    spawning a process — the shell passes it the real ``os.environ``. Filtering by name never
+    invents an absent key, so only variables actually present survive.
+
+    This closes the gate child's *own* environment as a credential source. It does **not** close
+    the parent-process gap: on a privileged run the reconcile job's write-scoped token still lives
+    in the parent, recoverable from ``/proc/<ppid>/environ`` by same-UID child code — tracked
+    separately as #280.
+    """
+    return {
+        k: v
+        for k, v in environ.items()
+        if k in GATE_ENV_ALLOW or k.startswith(GATE_ENV_ALLOW_PREFIXES)
+    }
 
 #: The mutually-exclusive primary pipeline states. ``status:blocked`` is an allowed
 #: *accumulation* on top of one of these; ``status:decomposing`` is retired (epics are now

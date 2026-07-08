@@ -33,6 +33,7 @@ from reconcile.core import (
     batch_conflict_actions,
     batch_gate_red_actions,
     batch_promote_actions,
+    gate_env,
     reconcile,
 )
 
@@ -293,9 +294,12 @@ def _pr_branch(number: int) -> str:
 def _run_gate(cwd: str) -> str | None:
     """Run ``ruff``/``mypy``/``pytest`` on the merged tree at ``cwd`` (mirrors ``make check`` —
     ``-m 'not nft'`` skips the privileged nft tier). Return the first failing gate's name, or
-    ``None`` if all pass. ``GH_TOKEN`` is stripped from the child env so the *unreviewed* merged
-    code executed here can never read the write token."""
-    env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+    ``None`` if all pass. The child env is a default-deny allow-list (:func:`gate_env`) so the
+    *unreviewed* merged code executed here inherits no runner credential — no ``GITHUB_*``,
+    ``ACTIONS_*``, ``*_TOKEN`` or ``*_SECRET``. This does NOT close the parent-process gap: on a
+    privileged run the reconcile job's write-scoped token still lives in the parent and is
+    recoverable from ``/proc/<ppid>/environ`` by same-UID child code (tracked as #280)."""
+    env = gate_env(os.environ)
     gates: tuple[tuple[str, list[str]], ...] = (
         ("ruff", ["python", "-m", "ruff", "check", "."]),
         ("mypy", ["python", "-m", "mypy"]),
