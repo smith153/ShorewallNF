@@ -18,6 +18,8 @@ from typing import Any
 from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
 from .ir import (
+    TPROXY_MARK,
+    TPROXY_TABLE_ID,
     ConntrackHelper,
     Family,
     HelperCapabilities,
@@ -29,6 +31,7 @@ from .ir import (
     RoutingArtifact,
     Rule,
     Ruleset,
+    TproxyRoutingArtifact,
     Zone,
 )
 
@@ -111,6 +114,36 @@ def _provider_routing(provider: Provider) -> RoutingArtifact:
         gateway=provider.gateway,
         interface=provider.interface,
         family=provider.family,
+    )
+
+
+def generate_tproxy_routing(ruleset: Ruleset) -> tuple[TproxyRoutingArtifact, ...]:
+    """Lower TPROXY rules into local-delivery routing artifacts (ADR-0051 Part B).
+
+    The transparent-proxy half of the second output channel: a TPROXY'd packet carries the
+    reserved :data:`TPROXY_MARK`, and one ``ip rule fwmark`` selects the reserved
+    :data:`TPROXY_TABLE_ID`, whose ``local`` route out ``lo`` delivers it to the local listener.
+    Emits **one** artifact per family that has any TPROXY rule — not one per rule (all tproxy rules
+    share the one reserved mark and table) — deterministically v4 before v6. Empty when no TPROXY.
+    A TPROXY rule with an ambiguous family fails closed (ADR-0004), as in the nft channel: a
+    ``local`` route is per-family (ADR-0002). Pure ``IR → data``, no I/O.
+    """
+    seen: set[Family] = set()
+    for rule in ruleset.mangle_rules:
+        if rule.action != "TPROXY":
+            continue
+        if rule.family is Family.BOTH:
+            raise ConfigError(
+                "TPROXY needs a concrete family — narrow the rule to IPv4 or IPv6 "
+                "(local-delivery routing tables are per-family)",
+                path=rule.path,
+                line=rule.line,
+            )
+        seen.add(rule.family)
+    return tuple(
+        TproxyRoutingArtifact(table_id=TPROXY_TABLE_ID, fwmark=TPROXY_MARK, family=family)
+        for family in (Family.IPV4, Family.IPV6)
+        if family in seen
     )
 
 
