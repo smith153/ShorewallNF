@@ -110,3 +110,16 @@ def test_unsupported_log_level_error_is_located() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_policies(_records("loc net ACCEPT", "net all DROP warning"), _ZONES)
     assert exc.value.line == 2
+
+
+def test_parsed_policy_carries_source_location() -> None:
+    # #316: located diagnostics — the parser stamps the row's path/line onto the IR.
+    (policy,) = parse_policies(_records("loc net ACCEPT"), _ZONES)
+    assert (policy.path, policy.line) == ("policy", 1)
+
+
+def test_policy_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = Policy(source="loc", dest="net", action="ACCEPT", path="policy", line=1)
+    b = Policy(source="loc", dest="net", action="ACCEPT", path="other", line=9)
+    assert a == b

@@ -113,3 +113,18 @@ def test_error_carries_source_location() -> None:
         parse_snat(_records("MASQUERADE 10.0.0.0/8 eth0", "BOGUS 10.0.0.0/8 eth0"))
     assert exc.value.line == 2
     assert exc.value.path == "snat"
+
+
+def test_parsed_snat_carries_source_location() -> None:
+    # #316: located diagnostics — the parser stamps the row's path/line onto the IR.
+    assert (_one("MASQUERADE 10.0.0.0/8 eth0").path,
+            _one("MASQUERADE 10.0.0.0/8 eth0").line) == ("snat", 1)
+
+
+def test_snat_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0",
+            family=Family.IPV4, path="snat", line=1)
+    b = Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0",
+            family=Family.IPV4, path="other", line=9)
+    assert a == b
