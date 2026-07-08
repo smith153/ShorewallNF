@@ -1,0 +1,5 @@
+# Steer a TCP flow onto provider wanA by stamping its fwmark (0x1) in prerouting, ahead of the
+# routing decision (ADR-0042). The provider's ip-rule (providers file) then selects wanA's table.
+# Only the matched dport is marked; any other flow is left unmarked and follows the default route.
+#ACTION      SOURCE   DEST   PROTO   DPORT
+MARK(0x1)    loc      -      tcp     9238
