@@ -14,6 +14,7 @@ import pytest
 from reconcile.core import ActionKind, Board, Issue, Mergeability, PullRequest
 from reconcile.run import (
     BatchResult,
+    _batch_gate,
     _blocked_by,
     _ci_green,
     _freshness,
@@ -290,3 +291,58 @@ def test_process_batch_gate_red_flags_needs_human(monkeypatch: pytest.MonkeyPatc
     acts = _process_batch(list(board.pulls), board)
     assert _promoted(acts) == set()
     assert any(a.kind is ActionKind.ADD_LABEL and a.value == "needs-human" for a in acts)
+
+
+# --- _batch_gate: skip test-merging unreviewed code on pull_request events (#268) -------------
+
+
+def test_batch_gate_skips_test_merge_on_pull_request(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 2+ promote-eligible PRs would normally trigger the joint test-merge + gate, but a
+    # pull_request event runs the PR's unmerged code and can never promote (RECONCILE_APPLY is
+    # false there), so the gate must not check out, merge, or execute any of it.
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setattr(
+        "reconcile.run._test_merge_batch",
+        lambda c, b: pytest.fail("test-merge must not run on pull_request"),
+    )
+    monkeypatch.setattr(
+        "reconcile.run._run_gate", lambda cwd: pytest.fail("gate must not run on pull_request")
+    )
+    _batch_gate(_board(7, 8), apply=False)
+    assert "skipped on pull_request" in capsys.readouterr().out
+
+
+def _record_test_merge(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Stub ``_test_merge_batch`` to a no-op CLEAN and record each invocation."""
+    called: list[bool] = []
+
+    def fake_test_merge(c: object, b: object) -> tuple[BatchResult, str]:
+        called.append(True)
+        return BatchResult.CLEAN, ""
+
+    monkeypatch.setattr("reconcile.run._test_merge_batch", fake_test_merge)
+    return called
+
+
+def test_batch_gate_runs_test_merge_on_non_pull_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every other trigger (schedule / issues / check_suite) is unchanged: 2+ eligible PRs still
+    # get test-merged and gated exactly as #247 delivers.
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    called = _record_test_merge(monkeypatch)
+    _batch_gate(_board(7, 8), apply=False)
+    assert called == [True]
+
+
+def test_batch_gate_workflow_dispatch_dry_run_still_previews_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The skip is scoped to pull_request, not to dry-run in general: a workflow_dispatch dry-run
+    # (apply=False) must still run the gate so a human can preview the outcome.
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    called = _record_test_merge(monkeypatch)
+    _batch_gate(_board(7, 8), apply=False)
+    assert called == [True]

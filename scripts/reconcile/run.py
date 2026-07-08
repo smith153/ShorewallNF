@@ -412,8 +412,16 @@ def _batch_gate(board: Board, apply: bool) -> None:
     them together and promote only if the combined tree passes; otherwise hold + flag. Fully
     isolated — any git/gate error here is logged and swallowed so it can never abort the R1/R2/
     single-PR-R3 actions already applied above. The writes it emits are ``RECONCILE_APPLY``-gated
-    exactly like the rest (and RECONCILE_APPLY is already false on ``pull_request`` events, so a
-    test-merge of unreviewed code never drives a mutation from that unsafe context)."""
+    exactly like the rest.
+
+    Skipped entirely on ``pull_request`` events (#268): those run the PR's unmerged code and
+    ``RECONCILE_APPLY`` is already false there, so a test-merge could never promote — checking
+    out, merging, and running other PRs' unreviewed code would be pure attack surface for zero
+    benefit. The skip is scoped to ``pull_request`` alone: a ``workflow_dispatch`` dry-run still
+    previews the gate."""
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        print("batch test-merge gate: skipped on pull_request event")
+        return
     try:
         candidates = batch_candidates(board)
         if len(candidates) < 2:
