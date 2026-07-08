@@ -1,0 +1,4 @@
+# Admit net->fw so the transparently-proxied flow reaches the local proxy socket; the return
+# leg rides the established/related fast-path (ADR-0005). Everything else falls through to drop.
+net fw ACCEPT
+all all DROP
