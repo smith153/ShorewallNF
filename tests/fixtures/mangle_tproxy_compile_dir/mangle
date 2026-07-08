@@ -1,0 +1,11 @@
+# Transparent-proxy mangle intent, abstract (RFC 5737 / RFC 3849 ranges only). Order is
+# meaningful and mirrors the nftables tproxy idiom:
+#   1. CONNMARK stamps the connection so the mark is observable on every packet of the flow.
+#   2. DIVERT keeps an already-established transparent-proxy socket local (matched before TPROXY,
+#      so established packets are diverted rather than re-redirected).
+#   3. TPROXY redirects a new connection to the local proxy port and marks it (0x1) so policy
+#      routing can deliver it to the local listener.
+#ACTION               SOURCE                DEST   PROTO   DPORT
+CONNMARK(0x2/0xff)    net:198.51.100.0/24   -      tcp     80
+DIVERT                net                   -      tcp     -
+TPROXY(50080,0x1)     net:198.51.100.0/24   -      tcp     80
