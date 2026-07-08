@@ -3,6 +3,9 @@
 # Published to GitHub Pages by .github/workflows/docs.yml on push to master.
 site_name: ShorewallNF
 site_description: An nftables-native reimplementation of Shorewall, written in Python.
+# Project site served under the /ShorewallNF/ subpath; used for the sitemap and
+# canonical links. Change this if a custom domain is configured in Pages settings.
+site_url: https://smith153.github.io/ShorewallNF/
 repo_url: https://github.com/smith153/ShorewallNF
 repo_name: smith153/ShorewallNF
 edit_uri: edit/master/docs/
