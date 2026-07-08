@@ -46,6 +46,11 @@ boot-time restore.
 
 Both humans and AI agents are welcome. Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
 
+## Security
+
+How to report a vulnerability, and the CI/token controls that keep contributing in the open safe
+(fork PRs get a read-only token and no secrets): [`SECURITY.md`](SECURITY.md).
+
 ## License
 
 [GPL-2.0-only](LICENSE), matching the original Shorewall.
