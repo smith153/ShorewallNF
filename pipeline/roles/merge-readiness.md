@@ -60,13 +60,22 @@ gh issue list --label status:in-progress --state open --limit 100
    on another PR's branch) isn't mergeable to `master` yet — skip it until its base merges and
    GitHub retargets it to `master`.
 
-**Batch test-merge gate** — the checks above vet each PR *in isolation*, but two independently-green
-PRs can still break `master` when merged **together**: a symbol renamed in one vs. its caller in
-another (#173/#174), a hardcoded CI count-guard vs. a newly-added test (#183/#199), or several PRs
-appending to the same file tail (#205/#208/#209). Per-PR CI never sees the interaction. So before
-promoting **more than one** PR in a single sweep (or handing a batch to the human), test-merge the
-`review-passed` branches together onto the **current master tip** (`origin/master`) and run the full
-gate:
+**Batch test-merge gate** — _automated by the Action (#247)._ When a reconcile pass finds **2+**
+promote-eligible PRs it now test-merges their branches together onto the current `origin/master`
+tip (each merge committed before the next), runs `ruff`/`mypy`/`pytest` on the combined tree, and
+promotes to `status:ready-to-merge` **only** if the whole batch is green — otherwise it holds the
+batch at `status:review-passed` and posts a signed flag (adding `needs-human` on a red merged gate).
+A lone promote-eligible PR skips the test-merge and promotes as before. The pure candidate selection
+and the promote/hold action sets live in `scripts/reconcile/core.py`; the git merge + gate execution
+is the shell (`scripts/reconcile/run.py`). **Run the steps below by hand only when the Action is
+disabled or broken.**
+
+The checks above vet each PR *in isolation*, but two independently-green PRs can still break
+`master` when merged **together**: a symbol renamed in one vs. its caller in another (#173/#174), a
+hardcoded CI count-guard vs. a newly-added test (#183/#199), or several PRs appending to the same
+file tail (#205/#208/#209). Per-PR CI never sees the interaction. So before promoting **more than
+one** PR in a single sweep (or handing a batch to the human), test-merge the `review-passed`
+branches together onto the **current master tip** (`origin/master`) and run the full gate:
 
 ```bash
 git fetch origin

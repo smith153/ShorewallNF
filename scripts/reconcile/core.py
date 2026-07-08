@@ -344,7 +344,25 @@ def _reap_stale(
     return actions
 
 
-def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
+def _promote(task_number: int, pr_number: int) -> list[Action]:
+    """The R3 promote action triple: swap review-passed → ready-to-merge + a signed PR note."""
+    return [
+        Action(ActionKind.REMOVE_LABEL, task_number, "status:review-passed", reason="ready"),
+        Action(ActionKind.ADD_LABEL, task_number, "status:ready-to-merge", reason="ready"),
+        Action(
+            ActionKind.COMMENT,
+            pr_number,
+            _sign(
+                "Merge-ready: CI green, AI review passed and current, up to date with "
+                "master. Awaiting human merge."
+            ),
+            on_pr=True,
+            reason="ready",
+        ),
+    ]
+
+
+def _promote_and_refresh(board: Board, skip: set[int], batch_deferred: set[int]) -> list[Action]:
     by_number = {i.number: i for i in board.issues}
     actions: list[Action] = []
     for pr in board.pulls:
@@ -438,37 +456,168 @@ def _promote_and_refresh(board: Board, skip: set[int]) -> list[Action]:
             # PENDING: mergeability not computed yet (or draft) — don't promote and don't
             # mistake it for "behind". Re-checked next run once GitHub settles it.
             continue
-        # R3: green, current, up to date, on master — promote.
+        # R3: green, current, up to date, on master — promotable. But when 2+ PRs are
+        # promotable in one pass (#247), the promotion is deferred to the shell's batch
+        # test-merge gate: it merges the candidate branches together onto the current master
+        # tip and re-runs ruff/mypy/pytest, so a pair that breaks only when combined (a rename
+        # vs. its caller, a guard vs. a new test) is caught before either is promoted. A lone
+        # candidate has nothing to compose with and promotes inline exactly as before.
+        if pr.number in batch_deferred:
+            continue
+        actions += _promote(task.number, pr.number)
+    return actions
+
+
+def _is_promotable(pr: PullRequest, task: Issue) -> bool:
+    """The full R3 promote gate for one PR: review-passed, review-current, not blocked, based on
+    master, CI green, and up to date (``READY``). This is exactly the condition under which
+    :func:`_promote_and_refresh` would promote — factored out so candidate *selection* (the batch
+    to test-merge) and the inline promote decision can never diverge."""
+    return (
+        "status:review-passed" in task.labels
+        and _review_current(pr)
+        and BLOCKED not in task.labels
+        and pr.base_ref == "master"
+        and pr.ci_green
+        and pr.mergeability is Mergeability.READY
+    )
+
+
+def select_promotion_candidates(board: Board, skip: set[int]) -> list[PullRequest]:
+    """Every PR that individually passes the R3 promote gate, ordered by PR number (a stable,
+    deterministic test-merge order). Pure — no git/test I/O."""
+    by_number = {i.number: i for i in board.issues}
+    out: list[PullRequest] = []
+    for pr in board.pulls:
+        if pr.task is None or pr.task in skip:
+            continue
+        task = by_number.get(pr.task)
+        if task is not None and _is_promotable(pr, task):
+            out.append(pr)
+    return sorted(out, key=lambda pr: pr.number)
+
+
+def batch_candidates(board: Board) -> list[PullRequest]:
+    """The promote-eligible PRs that must be test-merged **together** before any is promoted —
+    i.e. the R3 candidates when 2+ are eligible in one pass. A batch of 0 or 1 returns ``[]``
+    (those promote inline via :func:`reconcile`; a lone PR has nothing to compose with).
+
+    Uses the same skip set (self-heal / invariant normalization) as :func:`reconcile`, so the
+    batch and the inline-deferral decision are computed from one source of truth."""
+    _, _, _, skip = _normalize(board)
+    candidates = select_promotion_candidates(board, skip)
+    return candidates if len(candidates) >= 2 else []
+
+
+def batch_promote_actions(candidates: list[PullRequest], board: Board) -> list[Action]:
+    """Promote every batch member that survived the joint test-merge (all of them, since the
+    gate is all-or-nothing). Same label swap as the inline R3 promote, with a batch-aware note."""
+    by_number = {i.number: i for i in board.issues}
+    n = len(candidates)
+    actions: list[Action] = []
+    for pr in candidates:
+        if pr.task is None or pr.task not in by_number:
+            continue
         actions += [
-            Action(ActionKind.REMOVE_LABEL, task.number, "status:review-passed", reason="ready"),
-            Action(ActionKind.ADD_LABEL, task.number, "status:ready-to-merge", reason="ready"),
+            Action(
+                ActionKind.REMOVE_LABEL, pr.task, "status:review-passed", reason="batch-ready"
+            ),
+            Action(ActionKind.ADD_LABEL, pr.task, "status:ready-to-merge", reason="batch-ready"),
             Action(
                 ActionKind.COMMENT,
                 pr.number,
                 _sign(
-                    "Merge-ready: CI green, AI review passed and current, up to date with "
-                    "master. Awaiting human merge."
+                    f"Merge-ready: CI green, AI review passed and current, up to date with "
+                    f"master, and this batch of {n} promote-eligible PRs test-merged together "
+                    f"onto the current master tip with a green gate. Awaiting human merge."
                 ),
                 on_pr=True,
-                reason="ready",
+                reason="batch-ready",
             ),
         ]
     return actions
 
 
+def batch_conflict_actions(candidates: list[PullRequest], detail: str = "") -> list[Action]:
+    """Batch branches don't merge cleanly together: hold the **whole** batch at
+    ``review-passed`` (no label edits) and flag the conflict on each PR with a signed comment.
+    No ``needs-human`` — a rebase clears it, which the freshness/nudge machinery re-checks."""
+    batch = ", ".join(f"#{pr.number}" for pr in candidates)
+    where = f" (conflict at `{detail}`)" if detail else ""
+    actions: list[Action] = []
+    for pr in candidates:
+        actions.append(
+            Action(
+                ActionKind.COMMENT,
+                pr.number,
+                _sign(
+                    f"Batch test-merge conflict: the promote-eligible batch ({batch}) does not "
+                    f"merge cleanly onto the current master tip{where}. Holding the whole batch "
+                    f"at `status:review-passed` — not promoting. Please rebase/resolve so the "
+                    f"branches compose, and the batch gate will re-run."
+                ),
+                on_pr=True,
+                reason="batch-conflict",
+            )
+        )
+    return actions
+
+
+def batch_gate_red_actions(candidates: list[PullRequest], failing_gate: str) -> list[Action]:
+    """The merged tree is red (``ruff``/``mypy``/``pytest`` failed on the combined branches):
+    hold the **whole** batch at ``review-passed`` (no promotion), name the failing gate on each
+    PR with a signed comment, and add ``needs-human`` — a combined-only failure needs a human to
+    decide which PR to change."""
+    batch = ", ".join(f"#{pr.number}" for pr in candidates)
+    actions: list[Action] = []
+    for pr in candidates:
+        if pr.task is not None:
+            actions.append(
+                Action(ActionKind.ADD_LABEL, pr.task, NEEDS_HUMAN, reason="batch-gate-red")
+            )
+        actions.append(
+            Action(
+                ActionKind.COMMENT,
+                pr.number,
+                _sign(
+                    f"Batch test-merge gate failed: the promote-eligible batch ({batch}) merges "
+                    f"cleanly but `{failing_gate}` fails on the combined tree — a break that only "
+                    f"appears when these PRs are merged together. Holding the whole batch at "
+                    f"`status:review-passed` (not promoting) and flagging for a human to decide "
+                    f"which PR to change."
+                ),
+                on_pr=True,
+                reason="batch-gate-red",
+            )
+        )
+    return actions
+
+
+def _normalize(
+    board: Board,
+) -> tuple[list[Action], dict[int, frozenset[str]], set[int], set[int]]:
+    """Shared self-heal + invariant analysis: returns ``(heal actions, healed primaries,
+    violators, skip)``. The skip set (issues normalized this pass) is excluded from the
+    downstream sweeps so a strip and a reap/promote can't issue conflicting label edits on one
+    issue in a single pass. Used by both :func:`reconcile` and :func:`batch_candidates` so the
+    batch and the inline-deferral decision share one source of truth."""
+    heal, healed = _self_heal_stale(board.issues)
+    violators = _invariant_violators(board.issues, healed)
+    skip = violators | {a.number for a in heal}
+    return heal, healed, violators, skip
+
+
 def reconcile(board: Board, *, now: datetime, stale_after: timedelta) -> list[Action]:
     """Return every action needed to drive ``board`` to its correct pipeline state."""
-    heal, healed = _self_heal_stale(board.issues)
-    healed_numbers = {a.number for a in heal}
-    violators = _invariant_violators(board.issues, healed)
-    # Skip an issue we normalize this pass from the downstream sweeps so a strip and a
-    # reap/promote can't issue conflicting label edits on it in one pass; it re-derives cleanly
-    # next pass (level-triggered — the unlabeled event re-triggers, cron backstops).
-    skip = violators | healed_numbers
+    heal, healed, violators, skip = _normalize(board)
+    # When 2+ PRs are promote-eligible in one pass, defer their promotion from the inline R3 path
+    # to the shell's batch test-merge gate (#247); a lone candidate still promotes inline.
+    candidates = select_promotion_candidates(board, skip)
+    batch_deferred = {pr.number for pr in candidates} if len(candidates) >= 2 else set()
     return [
         *heal,
         *_flag_invariant(board.issues, violators, healed),
         *_unblock(board.issues, board.blocker_state, skip=skip),
         *_reap_stale(board.issues, now, stale_after, skip=skip),
-        *_promote_and_refresh(board, skip=skip),
+        *_promote_and_refresh(board, skip=skip, batch_deferred=batch_deferred),
     ]

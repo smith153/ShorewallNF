@@ -16,7 +16,9 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any
 
 from reconcile.core import (
@@ -27,6 +29,10 @@ from reconcile.core import (
     Issue,
     Mergeability,
     PullRequest,
+    batch_candidates,
+    batch_conflict_actions,
+    batch_gate_red_actions,
+    batch_promote_actions,
     reconcile,
 )
 
@@ -236,14 +242,25 @@ def _rebase_marker(oid: str) -> str:
     return f"<!-- snf-agent:reconcile:rebase:{oid} -->"
 
 
-def _nudged_for_head(number: int) -> tuple[bool, str]:
-    """``(already-nudged-for-current-head, head-oid)``. Keyed on the head SHA, not a timestamp,
-    so it's immune to committer-clock skew: a nudge repeats only when the head actually changes."""
+def _batch_marker(oid: str) -> str:
+    return f"<!-- snf-agent:reconcile:batch:{oid} -->"
+
+
+def _commented_for_head(number: int, marker_of: Any) -> tuple[bool, str]:
+    """``(a comment carrying marker_of(head-oid) already exists, head-oid)``. Keyed on the head
+    SHA, not a timestamp, so it's immune to committer-clock skew: the comment repeats only when
+    the head actually changes. Shared by the rebase nudge and the batch conflict/gate flags so a
+    persistent condition is flagged once per head, not every cron pass."""
     info = _gh_json("pr", "view", str(number), "--json", "headRefOid,comments")
     oid = str(info["headRefOid"])
-    marker = _rebase_marker(oid)
+    marker = marker_of(oid)
     hit = any(marker in str(c.get("body") or "") for c in (info["comments"] or []))
     return hit, oid
+
+
+def _nudged_for_head(number: int) -> tuple[bool, str]:
+    """``(already-nudged-for-current-head, head-oid)`` — the R3c persistence signal."""
+    return _commented_for_head(number, _rebase_marker)
 
 
 def _try(*args: str) -> None:
@@ -253,6 +270,82 @@ def _try(*args: str) -> None:
         _gh(*args)
     except subprocess.CalledProcessError as e:
         print(f"  ! gh {' '.join(args)} failed: {(e.stderr or '').strip() or e}")
+
+
+class BatchResult(Enum):
+    """Outcome of test-merging a promote-eligible batch together onto the current master tip."""
+
+    CLEAN = "clean"  # every branch merged and the gate is green -> promote the batch
+    CONFLICT = "conflict"  # branches don't merge cleanly -> hold + flag (no needs-human)
+    GATE_RED = "gate_red"  # merged tree fails ruff/mypy/pytest -> hold + flag + needs-human
+
+
+def _git(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a git command, capturing output; the caller inspects ``returncode`` (git errors are a
+    normal signal here — a merge conflict is data, not an exception)."""
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+def _pr_branch(number: int) -> str:
+    return str(_gh_json("pr", "view", str(number), "--json", "headRefName")["headRefName"])
+
+
+def _run_gate(cwd: str) -> str | None:
+    """Run ``ruff``/``mypy``/``pytest`` on the merged tree at ``cwd`` (mirrors ``make check`` —
+    ``-m 'not nft'`` skips the privileged nft tier). Return the first failing gate's name, or
+    ``None`` if all pass. ``GH_TOKEN`` is stripped from the child env so the *unreviewed* merged
+    code executed here can never read the write token."""
+    env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+    gates: tuple[tuple[str, list[str]], ...] = (
+        ("ruff", ["python", "-m", "ruff", "check", "."]),
+        ("mypy", ["python", "-m", "mypy"]),
+        ("pytest", ["python", "-m", "pytest", "-q", "-m", "not nft"]),
+    )
+    for name, cmd in gates:
+        result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"  batch gate `{name}` failed (rc={result.returncode})")
+            return name
+    return None
+
+
+def _test_merge_batch(
+    candidates: list[PullRequest], board: Board
+) -> tuple[BatchResult, str]:
+    """Test-merge the candidate branches together onto the current ``origin/master`` tip in a
+    throwaway worktree — each merge committed before the next — then run the gate. Returns
+    ``(result, detail)`` where detail is the conflicting branch (CONFLICT) or the failing gate
+    (GATE_RED). The worktree is always removed, and git/merge errors surface as a result, never
+    an exception the caller must handle (it wraps this in its own isolation guard regardless)."""
+    _git("fetch", "--no-tags", "--quiet", "origin")
+    path = tempfile.mkdtemp(prefix="snf-batch-")
+    os.rmdir(path)  # `git worktree add` wants to create the dir itself
+    _git("worktree", "add", "--detach", path, "origin/master")
+    try:
+        for pr in candidates:
+            branch = _pr_branch(pr.number)
+            merged = _git("merge", "--no-edit", f"origin/{branch}", cwd=path)
+            if merged.returncode != 0:
+                _git("merge", "--abort", cwd=path)
+                return BatchResult.CONFLICT, branch
+        failing = _run_gate(path)
+        if failing:
+            return BatchResult.GATE_RED, failing
+        return BatchResult.CLEAN, ""
+    finally:
+        _git("worktree", "remove", "--force", path)
+
+
+def _process_batch(candidates: list[PullRequest], board: Board) -> list[Action]:
+    """Run the batch test-merge gate and translate the outcome into the pure action set:
+    promote every survivor (CLEAN), or hold the whole batch and flag it (CONFLICT / GATE_RED)."""
+    result, detail = _test_merge_batch(candidates, board)
+    print(f"  batch [{result.value}] {detail}".rstrip())
+    if result is BatchResult.CLEAN:
+        return batch_promote_actions(candidates, board)
+    if result is BatchResult.CONFLICT:
+        return batch_conflict_actions(candidates, detail)
+    return batch_gate_red_actions(candidates, detail)
 
 
 def _apply(actions: list[Action]) -> None:
@@ -276,6 +369,13 @@ def _apply(actions: list[Action]) -> None:
                 if nudged:
                     continue  # already nudged for this exact head — no spam
                 body = f"{body}\n{_rebase_marker(oid)}"
+            elif a.reason in ("batch-conflict", "batch-gate-red"):
+                # Dedupe the batch flag per PR head: a persistent conflict / red gate is flagged
+                # once and only repeats when the branch changes (mirrors the rebase nudge).
+                flagged, oid = _commented_for_head(a.number, _batch_marker)
+                if flagged:
+                    continue
+                body = f"{body}\n{_batch_marker(oid)}"
             verb = "pr" if a.on_pr else "issue"
             _try(verb, "comment", str(a.number), "--body", body)
         elif a.kind is ActionKind.DELETE_REF:
@@ -292,14 +392,41 @@ def main() -> int:
     mode = "APPLY" if apply else "DRY-RUN"
     print(f"reconcile [{mode}]: {len(board.issues)} issues, {len(board.pulls)} PRs "
           f"-> {len(actions)} actions")
+    _print_actions(actions)
+    if apply:
+        _apply(actions)
+        print(f"reconcile: applied {len(actions)} actions")
+    _batch_gate(board, apply)
+    return 0
+
+
+def _print_actions(actions: list[Action]) -> None:
     for a in actions:
         target = f"PR #{a.number}" if a.on_pr else f"#{a.number}"
         head = a.value.splitlines()[0] if a.value else ""
         print(f"  {a.kind.value:12} {target:8} {a.reason:16} {head}")
-    if apply:
-        _apply(actions)
-        print(f"reconcile: applied {len(actions)} actions")
-    return 0
+
+
+def _batch_gate(board: Board, apply: bool) -> None:
+    """The #247 batch test-merge gate: when 2+ PRs are promote-eligible in one pass, test-merge
+    them together and promote only if the combined tree passes; otherwise hold + flag. Fully
+    isolated — any git/gate error here is logged and swallowed so it can never abort the R1/R2/
+    single-PR-R3 actions already applied above. The writes it emits are ``RECONCILE_APPLY``-gated
+    exactly like the rest (and RECONCILE_APPLY is already false on ``pull_request`` events, so a
+    test-merge of unreviewed code never drives a mutation from that unsafe context)."""
+    try:
+        candidates = batch_candidates(board)
+        if len(candidates) < 2:
+            return  # a batch of 0 or 1 promoted inline via reconcile() — nothing to test-merge
+        nums = ", ".join(f"#{pr.number}" for pr in candidates)
+        print(f"batch test-merge gate: {len(candidates)} promote-eligible PRs ({nums})")
+        actions = _process_batch(candidates, board)
+        _print_actions(actions)
+        if apply:
+            _apply(actions)
+            print(f"batch gate: applied {len(actions)} actions")
+    except Exception as e:  # noqa: BLE001 — isolation is the whole point (criterion 7)
+        print(f"batch gate: error, skipped without affecting the rest of the pass: {e}")
 
 
 if __name__ == "__main__":
