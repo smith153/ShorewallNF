@@ -19,7 +19,13 @@ import pytest
 import tests.golden_harness as gh
 from shorewallnf import applier
 from shorewallnf.errors import ConfigError, ShorewallNFError
-from shorewallnf.ir import Family, RoutingArtifact
+from shorewallnf.ir import (
+    TPROXY_MARK,
+    TPROXY_TABLE_ID,
+    Family,
+    RoutingArtifact,
+    TproxyRoutingArtifact,
+)
 
 
 def test_check_ruleset_invokes_nft_check_json_with_ruleset_on_stdin(
@@ -468,4 +474,82 @@ def test_teardown_routing_runs_the_removal_sequence(monkeypatch: pytest.MonkeyPa
 def test_apply_routing_with_no_providers_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _record_run(monkeypatch)
     applier.apply_routing(())
+    assert calls == []
+
+
+# --- transparent-proxy local-delivery routing artifacts via iproute2 (#294, ADR-0051) --------
+#
+# The applier lowers ADR-0051 TproxyRoutingArtifacts to `ip route`/`ip rule` argv, per family —
+# a `local` route out `lo` rather than a default route via a gateway — and runs them idempotently
+# and fail-closed, the sibling lifecycle of provider routing. Hermetic: argv captured, no network.
+
+_TPROXY_ARTS = (
+    TproxyRoutingArtifact(table_id=TPROXY_TABLE_ID, fwmark=TPROXY_MARK, family=Family.IPV4),
+    TproxyRoutingArtifact(table_id=TPROXY_TABLE_ID, fwmark=TPROXY_MARK, family=Family.IPV6),
+)
+
+_T = str(TPROXY_TABLE_ID)  # reserved table id, decimal-rendered (0xFFFFFFFF)
+_M = str(TPROXY_MARK)  # reserved fwmark, decimal-rendered (0xFFFFFFFF)
+
+
+def test_tproxy_routing_install_argv_populates_table_then_selects_it_per_family() -> None:
+    assert applier.tproxy_routing_install_argv(_TPROXY_ARTS) == [
+        ["ip", "-4", "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", _T],
+        ["ip", "-4", "rule", "add", "fwmark", _M, "table", _T],
+        ["ip", "-6", "route", "add", "local", "::/0", "dev", "lo", "table", _T],
+        ["ip", "-6", "rule", "add", "fwmark", _M, "table", _T],
+    ]
+
+
+def test_tproxy_routing_teardown_argv_drops_rule_then_flushes_table_per_family() -> None:
+    assert applier.tproxy_routing_teardown_argv(_TPROXY_ARTS) == [
+        ["ip", "-4", "rule", "del", "fwmark", _M, "table", _T],
+        ["ip", "-4", "route", "flush", "table", _T],
+        ["ip", "-6", "rule", "del", "fwmark", _M, "table", _T],
+        ["ip", "-6", "route", "flush", "table", _T],
+    ]
+
+
+def test_apply_tproxy_routing_tears_down_before_installing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_run(monkeypatch)
+    applier.apply_tproxy_routing(_TPROXY_ARTS)
+    assert calls == (
+        applier.tproxy_routing_teardown_argv(_TPROXY_ARTS)
+        + applier.tproxy_routing_install_argv(_TPROXY_ARTS)
+    )
+
+
+def test_apply_tproxy_routing_ignores_teardown_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On a clean system the teardown del/flush return non-zero (nothing to remove); the apply
+    # treats teardown as best-effort and still installs, without raising.
+    _record_run(monkeypatch, rc_for=lambda cmd: 2 if ("del" in cmd or "flush" in cmd) else 0)
+    applier.apply_tproxy_routing(_TPROXY_ARTS)  # must not raise
+
+
+def test_apply_tproxy_routing_install_failure_raises_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_run(monkeypatch, rc_for=lambda cmd: 1 if cmd[2:4] == ["route", "add"] else 0)
+    with pytest.raises(ConfigError, match="boom"):
+        applier.apply_tproxy_routing(_TPROXY_ARTS)
+    # a rollback teardown ran after the failed install, leaving no partial tproxy routing
+    teardown = applier.tproxy_routing_teardown_argv(_TPROXY_ARTS)
+    assert calls[-len(teardown):] == teardown
+
+
+def test_teardown_tproxy_routing_runs_the_removal_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_run(monkeypatch, rc_for=lambda cmd: 2)  # nothing to remove; must not raise
+    applier.teardown_tproxy_routing(_TPROXY_ARTS)
+    assert calls == applier.tproxy_routing_teardown_argv(_TPROXY_ARTS)
+
+
+def test_apply_tproxy_routing_with_no_tproxy_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_run(monkeypatch)
+    applier.apply_tproxy_routing(())
     assert calls == []

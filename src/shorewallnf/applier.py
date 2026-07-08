@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError, ShorewallNFError
-from .ir import Family, RoutingArtifact
+from .ir import Family, RoutingArtifact, TproxyRoutingArtifact
 
 NFT = "nft"
 IP = "ip"
@@ -28,6 +28,9 @@ IP = "ip"
 # The ``ip`` family flag per artifact family (ADR-0002): a provider routing table + fwmark rule is
 # scoped to one family (v4 or v6, never both), so every ``ip`` invocation carries -4 or -6.
 _IP_FAMILY_FLAG = {Family.IPV4: "-4", Family.IPV6: "-6"}
+
+# The default-route prefix per family for a tproxy ``local`` route out ``lo`` (ADR-0051 Part B).
+_LOCAL_DEFAULT = {Family.IPV4: "0.0.0.0/0", Family.IPV6: "::/0"}
 
 # The fixed set of ShorewallNF-owned tables. ``clear`` deletes this constant set regardless of
 # what any config compiles to — a NAT-less config must still clear a stale ``nat`` table.
@@ -233,6 +236,71 @@ def apply_routing(artifacts: tuple[RoutingArtifact, ...]) -> None:
 def teardown_routing(artifacts: tuple[RoutingArtifact, ...]) -> None:
     """Remove the provider routing artifacts via iproute2 (idempotent), for stop/clear (#235)."""
     _run_best_effort(routing_teardown_argv(artifacts))
+
+
+# --- transparent-proxy local-delivery routing via iproute2 (task #294, ADR-0051) -----------
+#
+# The sibling of the provider routing path above, for the ADR-0051 tproxy artifact: same
+# iproute2 lifecycle (install after the nft load, teardown idempotent, fail-closed rollback),
+# but a ``local`` route out ``lo`` rather than a default route via a gateway. Both artifact
+# channels are applied together after the atomic nft load.
+
+
+def tproxy_routing_install_argv(artifacts: tuple[TproxyRoutingArtifact, ...]) -> list[list[str]]:
+    """The ``ip`` argv that installs the tproxy local-delivery artifacts (ADR-0051), per family.
+
+    Per artifact, in order: add the ``local`` default route out ``lo`` into the reserved table,
+    then the fwmark→table selection rule (populate the table before selecting it).
+    """
+    argv: list[list[str]] = []
+    for art in artifacts:
+        flag, table = _IP_FAMILY_FLAG[art.family], str(art.table_id)
+        argv.append(
+            [IP, flag, "route", "add", "local", _LOCAL_DEFAULT[art.family],
+             "dev", "lo", "table", table]
+        )
+        argv.append([IP, flag, "rule", "add", "fwmark", str(art.fwmark), "table", table])
+    return argv
+
+
+def tproxy_routing_teardown_argv(artifacts: tuple[TproxyRoutingArtifact, ...]) -> list[list[str]]:
+    """The ``ip`` argv that removes the tproxy artifacts — idempotent (safe when absent).
+
+    Per artifact, the reverse of install: drop the fwmark selection rule, then flush the table's
+    routes. Run before a re-install (so repeated applies don't accumulate) and by stop/clear.
+    """
+    argv: list[list[str]] = []
+    for art in artifacts:
+        flag, table = _IP_FAMILY_FLAG[art.family], str(art.table_id)
+        argv.append([IP, flag, "rule", "del", "fwmark", str(art.fwmark), "table", table])
+        argv.append([IP, flag, "route", "flush", "table", table])
+    return argv
+
+
+def apply_tproxy_routing(artifacts: tuple[TproxyRoutingArtifact, ...]) -> None:
+    """Install tproxy local-delivery artifacts via iproute2, idempotently and fail-closed (#294).
+
+    **Ordering:** run this *after* the nft ruleset load (:func:`apply_ruleset`) — the fwmark these
+    rules select is set in the nftables mangle path (ADR-0051), and the nft load is the atomic core
+    (ADR-0010). First tear down any prior tproxy artifacts (best-effort — on a clean system the
+    removals no-op), then install the current set. An install failure rolls the partial set back (a
+    second teardown) and raises :class:`~shorewallnf.errors.ConfigError`, so a failed apply never
+    leaves half-configured routing (fail-closed, ADR-0004).
+    """
+    _run_best_effort(tproxy_routing_teardown_argv(artifacts))
+    for argv in tproxy_routing_install_argv(artifacts):
+        result = subprocess.run(argv, capture_output=True, text=True)
+        if result.returncode != 0:
+            _run_best_effort(tproxy_routing_teardown_argv(artifacts))  # roll back to a clean state
+            raise ConfigError(
+                f"tproxy routing artifact rejected by ip ({' '.join(argv)}): "
+                f"{result.stderr.strip()}"
+            )
+
+
+def teardown_tproxy_routing(artifacts: tuple[TproxyRoutingArtifact, ...]) -> None:
+    """Remove tproxy local-delivery artifacts via iproute2 (idempotent), for stop/clear (#294)."""
+    _run_best_effort(tproxy_routing_teardown_argv(artifacts))
 
 
 def _run_best_effort(argvs: list[list[str]]) -> None:
