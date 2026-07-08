@@ -20,6 +20,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Reserved transparent-proxy constants (ADR-0051 Part A). The tproxy mark is a single
+# compiler-supplied reserved value — never a per-rule operator value: ``DIVERT`` and
+# ``TPROXY(<port>)`` are markless in surface syntax and the generator injects ``TPROXY_MARK``,
+# which one ``ip rule fwmark`` consumes into ``TPROXY_TABLE_ID`` for local delivery. Both reserve
+# the top of the 32-bit fwmark / routing-table-id spaces so no provider can collide (the validator
+# caps provider ranges at ``1..0xFFFFFFFE``). The two share the numeral but live in disjoint
+# namespaces (fwmark vs. routing-table id). ``TPROXY_TABLE_ID`` is not a kernel-reserved id
+# ({0, 253, 254, 255}), so teardown can never flush a system table.
+TPROXY_MARK = 0xFFFFFFFF
+TPROXY_TABLE_ID = 0xFFFFFFFF
+
 
 class Family(Enum):
     """Address family an IR construct scopes to (ADR-0002).
@@ -268,7 +279,9 @@ class MangleRule:
     - **MARK** / **CONNMARK**: ``mark`` is the mark value and ``mask`` an optional mask (a packet
       mark for MARK, a connection mark for CONNMARK).
     - **DIVERT**: no parameters — the match criteria alone divert the flow to the local socket.
-    - **TPROXY**: ``port`` is the transparent-proxy destination port and ``mark`` an optional mark.
+    - **TPROXY**: ``port`` is the transparent-proxy destination port. ``mark`` is unused (always
+      ``None``): the tproxy mark is the reserved :data:`TPROXY_MARK`, injected by the generator,
+      not a per-rule value (ADR-0051 Part A).
 
     ``source``/``dest`` are the raw ``zone``/``zone:host`` match tokens and ``proto``/``dport`` the
     matched protocol / destination port(s), verbatim. ``family`` is inferred from the rule content

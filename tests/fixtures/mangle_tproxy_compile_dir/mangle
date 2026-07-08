@@ -3,9 +3,9 @@
 #   1. CONNMARK stamps the connection so the mark is observable on every packet of the flow.
 #   2. DIVERT keeps an already-established transparent-proxy socket local (matched before TPROXY,
 #      so established packets are diverted rather than re-redirected).
-#   3. TPROXY redirects a new connection to the local proxy port and marks it (0x1) so policy
-#      routing can deliver it to the local listener.
+#   3. TPROXY redirects a new connection to the local proxy port; the generator injects the
+#      reserved TPROXY_MARK (ADR-0051) so policy routing can deliver it to the local listener.
 #ACTION               SOURCE                DEST   PROTO   DPORT
 CONNMARK(0x2/0xff)    net:198.51.100.0/24   -      tcp     80
 DIVERT                net                   -      tcp     -
-TPROXY(50080,0x1)     net:198.51.100.0/24   -      tcp     80
+TPROXY(50080)         net:198.51.100.0/24   -      tcp     80

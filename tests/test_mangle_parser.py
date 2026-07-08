@@ -2,8 +2,9 @@
 
 A ``mangle`` row is ``ACTION SOURCE DEST [PROTO] [DPORT]``. ``ACTION`` is a discriminated packet
 -marking action — ``MARK(<value>[/<mask>])`` / ``CONNMARK(<value>[/<mask>])`` (set a packet/conn
-mark, optional mask), ``DIVERT`` (bare), or ``TPROXY(<port>[,<mark>])`` (transparent-proxy to a
-local port, optional mark) — followed by the match criteria. Rows parse into family-aware
+mark, optional mask), ``DIVERT`` (bare), or ``TPROXY(<port>)`` (transparent-proxy to a
+local port; the mark is the reserved ``TPROXY_MARK`` injected by the generator, not per-rule —
+ADR-0051) — followed by the match criteria. Rows parse into family-aware
 :class:`~shorewallnf.ir.MangleRule` IR preserving file order; the family follows the rule content
 (ADR-0002). Unknown actions and malformed targets fail fast (ADR-0004). The generator is a sibling
 task (#229).
@@ -68,9 +69,17 @@ def test_tproxy_sets_the_proxy_port() -> None:
     assert (rule.action, rule.port, rule.proto, rule.dport) == ("TPROXY", 1080, "tcp", "80")
 
 
-def test_tproxy_carries_an_optional_mark() -> None:
-    rule = _one("TPROXY(1080,3) net loc tcp")
-    assert (rule.action, rule.port, rule.mark) == ("TPROXY", 1080, 3)
+def test_tproxy_carries_no_operator_mark() -> None:
+    # ADR-0051 Part A: the mark is the reserved TPROXY_MARK injected by the generator, never a
+    # per-rule operator value — so the parser attaches no mark for TPROXY.
+    assert _one("TPROXY(1080) net loc tcp").mark is None
+
+
+def test_tproxy_operator_mark_fails_fast() -> None:
+    # A per-rule TPROXY(<port>,<mark>) is rejected: the tproxy mark is the compiler-reserved
+    # TPROXY_MARK, not operator-supplied (ADR-0051 Part A / ADR-0004).
+    with pytest.raises(ConfigError, match="reserved"):
+        _one("TPROXY(1080,3) net loc tcp")
 
 
 # --- family inference (ADR-0002) ---------------------------------------------
