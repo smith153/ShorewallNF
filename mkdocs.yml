@@ -1,0 +1,63 @@
+# MkDocs config for the ShorewallNF documentation site.
+# Build locally: pip install -r docs/requirements.txt && mkdocs serve
+# Published to GitHub Pages by .github/workflows/docs.yml on push to master.
+site_name: ShorewallNF
+site_description: An nftables-native reimplementation of Shorewall, written in Python.
+# Project site served under the /ShorewallNF/ subpath; used for the sitemap and
+# canonical links. Change this if a custom domain is configured in Pages settings.
+site_url: https://smith153.github.io/ShorewallNF/
+repo_url: https://github.com/smith153/ShorewallNF
+repo_name: smith153/ShorewallNF
+edit_uri: edit/master/docs/
+
+theme:
+  name: material
+  palette:
+    # Light/dark toggle.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+# The in-repo design docs (ARCHITECTURE, ADRs, CONTRIBUTING, …) link across the
+# whole repo tree — CLAUDE.md, pipeline/, .github/ — which don't belong on the
+# public site. Exclude them from the build and link out to GitHub instead, so
+# `--strict` stays a real broken-link guard for the user-facing pages.
+exclude_docs: |
+  ARCHITECTURE.md
+  CONTRIBUTING.md
+  module-layout.md
+  lifecycle.md
+  adr/
+  superpowers/
+
+# Explicit nav keeps the published site focused on user-facing pages. Add pages
+# here as they land.
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Reference:
+      - Configuration files: reference/config-files.md
+  - Design docs ↗: https://github.com/smith153/ShorewallNF/tree/master/docs

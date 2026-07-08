@@ -1,0 +1,4 @@
+# Documentation-site build dependencies (NOT runtime deps — see CLAUDE.md's
+# minimal-runtime-dependencies rule). Used only by the docs GitHub Pages job and
+# for local `mkdocs serve`.
+mkdocs-material==9.5.39
