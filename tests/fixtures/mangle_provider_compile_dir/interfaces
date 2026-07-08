@@ -1,0 +1,3 @@
+loc v_cli detect
+net v_wan detect
+net v_dfl detect

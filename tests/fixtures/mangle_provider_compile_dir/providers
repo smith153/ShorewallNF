@@ -1,0 +1,4 @@
+# One IPv4 uplink whose fwmark (0x1) is set by the mangle rule above: fwmark 1 selects routing
+# table 1, whose default route egresses interface v_wan. Documentation range only (RFC 5737).
+#NAME  NUMBER  MARK  INTERFACE  GATEWAY
+wanA   1       1     v_wan      198.51.100.2

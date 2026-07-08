@@ -1,0 +1,4 @@
+# Admit the forwarded client->uplink flow so the nft filter chains pass it; the reply returns on
+# the established/related fast-path (ADR-0005). Everything else falls through to the base drop.
+loc     net     ACCEPT
+all     all     DROP        info
