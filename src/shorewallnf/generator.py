@@ -656,11 +656,10 @@ def _mangle_action(rule: MangleRule, ctx: str) -> list[_Command]:
         kind = "meta" if rule.action == "MARK" else "ct"
         return [_mark_set(kind, _require(rule.mark, ctx, "a mark value"), rule.mask)]
     if rule.action == "DIVERT":
-        stmts: list[_Command] = [_socket_transparent()]
-        if rule.mark is not None:
-            stmts.append(_mark_set("meta", rule.mark, None))
-        stmts.append(_accept())
-        return stmts
+        # ADR-0051: DIVERT and TPROXY share the single reserved TPROXY_MARK, injected by the
+        # generator (not a per-rule mark), so one `ip rule fwmark` delivers established/half-open
+        # and new packets locally.
+        return [_socket_transparent(), _mark_set("meta", TPROXY_MARK, None), _accept()]
     if rule.action == "TPROXY":
         if rule.family is Family.BOTH:
             raise ConfigError(
@@ -669,11 +668,11 @@ def _mangle_action(rule: MangleRule, ctx: str) -> list[_Command]:
                 path=rule.path,
                 line=rule.line,
             )
-        proxy: list[_Command] = [_tproxy(rule.family, _require(rule.port, ctx, "a proxy port"))]
-        if rule.mark is not None:
-            proxy.append(_mark_set("meta", rule.mark, None))
-        proxy.append(_accept())
-        return proxy
+        return [
+            _tproxy(rule.family, _require(rule.port, ctx, "a proxy port")),
+            _mark_set("meta", TPROXY_MARK, None),  # ADR-0051: reserved shared mark, not rule.mark
+            _accept(),
+        ]
     raise ConfigError(f"{ctx}: unsupported mangle action {rule.action!r}")  # parser gates this
 
 

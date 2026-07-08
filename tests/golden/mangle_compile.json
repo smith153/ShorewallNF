@@ -304,6 +304,16 @@
               }
             },
             {
+              "mangle": {
+                "key": {
+                  "meta": {
+                    "key": "mark"
+                  }
+                },
+                "value": 4294967295
+              }
+            },
+            {
               "accept": null
             }
           ]
@@ -372,6 +382,16 @@
               "tproxy": {
                 "family": "ip",
                 "port": 50080
+              }
+            },
+            {
+              "mangle": {
+                "key": {
+                  "meta": {
+                    "key": "mark"
+                  }
+                },
+                "value": 4294967295
               }
             },
             {

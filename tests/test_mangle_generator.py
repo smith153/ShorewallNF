@@ -14,7 +14,7 @@ import pytest
 import tests.golden_harness as gh
 from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate
-from shorewallnf.ir import Family, Interface, MangleRule, Ruleset, Zone, ZoneMember
+from shorewallnf.ir import TPROXY_MARK, Family, Interface, MangleRule, Ruleset, Zone, ZoneMember
 
 _ZONES = (
     Zone(name="net", members=(ZoneMember(interface="eth0", family=Family.BOTH),)),
@@ -50,6 +50,10 @@ def _socket_match() -> dict[str, Any]:
 
 def _nfproto(value: str) -> dict[str, Any]:
     return {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": value}}
+
+
+def _meta_mark(value: int) -> dict[str, Any]:
+    return {"mangle": {"key": {"meta": {"key": "mark"}}, "value": value}}
 
 
 # --- the prerouting mangle chain ---------------------------------------------
@@ -100,6 +104,13 @@ def test_divert_matches_transparent_socket_and_accepts() -> None:
     assert rule["expr"][-1] == {"accept": None}
 
 
+def test_divert_injects_reserved_tproxy_mark() -> None:
+    # ADR-0051: DIVERT unconditionally sets the reserved TPROXY_MARK (no per-rule mark).
+    (rule,) = _prerouting_rules(_cmds(MangleRule(action="DIVERT", source="net", proto="tcp")))
+    assert _meta_mark(TPROXY_MARK) in rule["expr"]
+    assert _meta_mark(0xFFFFFFFF) in rule["expr"]
+
+
 # --- TPROXY ------------------------------------------------------------------
 
 
@@ -110,6 +121,15 @@ def test_tproxy_emits_family_scoped_statement_and_accepts() -> None:
     assert {"tproxy": {"family": "ip", "port": 1080}} in rule["expr"]
     assert _nfproto("ipv4") in rule["expr"]
     assert rule["expr"][-1] == {"accept": None}
+
+
+def test_tproxy_injects_reserved_tproxy_mark() -> None:
+    # ADR-0051: TPROXY unconditionally sets the reserved TPROXY_MARK, not rule.mark.
+    (rule,) = _prerouting_rules(_cmds(
+        MangleRule(action="TPROXY", source="net", proto="tcp", dport="80",
+                   port=1080, family=Family.IPV4)))
+    assert _meta_mark(TPROXY_MARK) in rule["expr"]
+    assert _meta_mark(0xFFFFFFFF) in rule["expr"]
 
 
 def test_tproxy_without_a_concrete_family_fails_closed() -> None:
