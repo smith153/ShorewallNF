@@ -59,6 +59,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Walkthrough: walkthrough.md
+  - Concepts: concepts.md
   - Reference:
       - Configuration files: reference/config-files.md
       - zones: reference/zones.md
