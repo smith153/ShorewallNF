@@ -63,4 +63,6 @@ nav:
       - Configuration files: reference/config-files.md
       - zones: reference/zones.md
       - interfaces: reference/interfaces.md
+      - policy: reference/policy.md
+      - rules: reference/rules.md
   - Design docs ↗: https://github.com/smith153/ShorewallNF/tree/master/docs
