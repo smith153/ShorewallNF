@@ -20,9 +20,10 @@ counts — it never perturbs the ruleset under test):
   receives and echoes the flow, so the redirect landed on the local socket.
 * **DIVERT keeps the established flow local** — established packets are matched by DIVERT's
   ``socket transparent`` rule (which precedes TPROXY) and accepted, so they are *not* re-redirected:
-  the "re-steer" counter (established packets carrying TPROXY's 0x1 mark) stays 0. Its teeth are the
-  sibling mutation test, where removing DIVERT lets those packets fall through to TPROXY and the
-  counter rises.
+  the "re-steer" counter (established packets carrying the reserved TPROXY_MARK) stays 0. Its teeth
+  are the sibling mutation test, where removing DIVERT lets those packets fall through to TPROXY and
+  the counter rises — that teeth test needs the generator's TPROXY_MARK injection (#292) and is
+  xfail'd until then (the full netns rework to assert the fwmark local-delivery path is #295).
 * **The mark is observable** — CONNMARK stamps the connection ``ct mark 0x2``, counted per packet.
 
 Needs root + ``ip``/``nft`` and the ``nft_tproxy``/``nft_socket`` kernel modules; skips cleanly
@@ -42,7 +43,7 @@ from typing import Any
 import pytest
 
 from shorewallnf.cli import preprocess
-from shorewallnf.ir import Ruleset
+from shorewallnf.ir import TPROXY_MARK, Ruleset
 from shorewallnf.parser import parse_config
 from shorewallnf.resolver import resolve
 from shorewallnf.validator import validate
@@ -62,8 +63,9 @@ TOPO = nh.Topology(router="snf231_r", endpoints=(CLIENT,))
 
 _EXT_DEST = "203.0.113.9"  # external addr the client dials; the router has no route there
 _DPORT = 80               # the fixture's CONNMARK/TPROXY match tcp dport 80
-_PROXY_PORT = 50080       # the fixture's TPROXY(50080,0x1) redirect target
-_TPROXY_MARK = 0x1        # TPROXY's meta mark — a re-steered established packet carries it
+_PROXY_PORT = 50080       # the fixture's TPROXY(50080) redirect target
+_TPROXY_MARK = TPROXY_MARK  # the reserved mark the generator injects (ADR-0051); a re-steered
+#                             established packet carries it once #292 wires the injection
 _CONN_MARK = 0x2          # CONNMARK(0x2/0xff) — the connection mark, observable on the flow
 _ROUNDS = 4               # request/response round-trips, so established packets traverse prerouting
 _RT_TABLE = 100           # the local route table the tproxy glue steers client ingress into
@@ -243,6 +245,11 @@ def test_tproxy_reaches_listener_divert_keeps_flow_local_mark_observable() -> No
         assert _counter(sb, "connmark") > 0
 
 
+@pytest.mark.xfail(
+    reason="re-steer observation keys on the reserved TPROXY_MARK, which the generator injects "
+    "only once #292 lands; the netns fwmark-path rework is #295",
+    strict=True,
+)
 @pytest.mark.netns
 @_requires_tproxy
 def test_without_divert_established_flow_is_re_steered() -> None:

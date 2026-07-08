@@ -638,9 +638,10 @@ def parse_mangle(records: Iterable[Record]) -> tuple[MangleRule, ...]:
 
     A row is ``ACTION SOURCE DEST [PROTO] [DPORT]``. ``ACTION`` is ``MARK(<value>[/<mask>])`` /
     ``CONNMARK(<value>[/<mask>])`` (packet/connection mark + optional mask), bare ``DIVERT``, or
-    ``TPROXY(<port>[,<mark>])`` (transparent-proxy port + optional mark); the rest are the match
-    criteria. File order is preserved. Family is inferred from the row content (ADR-0002). An
-    unknown action, a malformed target (non-integer/out-of-range port or mark), or an unsupported
+    ``TPROXY(<port>)`` (transparent-proxy port; the mark is the reserved ``TPROXY_MARK`` the
+    generator injects, not per-rule — ADR-0051); the rest are the match criteria. File order is
+    preserved. Family is inferred from the row content (ADR-0002). An unknown action, a malformed
+    target (non-integer/out-of-range port, or a per-rule tproxy mark), or an unsupported
     trailing column fails fast with a located :class:`ConfigError` (ADR-0004).
     """
     return tuple(_build_mangle_rule(record) for record in records)
@@ -686,8 +687,10 @@ def _parse_mangle_action(
             mark, mask = _parse_mark_mask(token[len(name) + 1 : -1], name, record)
             return name, mark, mask, None
     if token.startswith("TPROXY(") and token.endswith(")"):
-        port, tproxy_mark = _parse_tproxy(token[len("TPROXY(") : -1], record)
-        return "TPROXY", tproxy_mark, None, port
+        port = _parse_tproxy(token[len("TPROXY(") : -1], record)
+        # No per-rule mark: the tproxy mark is the reserved TPROXY_MARK the generator injects
+        # (ADR-0051 Part A), not an operator value.
+        return "TPROXY", None, None, port
     raise ConfigError(
         f"unsupported mangle action {token!r} "
         "(expected MARK(<value>), CONNMARK(<value>), DIVERT, or TPROXY(<port>))",
@@ -710,15 +713,27 @@ def _parse_mark_mask(value: str, name: str, record: Record) -> tuple[int, int | 
     return mark, mask
 
 
-def _parse_tproxy(value: str, record: Record) -> tuple[int, int | None]:
-    """Parse a ``TPROXY`` ``<port>[,<mark>]`` parameter into ``(port, mark)``."""
+def _parse_tproxy(value: str, record: Record) -> int:
+    """Parse a ``TPROXY`` ``<port>`` parameter into a port.
+
+    ``TPROXY`` is markless in surface syntax: the tproxy mark is the reserved ``TPROXY_MARK`` the
+    generator injects (ADR-0051 Part A), so a per-rule ``TPROXY(<port>,<mark>)`` is rejected
+    fail-fast (ADR-0004) rather than silently ignored.
+    """
     if not value:
         raise ConfigError(
-            "TPROXY needs a port: TPROXY(<port>[,<mark>])",
+            "TPROXY needs a port: TPROXY(<port>)",
             path=record.path,
             line=record.line,
         )
-    port_str, sep, mark_str = value.partition(",")
+    port_str, sep, _mark = value.partition(",")
+    if sep:
+        raise ConfigError(
+            "TPROXY takes no per-rule mark: the tproxy mark is the reserved TPROXY_MARK the "
+            "generator injects (ADR-0051), not an operator value — use TPROXY(<port>)",
+            path=record.path,
+            line=record.line,
+        )
     port = _int_or_fail(port_str, "TPROXY port", record)
     if not 1 <= port <= 65535:
         raise ConfigError(
@@ -726,8 +741,7 @@ def _parse_tproxy(value: str, record: Record) -> tuple[int, int | None]:
             path=record.path,
             line=record.line,
         )
-    mark = _int_or_fail(mark_str, "TPROXY mark", record) if sep else None
-    return port, mark
+    return port
 
 
 def _int_or_fail(token: str, name: str, record: Record) -> int:

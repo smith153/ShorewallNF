@@ -3,6 +3,8 @@ import dataclasses
 import pytest
 
 from shorewallnf.ir import (
+    TPROXY_MARK,
+    TPROXY_TABLE_ID,
     ConntrackHelper,
     Family,
     Interface,
@@ -13,6 +15,20 @@ from shorewallnf.ir import (
     Rule,
     Ruleset,
 )
+
+# --- reserved tproxy constants (ADR-0051 Part A) -----------------------------
+
+
+def test_tproxy_mark_is_the_reserved_top_of_u32() -> None:
+    # The single reserved tproxy fwmark: the max 32-bit value, carved out of the top of the
+    # provider mark space (ADR-0051 Part A).
+    assert TPROXY_MARK == 0xFFFFFFFF
+
+
+def test_tproxy_table_id_is_the_reserved_top_of_u32() -> None:
+    # The reserved tproxy routing-table id: the max 32-bit value, not a kernel-reserved id.
+    assert TPROXY_TABLE_ID == 0xFFFFFFFF
+    assert TPROXY_TABLE_ID not in {0, 253, 254, 255}
 
 # --- Interface ---------------------------------------------------------------
 
