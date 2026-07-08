@@ -5,6 +5,11 @@ on:
   push:
     branches: [master]
 
+# Least privilege: every job here only reads the checked-out tree — it never writes
+# issues/PRs/contents. Scope the token down from the repo-wide default.
+permissions:
+  contents: read
+
 jobs:
   lint-type-test:
     runs-on: ubuntu-latest
