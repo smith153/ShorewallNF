@@ -69,6 +69,14 @@ def test_discover_finds_mangle_file(tmp_path: Path) -> None:
     assert discover(tmp_path) == ("conntrack", "mangle")
 
 
+def test_discover_finds_shorewallnf_conf(tmp_path: Path) -> None:
+    # The global-settings file (ADR-0061, #315) is a known config file; it is not tabular but
+    # is still discovered so the settings parser can pick it up.
+    (tmp_path / "zones").write_text("net ipv4\n")
+    (tmp_path / "shorewallnf.conf").write_text("IP_FORWARDING=On\n")
+    assert "shorewallnf.conf" in discover(tmp_path)
+
+
 def test_discover_finds_action_files_and_index(tmp_path: Path) -> None:
     (tmp_path / "zones").write_text("net ipv4\n")
     (tmp_path / "actions").write_text("Ping\n")

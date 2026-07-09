@@ -26,7 +26,8 @@ from .applier import (
 )
 from .errors import ShorewallNFError
 from .generator import generate, generate_stopped
-from .parser import parse_config
+from .ir import Settings
+from .parser import parse_config, parse_settings
 from .preprocessor import SourceLine, parse_params, preprocess_file
 from .resolver import resolve
 from .validator import validate
@@ -62,11 +63,26 @@ def preprocess(config_dir: str | Path) -> dict[str, list[SourceLine]]:
     """
     present = reader.discover(config_dir)
     params = parse_params(reader.read_file(config_dir, "params")) if "params" in present else {}
+    # ``params`` is consumed for substitution; ``shorewallnf.conf`` is non-tabular and never
+    # substituted (ADR-0061) — both are excluded from the tabular preprocessing stream.
+    skip = {"params", reader.SETTINGS_FILE}
     return {
         name: preprocess_file(reader.read_file(config_dir, name), name, params)
         for name in present
-        if name != "params"
+        if name not in skip
     }
+
+
+def _read_settings(config_dir: str | Path) -> Settings:
+    """Read ``shorewallnf.conf`` into a frozen :class:`Settings` (ADR-0061), or all-defaults.
+
+    Its absence is normal and silent — an absent file yields ``Settings()`` and changes no
+    output; a malformed one fails fast in :func:`~shorewallnf.parser.parse_settings`.
+    """
+    if reader.SETTINGS_FILE not in reader.discover(config_dir):
+        return Settings()
+    text = reader.read_file(config_dir, reader.SETTINGS_FILE)
+    return parse_settings(text, path=reader.SETTINGS_FILE)
 
 
 def compile_config(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
@@ -76,7 +92,8 @@ def compile_config(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
     resolve macros/actions → validate → generate. Returns the ``python3-nftables`` JSON the
     compile verb emits and the applier can dry-run load.
     """
-    return generate(validate(resolve(parse_config(preprocess(config_dir)))))
+    ruleset = parse_config(preprocess(config_dir), _read_settings(config_dir))
+    return generate(validate(resolve(ruleset)))
 
 
 def compile_stopped(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
@@ -87,7 +104,8 @@ def compile_stopped(config_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
     baseline (loopback + established/related), default-drop otherwise. With zero admin rules the
     baseline alone still admits the operator, so ``stop`` never silently locks anyone out.
     """
-    return generate_stopped(validate(resolve(parse_config(preprocess(config_dir)))))
+    ruleset = parse_config(preprocess(config_dir), _read_settings(config_dir))
+    return generate_stopped(validate(resolve(ruleset)))
 
 
 def _build_parser() -> argparse.ArgumentParser:

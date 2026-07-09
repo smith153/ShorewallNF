@@ -13,12 +13,17 @@ from pathlib import Path
 
 from .errors import ConfigError
 
+# The optional global-settings file (ADR-0061): a non-tabular ``KEY=value`` file parsed on its
+# own path into the frozen ``Settings`` IR, never through the tabular row/column tokenizer.
+SETTINGS_FILE = "shorewallnf.conf"
+
 # The Shorewall config files ShorewallNF consumes, in processing order. Kept to the MVP
 # subset (YAGNI); feature epics extend it as their file parsers land. Discovery filters a
-# config directory to these, so unrelated files (``*.bak``, ``shorewall.conf``, READMEs…)
-# are ignored.
+# config directory to these, so unrelated files (``*.bak``, the legacy ``shorewall.conf``,
+# READMEs…) are ignored.
 KNOWN_CONFIG_FILES: tuple[str, ...] = (
     "params",
+    SETTINGS_FILE,
     "zones",
     "interfaces",
     # `providers` follows the interface-defining `interfaces` so its interface references can be

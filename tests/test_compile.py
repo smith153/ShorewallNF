@@ -6,19 +6,23 @@ import pytest
 
 import tests.golden_harness as gh
 from shorewallnf import cli
+from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate, generate_routing
 from shorewallnf.ir import (
     ConntrackHelper,
     Family,
     HelperCapabilities,
     Nat,
+    OnOffKeep,
     Policy,
     RoutingArtifact,
     Rule,
     Ruleset,
+    Settings,
+    YesNoKeep,
     ZoneMember,
 )
-from shorewallnf.parser import parse_config
+from shorewallnf.parser import parse_config, parse_settings
 from shorewallnf.preprocessor import SourceLine, to_source_lines
 from shorewallnf.validator import validate
 from tests.golden_harness import assert_golden
@@ -53,6 +57,35 @@ def test_parse_config_assembles_zones_interfaces_and_membership() -> None:
 def test_parse_config_empty_streams_gives_empty_ruleset() -> None:
     ruleset = parse_config({})
     assert ruleset.zones == () and ruleset.interfaces == ()
+
+
+def test_parse_config_defaults_settings_when_absent() -> None:
+    # Absent shorewallnf.conf => the all-defaults Settings (no behaviour change).
+    assert parse_config({}).settings == Settings()
+
+
+def test_parse_config_threads_settings_onto_ruleset() -> None:
+    ruleset = parse_config(_streams(zones="net ipv4\n"), parse_settings("IP_FORWARDING=On\n"))
+    assert ruleset.settings.ip_forwarding is OnOffKeep.ON
+
+
+def test_compile_reads_shorewallnf_conf_from_the_dir(tmp_path: Path) -> None:
+    (tmp_path / "zones").write_text("fw firewall\nnet ipv4\n")
+    (tmp_path / "interfaces").write_text("net eth0 detect\n")
+    (tmp_path / "shorewallnf.conf").write_text("IP_FORWARDING=On\nLOG_MARTIANS=Yes\n")
+    # Compiling a dir with a well-formed settings file succeeds (JSON ruleset).
+    assert isinstance(cli.compile_config(tmp_path), dict)
+    # ...and the file is parsed onto the IR that reaches the generator.
+    ruleset = cli._read_settings(tmp_path)
+    assert ruleset.ip_forwarding is OnOffKeep.ON
+    assert ruleset.log_martians is YesNoKeep.YES
+
+
+def test_compile_fails_fast_on_bad_shorewallnf_conf(tmp_path: Path) -> None:
+    (tmp_path / "zones").write_text("net ipv4\n")
+    (tmp_path / "shorewallnf.conf").write_text("STARTUP_ENABLED=Yes\n")
+    with pytest.raises(ConfigError):
+        cli.compile_config(tmp_path)
 
 
 # --- compile_config + the compile verb ---------------------------------------

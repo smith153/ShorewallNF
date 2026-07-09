@@ -367,6 +367,42 @@ class TproxyRoutingArtifact:
     family: Family
 
 
+class OnOffKeep(Enum):
+    """Tri-state kernel toggle (ADR-0061): enable, disable, or leave the value untouched."""
+
+    ON = "On"
+    OFF = "Off"
+    KEEP = "Keep"
+
+
+class YesNoKeep(Enum):
+    """Tri-state kernel toggle (ADR-0061) whose surface spelling is ``Yes``/``No``/``Keep``."""
+
+    YES = "Yes"
+    NO = "No"
+    KEEP = "Keep"
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """Whole-ruleset behaviour from ``shorewallnf.conf`` (ADR-0061).
+
+    Each in-scope key is one typed field with a default equal to today's behaviour, so an absent
+    file (or absent key) is the all-defaults instance and changes no output. Later epics add
+    fields as they build the behaviour a key configures (#310/#311); a key with no consumer yet
+    is an unknown key and fails fast in the parser. The generator reads emission-time settings
+    (``log_level``/``logformat``); the applier reads kernel-state settings (the tri-states).
+    """
+
+    # LOG_LEVEL / LOGFORMAT feed the generator's log emission (wired byte-for-byte by #309); the
+    # defaults mirror upstream Shorewall so an absent file reproduces today's output.
+    log_level: str = "info"
+    logformat: str = "Shorewall:%s:%s:"
+    ip_forwarding: OnOffKeep = OnOffKeep.KEEP
+    log_martians: YesNoKeep = YesNoKeep.KEEP
+    route_filter: YesNoKeep = YesNoKeep.KEEP
+
+
 @dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
@@ -389,3 +425,6 @@ class Ruleset:
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
     actions: Mapping[str, MacroDef] = field(default_factory=dict)
+    # Global settings from ``shorewallnf.conf`` (ADR-0061); the all-defaults instance when the
+    # file is absent, so every existing construction keeps today's behaviour.
+    settings: Settings = field(default_factory=Settings)
