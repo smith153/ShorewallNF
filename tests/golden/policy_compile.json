@@ -310,7 +310,7 @@
             },
             {
               "log": {
-                "level": "info",
+                "level": "debug",
                 "prefix": "Shorewall:forward:REJECT:"
               }
             },

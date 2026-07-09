@@ -189,15 +189,30 @@ def test_log_level_emits_log_statement_before_verdict() -> None:
     ]
 
 
-def test_settings_drive_log_level_and_prefix() -> None:
+def test_settings_drive_prefix_but_policy_level_wins() -> None:
+    # LOGFORMAT drives the prefix; LOG_LEVEL is only a fallback for logging rules with no
+    # explicit level, so it must NOT override a policy's explicit LEVEL column (#321 decision).
     rs = Ruleset(
         zones=(_FW, _zone("net", "eth0")),
-        policies=(Policy(source="net", dest="all", action="DROP", log_level="info"),),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="debug"),),
         settings=Settings(log_level="warning", logformat="MyFW:%s:%s:"),
     )
     forward = [r for r in _rules(rs) if r["chain"] == "forward"]
     assert forward[-1]["expr"][-2] == {
-        "log": {"level": "warning", "prefix": "MyFW:forward:DROP:"}
+        "log": {"level": "debug", "prefix": "MyFW:forward:DROP:"}
+    }
+
+
+def test_non_info_policy_level_is_preserved() -> None:
+    # A policy's explicit LEVEL column is the emitted syslog level, verbatim — the default
+    # Settings LOG_LEVEL ("info") does not clobber it.
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="debug"),),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert forward[-1]["expr"][-2] == {
+        "log": {"level": "debug", "prefix": "Shorewall:forward:DROP:"}
     }
 
 

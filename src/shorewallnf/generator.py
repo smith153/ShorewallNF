@@ -199,12 +199,14 @@ def _policy_rule(
     chain, expr = _chain_and_zone_matches(
         policy.source, policy.dest, interfaces, firewalls, ctx
     )
-    # The policy's LEVEL column gates *whether* it logs; the emitted syslog level and the prefix
-    # come from Settings (LOG_LEVEL/LOGFORMAT, ADR-0061/#309). The LOGFORMAT %s slots fill with
-    # the chain name and the disposition (the policy action).
+    # A policy logs only when it carries an explicit LEVEL column, and that per-policy level is
+    # the emitted syslog level (#321 decision). Settings.LOG_LEVEL is only a fallback for logging
+    # rules with no explicit level, so it is a no-op here today. The prefix is rendered from the
+    # LOGFORMAT template (ADR-0061/#309); its %s slots fill with the chain name and the
+    # disposition (the policy action).
     if policy.log_level:
         prefix = _log_prefix(settings.logformat, chain, policy.action, ctx)
-        expr.append(_log(settings.log_level, prefix))
+        expr.append(_log(policy.log_level or settings.log_level, prefix))
     expr.append(_verdict(policy.action))
     return _rule(chain, expr)
 
