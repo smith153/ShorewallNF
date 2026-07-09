@@ -1803,6 +1803,94 @@ def test_disable_ipv6_matches_golden() -> None:
     assert_golden(rs, "disable_ipv6")
 
 
+# ---- DISABLE_IPV6 in the stopped safe state (#376, ADR-0061 / ADR-0002) ------------------
+#
+# `generate_stopped` must honor DISABLE_IPV6 exactly as `generate` does: install the base IPv6
+# drop at the head of every base chain and suppress explicitly v6-scoped `stopped_rules`, so a
+# `DISABLE_IPV6=Yes` firewall stays IPv4-only while stopped just as it is while running.
+
+
+def _stopped_rule_cmds(rs: Ruleset) -> list[dict[str, Any]]:
+    return [c["add"]["rule"] for c in generate_stopped(rs)["nftables"] if "rule" in c["add"]]
+
+
+def test_stopped_disable_ipv6_installs_base_drop_in_every_base_chain() -> None:
+    rs = Ruleset(settings=_DISABLE_IPV6)
+    for chain in ("input", "forward", "output"):
+        chain_rules = [r for r in _stopped_rule_cmds(rs) if r["chain"] == chain]
+        assert chain_rules[0]["expr"] == _ipv6_drop_expr()
+
+
+def test_stopped_disable_ipv6_drop_precedes_no_lockout_baseline_accepts() -> None:
+    rs = Ruleset(settings=_DISABLE_IPV6)
+    input_rules = [r["expr"] for r in _stopped_rule_cmds(rs) if r["chain"] == "input"]
+    stateful = {
+        "match": {
+            "op": "in",
+            "left": {"ct": {"key": "state"}},
+            "right": {"set": ["established", "related"]},
+        }
+    }
+    loopback = {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "lo"}}
+    # the IPv6 drop is rule 0 in input, ahead of the established/related + loopback accepts.
+    assert input_rules[0] == _ipv6_drop_expr()
+    assert input_rules.index(_ipv6_drop_expr()) < input_rules.index([stateful, {"accept": None}])
+    assert input_rules.index(_ipv6_drop_expr()) < input_rules.index([loopback, {"accept": None}])
+
+
+def test_stopped_disable_ipv6_suppresses_ipv6_admin_rules_keeps_v4_and_both() -> None:
+    zones = (_FW, _zone("net", "eth0"))
+    stopped_rules = (
+        Rule(action="ACCEPT", source="net:198.51.100.10", dest="fw",
+             proto="tcp", dport="22", family=Family.IPV4),
+        Rule(action="ACCEPT", source="net:2001:db8::10", dest="fw",
+             proto="tcp", dport="22", family=Family.IPV6),
+        Rule(action="ACCEPT", source="net", dest="fw", proto="tcp", dport="22", family=Family.BOTH),
+    )
+    rs = Ruleset(zones=zones, stopped_rules=stopped_rules, settings=_DISABLE_IPV6)
+    base = _stopped_rule_cmds(Ruleset(zones=zones, settings=_DISABLE_IPV6))
+    added = _stopped_rule_cmds(rs)[len(base) :]
+    # the v6 admin rule is dropped; the v4 rule and the unguarded both rule remain.
+    saddrs = [
+        e["match"]["right"]
+        for r in added
+        for e in r["expr"]
+        if e.get("match", {}).get("left", {}).get("payload", {}).get("field") == "saddr"
+    ]
+    assert "2001:db8::10" not in saddrs
+    assert "198.51.100.10" in saddrs
+    assert len(added) == 2  # v4 + both, v6 gone
+
+
+def test_stopped_disable_ipv6_off_is_byte_for_byte_unchanged() -> None:
+    zones = (_FW, _zone("net", "eth0"))
+    stopped_rules = (
+        Rule(action="ACCEPT", source="net:198.51.100.10", dest="fw",
+             proto="tcp", dport="22", family=Family.IPV4),
+        Rule(action="ACCEPT", source="net:2001:db8::10", dest="fw",
+             proto="tcp", dport="22", family=Family.IPV6),
+    )
+    base = Ruleset(zones=zones, stopped_rules=stopped_rules)
+    explicit_off = Ruleset(
+        zones=zones, stopped_rules=stopped_rules, settings=Settings(disable_ipv6=False)
+    )
+    assert generate_stopped(explicit_off) == generate_stopped(base)
+
+
+def test_stopped_disable_ipv6_matches_golden() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        stopped_rules=(
+            Rule(action="ACCEPT", source="net:198.51.100.10", dest="fw",
+                 proto="tcp", dport="22", family=Family.IPV4),
+            Rule(action="ACCEPT", source="net:2001:db8::10", dest="fw",
+                 proto="tcp", dport="22", family=Family.IPV6),
+        ),
+        settings=_DISABLE_IPV6,
+    )
+    assert_golden(rs, "stopped_disable_ipv6", generator=generate_stopped)
+
+
 # ---- CLAMPMSS forward-path TCP MSS clamp (ADR-0061, #368) --------------------
 
 _SYN_MATCH = {

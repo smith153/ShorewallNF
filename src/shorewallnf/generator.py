@@ -87,11 +87,17 @@ def generate_stopped(ruleset: Ruleset) -> dict[str, list[_Command]]:
     ruleset, but carrying **only** the admin-access ``stopped_rules`` (#210) — never the running
     ``rules``/``policies``/``nats``. With zero admin rules the baseline alone still admits the
     operator's return traffic and loopback, so ``stop`` can never silently lock anyone out.
+
+    Honors ``DISABLE_IPV6`` exactly as the running gate does (#376): the base IPv6 drop is
+    installed at the head of every base chain and explicitly v6-scoped ``stopped_rules`` are
+    suppressed, so a ``DISABLE_IPV6=Yes`` firewall stays IPv4-only while stopped as well.
     """
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = _firewalls(ruleset)
-    commands = _filter_base()
-    commands += _translate_rules(ruleset.stopped_rules, interfaces, firewalls)
+    disable_ipv6 = ruleset.settings.disable_ipv6
+    commands = _filter_base(disable_ipv6)
+    rules = _family_gated(ruleset.stopped_rules, disable_ipv6)
+    commands += _translate_rules(rules, interfaces, firewalls)
     return {"nftables": commands}
 
 
@@ -310,12 +316,18 @@ def _feature_rules(ruleset: Ruleset) -> list[_Command]:
     """
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = _firewalls(ruleset)
-    rules = ruleset.rules
-    if ruleset.settings.disable_ipv6:
-        # Family-gate (#369): drop v6-scoped rules entirely; v4 and unguarded `both` rules stay
-        # (the base IPv6 drop is what keeps the surviving `both` rules from passing IPv6, ADR-0002).
-        rules = tuple(rule for rule in rules if rule.family is not Family.IPV6)
+    rules = _family_gated(ruleset.rules, ruleset.settings.disable_ipv6)
     return _translate_rules(rules, interfaces, firewalls)
+
+
+def _family_gated(rules: tuple[Rule, ...], disable_ipv6: bool) -> tuple[Rule, ...]:
+    """Drop explicitly IPv6-scoped rules under ``DISABLE_IPV6`` (#369); v4 and unguarded ``both``
+    rules stay — the base ``meta nfproto ipv6 drop`` is what keeps the surviving ``both`` rules
+    from passing IPv6 (ADR-0002). Shared by the running feature rules and the stopped safe state
+    (#376) so both gates suppress the same v6-scoped rules."""
+    if not disable_ipv6:
+        return rules
+    return tuple(rule for rule in rules if rule.family is not Family.IPV6)
 
 
 def _translate_rules(
