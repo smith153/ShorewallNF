@@ -31,6 +31,7 @@ from .ir import (
     RoutingArtifact,
     Rule,
     Ruleset,
+    Settings,
     TproxyRoutingArtifact,
     Zone,
 )
@@ -38,6 +39,11 @@ from .ir import (
 _FAMILY = "inet"
 _TABLE = "filter"
 _NAT_TABLE = "nat"
+
+# nftables truncates a log prefix at NF_LOG_PREFIXLEN (128) including the NUL terminator, so the
+# rendered prefix must fit in 127 chars (ADR-0061 §4). The parser applies the same limit to the
+# raw LOGFORMAT template; here it guards the prefix *after* %s substitution, which can grow it.
+_LOG_PREFIX_MAX = 127
 
 # Fail-closed default capability surface: with nothing declared available, every helper is
 # skipped (with a warning). The caller passes a real HelperCapabilities to enable them.
@@ -170,7 +176,7 @@ def _policy_rules(ruleset: Ruleset) -> list[_Command]:
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = {zone.name for zone in ruleset.zones if zone.is_firewall}
     ordered = sorted(ruleset.policies, key=_specificity)
-    return [_policy_rule(policy, interfaces, firewalls) for policy in ordered]
+    return [_policy_rule(policy, interfaces, firewalls, ruleset.settings) for policy in ordered]
 
 
 def _zone_interfaces(zones: tuple[Zone, ...]) -> dict[str, tuple[str, ...]]:
@@ -184,14 +190,21 @@ def _specificity(policy: Policy) -> int:
 
 
 def _policy_rule(
-    policy: Policy, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
+    policy: Policy,
+    interfaces: dict[str, tuple[str, ...]],
+    firewalls: set[str],
+    settings: Settings,
 ) -> _Command:
     ctx = f"policy {policy.source!r} {policy.dest!r}"
     chain, expr = _chain_and_zone_matches(
         policy.source, policy.dest, interfaces, firewalls, ctx
     )
+    # The policy's LEVEL column gates *whether* it logs; the emitted syslog level and the prefix
+    # come from Settings (LOG_LEVEL/LOGFORMAT, ADR-0061/#309). The LOGFORMAT %s slots fill with
+    # the chain name and the disposition (the policy action).
     if policy.log_level:
-        expr.append(_log(policy.log_level))
+        prefix = _log_prefix(settings.logformat, chain, policy.action, ctx)
+        expr.append(_log(settings.log_level, prefix))
     expr.append(_verdict(policy.action))
     return _rule(chain, expr)
 
@@ -426,8 +439,29 @@ def _port(token: str) -> int | str:
     return int(token) if token.isdigit() else token
 
 
-def _log(level: str) -> _Command:
-    return {"log": {"level": level}}
+def _log(level: str, prefix: str) -> _Command:
+    return {"log": {"level": level, "prefix": prefix}}
+
+
+def _log_prefix(template: str, chain: str, disposition: str, ctx: str) -> str:
+    """Render a LOGFORMAT ``template`` into a log prefix, filling its ``%s`` slots (up to two)
+    with the ``chain`` name and the ``disposition`` (ADR-0061). Fails fast if the template has
+    more slots than we supply, or if the rendered prefix exceeds the kernel limit — the check is
+    on the *rendered* string, since substitution can grow it past a within-limit template."""
+    parts = template.split("%s")
+    slots = (chain, disposition)
+    count = len(parts) - 1
+    if count > len(slots):
+        raise ConfigError(f"{ctx}: LOGFORMAT {template!r} has more than {len(slots)} %s slots")
+    prefix = parts[0]
+    for i in range(count):
+        prefix += slots[i] + parts[i + 1]
+    if len(prefix) > _LOG_PREFIX_MAX:
+        raise ConfigError(
+            f"{ctx}: rendered log prefix {prefix!r} is {len(prefix)} chars, over the "
+            f"{_LOG_PREFIX_MAX}-char kernel log-prefix limit"
+        )
+    return prefix
 
 
 def _verdict(action: str) -> _Command:

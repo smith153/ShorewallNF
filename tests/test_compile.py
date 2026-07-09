@@ -207,7 +207,10 @@ def test_policy_compile_emits_ordered_inter_zone_rules() -> None:
     # loc(eth0) -> net(eth1) ACCEPT is emitted as a forward rule...
     assert any(iif_loc in r["expr"] and r["expr"][-1] == {"accept": None} for r in forward)
     # ...and the wildcard `all all REJECT info` is the final forward rule (fail-closed order).
-    assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]
+    assert forward[-1]["expr"] == [
+        {"log": {"level": "info", "prefix": "Shorewall:forward:REJECT:"}},
+        {"reject": None},
+    ]
 
 
 # --- rules end-to-end (#125) -------------------------------------------------
@@ -243,7 +246,10 @@ def test_rules_compile_places_feature_rules_before_policy_defaults() -> None:
     assert any(dport22 in r["expr"] and r["expr"][-1] == {"accept": None} for r in input_rules)
     # ...and the wildcard `all all REJECT info` is the final forward rule (fail-closed order).
     forward = [r for r in rules if r["chain"] == "forward"]
-    assert forward[-1]["expr"] == [{"log": {"level": "info"}}, {"reject": None}]
+    assert forward[-1]["expr"] == [
+        {"log": {"level": "info", "prefix": "Shorewall:forward:REJECT:"}},
+        {"reject": None},
+    ]
 
 
 # --- macro/action resolution end-to-end (#184) -------------------------------
