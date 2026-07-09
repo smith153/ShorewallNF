@@ -34,6 +34,13 @@ theme:
     - content.code.copy
     - content.action.edit
 
+# awesome-pages derives the nav from the filesystem (per-directory .pages files)
+# so new docs pages no longer serialize on a single hand-maintained nav: list.
+# `search` is MkDocs' built-in and must be listed explicitly once plugins: is set.
+plugins:
+  - search
+  - awesome-pages
+
 markdown_extensions:
   - admonition
   - toc:
@@ -52,25 +59,3 @@ exclude_docs: |
   lifecycle.md
   adr/
   superpowers/
-
-# Explicit nav keeps the published site focused on user-facing pages. Add pages
-# here as they land.
-nav:
-  - Home: index.md
-  - Getting started: getting-started.md
-  - Operations: operations.md
-  - Walkthrough: walkthrough.md
-  - Concepts: concepts.md
-  - Reference:
-      - Configuration files: reference/config-files.md
-      - params (+ preprocessing): reference/params.md
-      - providers: reference/providers.md
-      - stoppedrules: reference/stoppedrules.md
-      - snat: reference/snat.md
-      - conntrack: reference/conntrack.md
-      - mangle: reference/mangle.md
-      - zones: reference/zones.md
-      - interfaces: reference/interfaces.md
-      - policy: reference/policy.md
-      - rules: reference/rules.md
-  - Design docs ↗: https://github.com/smith153/ShorewallNF/tree/master/docs

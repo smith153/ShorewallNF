@@ -99,6 +99,35 @@ def test_guard_detects_broken_link_and_anchor(tmp_path: Path) -> None:
     assert broken_anchors == ["target.md#missing"], "anchor scan failed to flag the bad anchor"
 
 
+def test_nav_is_filesystem_derived() -> None:
+    """The docs nav is derived from the filesystem (awesome-pages), not a hand-kept list.
+
+    Guards #353: reintroducing a top-level ``nav:`` block in mkdocs.yml would bring back
+    the per-page merge conflicts the awesome-pages plugin removed. We assert the plugin is
+    enabled, the ``nav:`` block is gone, and the ``.pages`` files use the ``...`` append
+    token so a NEW page needs no shared-file edit. Parsed as text (no PyYAML dep).
+    """
+    mkdocs = (ROOT / "mkdocs.yml").read_text().splitlines()
+    assert not any(re.match(r"\s*nav:\s*$", line) for line in mkdocs), (
+        "mkdocs.yml must not carry an explicit nav: block — nav is filesystem-derived"
+    )
+    plugins = "\n".join(mkdocs)
+    assert re.search(r"^\s*-\s*awesome-pages\s*$", plugins, re.M), (
+        "mkdocs.yml plugins: must include awesome-pages"
+    )
+    assert re.search(r"^\s*-\s*search\s*$", plugins, re.M), (
+        "mkdocs.yml plugins: must keep the built-in search plugin"
+    )
+    assert "mkdocs-awesome-pages-plugin==" in (DOCS / "requirements.txt").read_text(), (
+        "docs/requirements.txt must pin mkdocs-awesome-pages-plugin"
+    )
+    for pages in (DOCS / ".pages", DOCS / "reference" / ".pages"):
+        text = pages.read_text()
+        assert re.search(r"^\s*-\s*\.\.\.\s*$", text, re.M), (
+            f"{pages.relative_to(ROOT)} must use the '...' token to auto-append new pages"
+        )
+
+
 def test_inet_family_scoping_is_resolved() -> None:
     """ADR-0002's deferred details (family scoping, cross-family zones) are settled.
 

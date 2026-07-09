@@ -1,0 +1,12 @@
+# Top-level nav order (awesome-pages). `...` auto-appends any unlisted page, so
+# adding a new top-level doc needs no edit here. Titles are pinned only where they
+# must differ from the page's H1 (Home, Walkthrough); the rest use their heading.
+nav:
+  - Home: index.md
+  - getting-started.md
+  - operations.md
+  - Walkthrough: walkthrough.md
+  - concepts.md
+  - reference
+  - ...
+  - Design docs ↗: https://github.com/smith153/ShorewallNF/tree/master/docs

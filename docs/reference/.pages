@@ -1,0 +1,17 @@
+# Reference section nav (awesome-pages). `...` auto-appends any unlisted page, so
+# adding a new reference doc needs no edit here. Titles are pinned only where they
+# must differ from the page's H1 (the code-span headings render plainly here).
+title: Reference
+nav:
+  - config-files.md
+  - params (+ preprocessing): params.md
+  - providers.md
+  - stoppedrules.md
+  - snat: snat.md
+  - conntrack: conntrack.md
+  - mangle: mangle.md
+  - zones.md
+  - interfaces.md
+  - policy: policy.md
+  - rules: rules.md
+  - ...

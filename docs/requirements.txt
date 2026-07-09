@@ -2,3 +2,4 @@
 # minimal-runtime-dependencies rule). Used only by the docs GitHub Pages job and
 # for local `mkdocs serve`.
 mkdocs-material==9.5.39
+mkdocs-awesome-pages-plugin==2.10.1
