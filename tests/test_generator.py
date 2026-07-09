@@ -9,8 +9,10 @@ from shorewallnf.generator import generate, generate_stopped
 from shorewallnf.ir import (
     ClampMss,
     ConntrackHelper,
+    Disposition,
     Family,
     HelperCapabilities,
+    Interface,
     Nat,
     Policy,
     Rule,
@@ -47,12 +49,27 @@ def test_single_inet_filter_table() -> None:
 
 def test_base_chains_are_fail_closed() -> None:
     chains = {c["name"]: c for c in _commands("chain")}
-    assert set(chains) == {"input", "forward", "output"}
+    # The ADR-0063 prerouting_raw anti-spoof chain rides alongside the three ADR-0005 base chains.
+    assert set(chains) == {"input", "forward", "output", "prerouting_raw"}
     assert chains["input"]["policy"] == "drop"
     assert chains["forward"]["policy"] == "drop"
     assert chains["output"]["policy"] == "accept"
-    for chain in chains.values():
-        assert (chain["type"], chain["hook"], chain["prio"]) == ("filter", chain["name"], 0)
+    for name in ("input", "forward", "output"):
+        chain = chains[name]
+        assert (chain["type"], chain["hook"], chain["prio"]) == ("filter", name, 0)
+
+
+def test_prerouting_raw_chain_is_always_present_and_inert() -> None:
+    # ADR-0063 §Consequences: the raw-priority prerouting anti-spoof chain is part of the fixed
+    # skeleton — present even with no protective check, `policy accept` + empty body keep it inert.
+    chains = {c["name"]: c for c in _commands("chain")}
+    pr = chains["prerouting_raw"]
+    assert (pr["type"], pr["hook"], pr["prio"], pr["policy"]) == (
+        "filter", "prerouting", -300, "accept",
+    )
+    # No interface carries rpfilter, so the chain hosts no rule.
+    rules = [r for r in _commands("rule") if r["chain"] == "prerouting_raw"]
+    assert rules == []
 
 
 def test_stateful_and_loopback_base_rules_present() -> None:
@@ -301,6 +318,105 @@ def test_policy_default_rules_match_golden() -> None:
         ),
     )
     assert generate(rs) == json.loads(POLICY_GOLDEN.read_text())
+
+
+# ---- rpfilter reverse-path check (ADR-0063, #380) ---------------------------------------
+
+_FIB_MISSING = {
+    "match": {
+        "op": "==",
+        "left": {"fib": {"result": "oif", "flags": ["saddr", "iif"]}},
+        "right": False,
+    }
+}
+
+
+def _prerouting_rules(rs: Ruleset) -> list[dict[str, Any]]:
+    return [r for r in _rules(rs) if r["chain"] == "prerouting_raw"]
+
+
+def test_rpfilter_interface_emits_fib_check_with_default_drop() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", rpfilter=True),))
+    rules = _prerouting_rules(rs)
+    assert len(rules) == 1
+    # iifname gate, then the family-neutral rp-filter fib match, then the default DROP verdict —
+    # no `log` (RPFILTER_LOG_LEVEL unset), no nfproto/ip/ip6 family guard.
+    assert rules[0]["expr"] == [_iif("eth0"), _FIB_MISSING, {"drop": None}]
+
+
+def test_no_rpfilter_interface_emits_no_rule() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0"), Interface(name="eth1")))
+    assert _prerouting_rules(rs) == []
+
+
+def test_rpfilter_only_the_flagged_interfaces() -> None:
+    rs = Ruleset(
+        interfaces=(
+            Interface(name="eth0", rpfilter=True),
+            Interface(name="eth1"),
+            Interface(name="eth2", rpfilter=True),
+        )
+    )
+    gates = [r["expr"][0] for r in _prerouting_rules(rs)]
+    assert gates == [_iif("eth0"), _iif("eth2")]
+
+
+def test_rpfilter_disposition_and_log_level_change_the_tail() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", rpfilter=True),),
+        settings=Settings(
+            rpfilter_disposition=Disposition.REJECT, rpfilter_log_level="info"
+        ),
+    )
+    (rule,) = _prerouting_rules(rs)
+    # prefix %s slots: chain name (prerouting_raw) then disposition (REJECT), from LOGFORMAT.
+    assert rule["expr"] == [
+        _iif("eth0"),
+        _FIB_MISSING,
+        {"log": {"level": "info", "prefix": "Shorewall:prerouting_raw:REJECT:"}},
+        {"reject": None},
+    ]
+
+
+def test_rpfilter_continue_is_log_only_no_verdict() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", rpfilter=True),),
+        settings=Settings(
+            rpfilter_disposition=Disposition.CONTINUE, rpfilter_log_level="debug"
+        ),
+    )
+    (rule,) = _prerouting_rules(rs)
+    # CONTINUE falls through: the log line is emitted but there is NO terminal verdict.
+    assert rule["expr"] == [
+        _iif("eth0"),
+        _FIB_MISSING,
+        {"log": {"level": "debug", "prefix": "Shorewall:prerouting_raw:CONTINUE:"}},
+    ]
+    assert all(v not in rule["expr"][-1] for v in ("accept", "drop", "reject"))
+
+
+def test_rpfilter_default_matches_golden() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", rpfilter=True),))
+    assert_golden(rs, "rpfilter_default")
+
+
+def test_rpfilter_reject_with_log_matches_golden() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", rpfilter=True),),
+        settings=Settings(
+            rpfilter_disposition=Disposition.REJECT, rpfilter_log_level="info"
+        ),
+    )
+    assert_golden(rs, "rpfilter_reject_log")
+
+
+def test_stopped_ruleset_has_no_prerouting_chain() -> None:
+    # Protective checks don't apply while stopped (ADR-0063 §1): the running-only prerouting_raw
+    # chain must not appear in the stopped safe-state skeleton, keeping its golden byte-for-byte.
+    rs = Ruleset(interfaces=(Interface(name="eth0", rpfilter=True),))
+    stopped = generate_stopped(rs)["nftables"]
+    chains = [c["add"]["chain"]["name"] for c in stopped if "chain" in c.get("add", {})]
+    assert "prerouting_raw" not in chains
 
 
 # ---- per-connection feature rules (ADR-0007) --------------------------------------------

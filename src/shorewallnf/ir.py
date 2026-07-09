@@ -392,6 +392,21 @@ class YesNoKeep(Enum):
     KEEP = "Keep"
 
 
+class Disposition(Enum):
+    """A protective-check verdict (ADR-0063 §4), shared by the interface anti-spoof / flag
+    checks (rpfilter #380, tcpflags #381, sfilter #382) and available to later gating.
+
+    ``ACCEPT``/``DROP``/``REJECT`` render to the matching nft terminal verdict; ``CONTINUE``
+    emits **no** terminal verdict — the matched packet falls through the rest of the chain
+    (a log line, if configured, is still emitted), which is how an operator log-only's a check.
+    """
+
+    ACCEPT = "ACCEPT"
+    DROP = "DROP"
+    REJECT = "REJECT"
+    CONTINUE = "CONTINUE"
+
+
 class ClampMss(Enum):
     """``CLAMPMSS=Yes`` path-MTU sentinel (ADR-0061).
 
@@ -428,6 +443,11 @@ class Settings:
     # CLAMPMSS (ADR-0061, #368): None = off (default; no clamp rule), ClampMss.PATH_MTU = clamp
     # the forwarded-SYN MSS to path MTU (Yes), a positive int = a fixed MSS. Read by the generator.
     clampmss: int | ClampMss | None = None
+    # RPFILTER_DISPOSITION / RPFILTER_LOG_LEVEL (ADR-0063 §4, #380): the reverse-path check's
+    # verdict and log level. Defaults mirror Shorewall — DROP, and no log line unless a level is
+    # set — so an rpfilter interface under default settings emits `... drop` with no `log`.
+    rpfilter_disposition: Disposition = Disposition.DROP
+    rpfilter_log_level: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

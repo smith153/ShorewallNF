@@ -1,9 +1,10 @@
 """Generator — the pure IR → nftables JSON stage (ADR-0001/0003).
 
-Consumes the family-aware IR and emits the base ``inet`` skeleton (ADR-0005), then the
-per-connection feature rules from the ``Rule`` IR (ADR-0007), then the inter-zone
-default-policy rules from the ``Policy`` IR (ADR-0006), as ``python3-nftables`` JSON: one
-``inet filter`` table, the fail-closed ``input``/``forward``/``output`` base chains, the
+Consumes the family-aware IR and emits the base ``inet`` skeleton (ADR-0005), the ADR-0063
+prerouting anti-spoof chain (rpfilter), then the per-connection feature rules from the ``Rule``
+IR (ADR-0007), then the inter-zone default-policy rules from the ``Policy`` IR (ADR-0006), as
+``python3-nftables`` JSON: one ``inet filter`` table, the fail-closed
+``input``/``forward``/``output`` base chains, the always-present prerouting anti-spoof chain, the
 always-on stateful + loopback accepts, the feature rules, and finally one rule per policy.
 Feature rules land in their chain **before** the policy fall-through, so an explicit verdict
 wins over the zone-pair default. It is dual-stack by construction (ADR-0002) and
@@ -22,9 +23,11 @@ from .ir import (
     TPROXY_TABLE_ID,
     ClampMss,
     ConntrackHelper,
+    Disposition,
     Family,
     HelperCapabilities,
     HelperDef,
+    Interface,
     MangleRule,
     Nat,
     Policy,
@@ -70,6 +73,7 @@ def generate(
     declares the platform provides it.
     """
     commands = _filter_base(ruleset.settings.disable_ipv6, _clampmss(ruleset.settings))
+    commands += _prerouting_checks(ruleset)
     commands += _mangle_rules(ruleset)
     commands += _nat_base(ruleset)
     commands += _ct_helpers(ruleset, capabilities)
@@ -227,6 +231,65 @@ def _firewalls(ruleset: Ruleset) -> set[str]:
     return {zone.name for zone in ruleset.zones if zone.is_firewall}
 
 
+# ---- prerouting anti-spoof chain: rpfilter (ADR-0063; sfilter is #382) -------------------
+
+# The anti-spoof chain hooks prerouting at `priority raw` (-300) — ahead of conntrack (-200) and
+# of the input/forward hooks — so a spoofed packet drops before a conntrack entry exists and
+# before the ADR-0005 established/related base-accept can wave it through (ADR-0063 §1/§3). Its
+# name is distinct from the mangle chain's own `prerouting` (a base-chain name is unique per table;
+# mangle sits later at prio -150) — ADR-0063 §1 calls it the "prerouting" chain, but that name is
+# already taken, so it rides here as `prerouting_raw` (see the PR note / follow-up issue).
+_PREROUTING_RAW_CHAIN = "prerouting_raw"
+_PREROUTING_RAW_PRIO = -300
+
+
+def _prerouting_checks(ruleset: Ruleset) -> list[_Command]:
+    """The always-present ADR-0063 prerouting anti-spoof chain plus its rpfilter rules.
+
+    The chain is part of the fixed skeleton — emitted even with no check configured, inert
+    (`policy accept`, empty body). One reverse-path rule is added per interface whose IR carries
+    `rpfilter`; a config with none leaves the chain empty. Scoped to the running ruleset only —
+    protective checks don't apply while stopped — so the stopped golden stays byte-for-byte.
+    """
+    commands: list[_Command] = [
+        _chain(_PREROUTING_RAW_CHAIN, "accept", hook="prerouting", prio=_PREROUTING_RAW_PRIO)
+    ]
+    commands += [
+        _rpfilter_rule(iface, ruleset.settings)
+        for iface in ruleset.interfaces
+        if iface.rpfilter
+    ]
+    return commands
+
+
+def _rpfilter_rule(iface: Interface, settings: Settings) -> _Command:
+    """One reverse-path check for an rpfilter interface: gate on ``iifname``, then the
+    family-neutral ``fib saddr . iif oif missing`` match (ADR-0063 §5 — one rule covers IPv4 and
+    IPv6 in the ``inet`` chain, no nfproto guard), then the shared disposition tail."""
+    ctx = f"rpfilter on interface {iface.name!r}"
+    expr: list[_Command] = [_ifname("iifname", iface.name), _fib_rpfilter()]
+    expr += _disposition(
+        _PREROUTING_RAW_CHAIN,
+        settings.rpfilter_disposition,
+        settings.rpfilter_log_level,
+        settings.logformat,
+        ctx,
+    )
+    return _rule(_PREROUTING_RAW_CHAIN, expr)
+
+
+def _fib_rpfilter() -> _Command:
+    """``fib saddr . iif oif missing`` — matches when the packet's source address has no route
+    back out its ingress interface (a spoofed / asymmetric-path packet). Family-neutral."""
+    return {
+        "match": {
+            "op": "==",
+            "left": {"fib": {"result": "oif", "flags": ["saddr", "iif"]}},
+            "right": False,
+        }
+    }
+
+
 # ---- inter-zone default-policy rules (ADR-0006) -----------------------------------------
 
 
@@ -259,14 +322,13 @@ def _policy_rule(
         policy.source, policy.dest, interfaces, firewalls, ctx
     )
     # A policy logs only when it carries an explicit LEVEL column, and that per-policy level is
-    # the emitted syslog level (#321 decision). Settings.LOG_LEVEL is only a fallback for logging
-    # rules with no explicit level, so it is a no-op here today. The prefix is rendered from the
-    # LOGFORMAT template (ADR-0061/#309); its %s slots fill with the chain name and the
-    # disposition (the policy action).
-    if policy.log_level:
-        prefix = _log_prefix(settings.logformat, chain, policy.action, ctx)
-        expr.append(_log(policy.log_level or settings.log_level, prefix))
-    expr.append(_verdict(policy.action))
+    # the emitted syslog level (#321 decision) — Settings.LOG_LEVEL is only a fallback for logging
+    # rules with no explicit level, a no-op here. The verdict/log tail is the shared ADR-0063 §4
+    # render helper (a policy action is ACCEPT/DROP/REJECT, never CONTINUE, so it always emits a
+    # verdict); the prefix %s slots fill with the chain name and the disposition (the action).
+    expr += _disposition(
+        chain, Disposition[policy.action], policy.log_level, settings.logformat, ctx
+    )
     return _rule(chain, expr)
 
 
@@ -538,6 +600,29 @@ def _log_prefix(template: str, chain: str, disposition: str, ctx: str) -> str:
 
 def _verdict(action: str) -> _Command:
     return {_VERDICTS[action]: None}
+
+
+def _disposition(
+    chain: str,
+    disposition: Disposition,
+    log_level: str | None,
+    logformat: str,
+    ctx: str,
+) -> list[_Command]:
+    """The shared ADR-0063 §4 render-tail for a protective check: an optional ``log`` then the
+    verdict. Check-agnostic — parameterised on chain + disposition + log level, so the three
+    checks (#380 rpfilter / #381 tcpflags / #382 sfilter) reuse it with only their preceding match
+    differing. ``log`` is emitted only when ``log_level`` is set (prefix rendered from ``logformat``
+    via :func:`_log_prefix`, its ``%s`` slots filled with the chain name and the disposition,
+    length-checked to fail fast); ``CONTINUE`` emits **no** terminal verdict — the matched packet
+    falls through the chain (the log line, if any, is still emitted) — otherwise the verdict is the
+    :data:`_VERDICTS` keyword for ACCEPT/DROP/REJECT."""
+    stmts: list[_Command] = []
+    if log_level is not None:
+        stmts.append(_log(log_level, _log_prefix(logformat, chain, disposition.value, ctx)))
+    if disposition is not Disposition.CONTINUE:
+        stmts.append(_verdict(disposition.value))
+    return stmts
 
 
 # ---- conntrack helper objects + assignment rules (ADR-0041) -----------------------------
@@ -1043,7 +1128,10 @@ def _table() -> _Command:
     return {"add": {"table": {"family": _FAMILY, "name": _TABLE}}}
 
 
-def _chain(name: str, policy: str) -> _Command:
+def _chain(name: str, policy: str, *, hook: str | None = None, prio: int = 0) -> _Command:
+    """A ``type filter`` base chain. ``hook`` defaults to the chain name (the ADR-0005 base
+    chains, whose name equals their hook at ``prio 0``); the ADR-0063 ``prerouting_raw`` chain
+    passes an explicit ``prio`` to sit at ``priority raw`` (-300)."""
     return {
         "add": {
             "chain": {
@@ -1051,8 +1139,8 @@ def _chain(name: str, policy: str) -> _Command:
                 "table": _TABLE,
                 "name": name,
                 "type": "filter",
-                "hook": name,
-                "prio": 0,
+                "hook": hook or name,
+                "prio": prio,
                 "policy": policy,
             }
         }
