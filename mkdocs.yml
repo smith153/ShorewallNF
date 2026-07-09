@@ -58,6 +58,7 @@ exclude_docs: |
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Walkthrough: walkthrough.md
   - Reference:
       - Configuration files: reference/config-files.md
       - zones: reference/zones.md
