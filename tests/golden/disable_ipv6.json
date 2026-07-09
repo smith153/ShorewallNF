@@ -1,0 +1,345 @@
+{
+  "nftables": [
+    {
+      "add": {
+        "table": {
+          "family": "inet",
+          "name": "filter"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "input",
+          "type": "filter",
+          "hook": "input",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "forward",
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "output",
+          "type": "filter",
+          "hook": "output",
+          "prio": 0,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "nfproto"
+                  }
+                },
+                "right": "ipv6"
+              }
+            },
+            {
+              "drop": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "nfproto"
+                  }
+                },
+                "right": "ipv6"
+              }
+            },
+            {
+              "drop": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "output",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "nfproto"
+                  }
+                },
+                "right": "ipv6"
+              }
+            },
+            {
+              "drop": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "lo"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth1"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "ip",
+                    "field": "daddr"
+                  }
+                },
+                "right": "203.0.113.5"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth1"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth1"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "drop": null
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

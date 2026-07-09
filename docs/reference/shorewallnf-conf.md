@@ -52,9 +52,10 @@ fails fast until the epic that implements it lands (see [Keys not yet supported]
 | `IP_FORWARDING` | `On` / `Off` / `Keep` | `Keep` | Writes `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding` (`On`→`1`, `Off`→`0`). `Keep` leaves the kernel value untouched. |
 | `LOG_MARTIANS` | `Yes` / `No` / `Keep` | `Keep` | Writes `net.ipv4.conf.{all,default}.log_martians` (`Yes`→`1`, `No`→`0`). `Keep` leaves it untouched. IPv4-only; there is no IPv6 kernel equivalent. |
 | `ROUTE_FILTER` | `Yes` / `No` / `Keep` | `Keep` | Writes `net.ipv4.conf.{all,default}.rp_filter` (`Yes`→`1`, `No`→`0`). `Keep` leaves it untouched. IPv4-only. |
+| `DISABLE_IPV6` | `Yes` / `No` | `No` | When `Yes`, the generator emits an IPv4-only `inet` ruleset: no IPv6 feature rules plus a base `meta nfproto ipv6 drop` in the input/forward/output chains. `No` (the default) is today's dual-stack output. |
 
-Values for the tri-state (`On`/`Off`/`Keep`, `Yes`/`No`/`Keep`) keys are matched
-case-insensitively.
+Values for the tri-state (`On`/`Off`/`Keep`, `Yes`/`No`/`Keep`) keys and for `DISABLE_IPV6`
+(`Yes`/`No`) are matched case-insensitively.
 
 ### `LOG_LEVEL` / `LOGFORMAT`
 
@@ -80,6 +81,16 @@ the prior value of each and rolling every write back (fail-closed) if any one of
 is never even read. See
 [ADR-0062](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0062-applier-kernel-sysctl-mutation.md)
 for the rollback design.
+
+### `DISABLE_IPV6`
+
+`DISABLE_IPV6=Yes` family-gates the generated ruleset (ADR-0002) to IPv4-only: IPv6-scoped
+feature rules are suppressed, and a base `meta nfproto ipv6 drop` is installed at the head of
+the `input`, `forward` **and** `output` base chains — ahead of the no-lockout baseline accepts
+and every feature/policy rule — so nothing downstream passes IPv6, including the IPv6 half of
+family-agnostic (`both`) rules and firewall-originated traffic out `output`. Unlike the sysctl
+toggles this is purely a generation-time mode; it writes no kernel state. `No` (the default)
+reproduces today's dual-stack output byte-for-byte.
 
 ## Example
 
@@ -107,7 +118,6 @@ the behaviour it configures:
 | `SFILTER_DISPOSITION` / `SFILTER_LOG_LEVEL` | #310 |
 | `BLACKLIST_DISPOSITION` / `BLACKLIST_LOG_LEVEL` | #310 |
 | `CLAMPMSS` | #311 (generator global modes) |
-| `DISABLE_IPV6` | #311 |
 
 `REJECT_ACTION`, default-policy action overrides, `MULTICAST`, `OPTIMIZE`,
 `DYNAMIC_BLACKLIST`, and `shorewallnf.conf` variable expansion are not modeled at all

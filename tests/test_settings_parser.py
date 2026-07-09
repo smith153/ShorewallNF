@@ -179,3 +179,29 @@ def test_over_length_logformat_is_out_of_range() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_settings(f'LOGFORMAT="{"x" * 200}"\n')
     assert "LOGFORMAT" in str(exc.value)
+
+
+# --- DISABLE_IPV6: a plain Yes/No bool (#369) --------------------------------
+
+
+def test_disable_ipv6_yes_no_parse_to_bool() -> None:
+    assert parse_settings("DISABLE_IPV6=Yes\n").disable_ipv6 is True
+    assert parse_settings("DISABLE_IPV6=No\n").disable_ipv6 is False
+
+
+def test_disable_ipv6_is_case_insensitive() -> None:
+    assert parse_settings("DISABLE_IPV6=yes\n").disable_ipv6 is True
+    assert parse_settings("DISABLE_IPV6=NO\n").disable_ipv6 is False
+
+
+def test_disable_ipv6_defaults_false_when_absent() -> None:
+    assert Settings().disable_ipv6 is False
+    assert parse_settings("").disable_ipv6 is False
+
+
+def test_disable_ipv6_rejects_keep_tristate_value() -> None:
+    # DISABLE_IPV6 is Yes/No only — no Keep (unlike LOG_MARTIANS/ROUTE_FILTER).
+    with pytest.raises(ConfigError) as exc:
+        parse_settings("DISABLE_IPV6=Keep\n")
+    assert exc.value.line == 1
+    assert "DISABLE_IPV6" in str(exc.value)

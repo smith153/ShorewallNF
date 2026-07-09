@@ -401,6 +401,10 @@ class Settings:
     ip_forwarding: OnOffKeep = OnOffKeep.KEEP
     log_martians: YesNoKeep = YesNoKeep.KEEP
     route_filter: YesNoKeep = YesNoKeep.KEEP
+    # DISABLE_IPV6 is Yes/No only (no Keep), so a plain bool rather than a tri-state: when True the
+    # generator family-gates the ruleset to IPv4-only (ADR-0061/ADR-0002, #369). Default False =
+    # today's dual-stack output.
+    disable_ipv6: bool = False
 
 
 @dataclass(frozen=True, slots=True)
