@@ -80,8 +80,9 @@ Everything lands in a single nftables table, `inet filter`, with three hooked ba
 | `output` | traffic *from* the firewall host | accept |
 
 `input` and `forward` default to **drop** — that is the fail-closed foundation. Ahead of any of
-your rules, each chain first accepts already-established/related connections (so return traffic
-flows without a mirror rule), and `input` also accepts loopback.
+your rules, the `input` and `forward` chains first accept already-established/related connections
+(so return traffic flows without a mirror rule), and `input` also accepts loopback; `output` needs
+no such rule since its policy already defaults to accept.
 
 ### Where each rule and policy lands
 
@@ -91,9 +92,11 @@ Which base chain a policy or rule compiles into is decided by the role of `$FW`:
 - source is `$FW` → the **`output`** chain (traffic from the firewall);
 - otherwise → the **`forward`** chain (traffic between two other zones).
 
-Within a chain, the generator emits, in order: the established/related (and loopback) accepts, then
-your **rules**, then the **policy** defaults. Since nftables evaluates a chain top-to-bottom, this
-ordering is exactly what makes rules override policies and specific policies override the wildcards.
+Within `input` and `forward`, the generator emits, in order: the established/related (and
+loopback) accepts, then your **rules**, then the **policy** defaults; `output` emits just your
+rules then the policy default, with no established/related step. Since nftables evaluates a
+chain top-to-bottom, this ordering is exactly what makes rules override policies and specific
+policies override the wildcards.
 Zones are matched by their interfaces (`iifname` for the source, `oifname` for the destination).
 
 ### Dual-stack: one config, both families
