@@ -12,7 +12,6 @@ from shorewallnf import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 OPERATIONS = ROOT / "docs" / "operations.md"
-MKDOCS = ROOT / "mkdocs.yml"
 
 
 def test_operations_page_exists() -> None:
@@ -39,4 +38,6 @@ def test_operations_labels_systemd_forthcoming() -> None:
 
 
 def test_operations_in_published_nav() -> None:
-    assert "operations.md" in MKDOCS.read_text(), "operations.md must be in the mkdocs nav"
+    """Nav is filesystem-derived (awesome-pages, #353); operations.md is pinned in docs/.pages."""
+    pages = (ROOT / "docs" / ".pages").read_text()
+    assert "operations.md" in pages, "operations.md must be pinned in the docs/.pages nav order"
