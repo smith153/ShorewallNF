@@ -978,6 +978,13 @@ _SettingConverter = Callable[[str, str, str, int], object]
 def _convert_log_level(value: str, key: str, path: str, line: int) -> str:
     if not value:
         raise ConfigError(f"empty value for {key}", path=path, line=line)
+    if value not in _LOG_LEVELS:
+        raise ConfigError(
+            f"unsupported log level {value!r} for {key} "
+            f"(expected one of {sorted(_LOG_LEVELS)})",
+            path=path,
+            line=line,
+        )
     return value
 
 
