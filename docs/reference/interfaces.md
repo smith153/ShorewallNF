@@ -42,11 +42,25 @@ the `interfaces` file).
 
 Options are given as a single comma-separated token (no spaces), e.g. `tcpflags,dhcp,nosmurfs`.
 
-!!! warning "Options are recorded but not yet enforced"
-    The options column is parsed and stored verbatim, but ShorewallNF does **not** yet act on
-    any interface option — no option changes the generated ruleset today, and option names are
-    not validated. The column is accepted for forward compatibility; treat any behavioral
-    effect as not-yet-implemented.
+Three **protective-check** options are recognized and lifted into typed fields on the interface
+(the rest still pass through verbatim):
+
+| Option | Meaning |
+|--------|---------|
+| `rpfilter` | Reverse-path (anti-spoof) filtering flag for this interface. |
+| `tcpflags` | Malformed-TCP-flags checking flag for this interface. |
+| `sfilter=net[,net...]` | Anti-spoof source-network list. A multi-network list must be wrapped in parentheses so its commas do not split the options — e.g. `sfilter=(192.0.2.0/24,198.51.100.0/24)`. A single network needs no parentheses. |
+
+A malformed `sfilter` (no `=`, an empty list, an empty element, or unbalanced/mismatched
+parentheses such as `sfilter=(net,net` or `sfilter=(net)extra`) fails fast with a `file:line`
+error. Network literals are recorded verbatim; their family (IPv4 vs IPv6) is not classified
+here.
+
+!!! warning "Options are recognized but not yet enforced"
+    The three options above are parsed into the interface model, but ShorewallNF does **not**
+    yet act on them — no option changes the generated ruleset today. Any other option token is
+    stored verbatim and not validated. The column is accepted for forward compatibility; treat
+    any behavioral effect as not-yet-implemented.
 
 ## `?FORMAT` directive
 

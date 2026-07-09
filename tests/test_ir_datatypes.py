@@ -43,6 +43,26 @@ def test_interface_options_default_empty() -> None:
     assert Interface(name="eth0").options == ()
 
 
+def test_interface_protective_check_fields_default_off() -> None:
+    # rpfilter/tcpflags/sfilter all default off so existing constructions are unchanged.
+    iface = Interface(name="eth0")
+    assert iface.rpfilter is False
+    assert iface.tcpflags is False
+    assert iface.sfilter == ()
+
+
+def test_interface_carries_protective_check_fields() -> None:
+    iface = Interface(
+        name="eth0",
+        rpfilter=True,
+        tcpflags=True,
+        sfilter=("192.0.2.0/24", "2001:db8::/32"),
+    )
+    assert iface.rpfilter is True
+    assert iface.tcpflags is True
+    assert iface.sfilter == ("192.0.2.0/24", "2001:db8::/32")
+
+
 # --- Policy ------------------------------------------------------------------
 
 
