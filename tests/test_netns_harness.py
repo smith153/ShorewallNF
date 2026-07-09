@@ -138,8 +138,10 @@ def test_dual_stack_endpoint_adds_v6_address_and_route() -> None:
         router6="2001:db8:3::1/64",
     )
     cmds = nh.setup_commands(nh.Topology(router="r", endpoints=(ep,)))
-    assert ["ip", "-n", "r", "addr", "add", "2001:db8:3::1/64", "dev", "v6c"] in cmds
-    assert ["ip", "-n", "c6", "addr", "add", "2001:db8:3::2/64", "dev", "p6c"] in cmds
+    # `nodad` skips Duplicate Address Detection so the address is usable immediately rather than
+    # transiently `tentative` — otherwise a lone `ping -6 -c 1 -W 1` races DAD and fails spuriously.
+    assert ["ip", "-n", "r", "addr", "add", "2001:db8:3::1/64", "dev", "v6c", "nodad"] in cmds
+    assert ["ip", "-n", "c6", "addr", "add", "2001:db8:3::2/64", "dev", "p6c", "nodad"] in cmds
     assert ["ip", "-6", "-n", "c6", "route", "add", "default", "via", "2001:db8:3::1"] in cmds
 
 

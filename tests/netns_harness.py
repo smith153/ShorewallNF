@@ -168,9 +168,13 @@ def _endpoint_commands(router: str, e: Endpoint, index: int) -> list[list[str]]:
         [IP, "-n", e.name, "route", "add", "default", "via", e.gateway4],
     ]
     if e.router6 and e.addr6 and e.gateway6:
+        # `nodad` skips Duplicate Address Detection: a freshly-added v6 address is `tentative` until
+        # DAD completes, and a probe against a tentative address fails regardless of the firewall.
+        # Skipping DAD (safe on an isolated point-to-point veth) makes v6 reachability deterministic
+        # so a lone `ping -6 -c 1 -W 1` reflects the ruleset, not a DAD race (#369 review).
         cmds += [
-            [IP, "-n", router, "addr", "add", e.router6, "dev", e.iface],
-            [IP, "-n", e.name, "addr", "add", e.addr6, "dev", e.peer],
+            [IP, "-n", router, "addr", "add", e.router6, "dev", e.iface, "nodad"],
+            [IP, "-n", e.name, "addr", "add", e.addr6, "dev", e.peer, "nodad"],
             [IP, "-6", "-n", e.name, "route", "add", "default", "via", e.gateway6],
         ]
     return cmds
