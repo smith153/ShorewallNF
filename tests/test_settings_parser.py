@@ -49,14 +49,14 @@ def test_absent_key_keeps_its_default() -> None:
 
 def test_parses_every_in_scope_key() -> None:
     s = parse_settings(
-        "LOG_LEVEL=warning\n"
+        "LOG_LEVEL=notice\n"
         'LOGFORMAT="MyFW:%s:%s:"\n'
         "IP_FORWARDING=Off\n"
         "LOG_MARTIANS=Yes\n"
         "ROUTE_FILTER=No\n"
     )
     assert s == Settings(
-        log_level="warning",
+        log_level="notice",
         logformat="MyFW:%s:%s:",
         ip_forwarding=OnOffKeep.OFF,
         log_martians=YesNoKeep.YES,
@@ -162,6 +162,16 @@ def test_empty_key_is_malformed() -> None:
 def test_empty_log_level_is_malformed() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_settings("LOG_LEVEL=\n")
+    assert "LOG_LEVEL" in str(exc.value)
+
+
+def test_unknown_log_level_keyword_fails_fast_with_location() -> None:
+    # `warning` is a syslog spelling, not an nft log-level keyword (nft uses `warn`); it must
+    # fail fast with the same file/line/key context as the tabular LOG LEVEL column (#367).
+    with pytest.raises(ConfigError) as exc:
+        parse_settings("IP_FORWARDING=On\nLOG_LEVEL=warning\n")
+    assert exc.value.line == 2
+    assert exc.value.path == "shorewallnf.conf"
     assert "LOG_LEVEL" in str(exc.value)
 
 
