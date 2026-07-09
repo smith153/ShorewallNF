@@ -14,6 +14,7 @@ from shorewallnf.ir import (
     Policy,
     Rule,
     Ruleset,
+    Settings,
     Zone,
     ZoneMember,
 )
@@ -179,7 +180,74 @@ def test_log_level_emits_log_statement_before_verdict() -> None:
         policies=(Policy(source="net", dest="all", action="DROP", log_level="info"),),
     )
     forward = [r for r in _rules(rs) if r["chain"] == "forward"]
-    assert forward[-1]["expr"] == [_iif("eth0"), {"log": {"level": "info"}}, {"drop": None}]
+    # Default Settings: level from LOG_LEVEL (info), prefix from the LOGFORMAT template with
+    # its %s slots filled by chain (forward) and disposition (the policy action, DROP).
+    assert forward[-1]["expr"] == [
+        _iif("eth0"),
+        {"log": {"level": "info", "prefix": "Shorewall:forward:DROP:"}},
+        {"drop": None},
+    ]
+
+
+def test_settings_drive_prefix_but_policy_level_wins() -> None:
+    # LOGFORMAT drives the prefix; LOG_LEVEL is only a fallback for logging rules with no
+    # explicit level, so it must NOT override a policy's explicit LEVEL column (#321 decision).
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="debug"),),
+        settings=Settings(log_level="warning", logformat="MyFW:%s:%s:"),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert forward[-1]["expr"][-2] == {
+        "log": {"level": "debug", "prefix": "MyFW:forward:DROP:"}
+    }
+
+
+def test_non_info_policy_level_is_preserved() -> None:
+    # A policy's explicit LEVEL column is the emitted syslog level, verbatim — the default
+    # Settings LOG_LEVEL ("info") does not clobber it.
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="debug"),),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert forward[-1]["expr"][-2] == {
+        "log": {"level": "debug", "prefix": "Shorewall:forward:DROP:"}
+    }
+
+
+def test_single_slot_logformat_fills_chain_only() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="info"),),
+        settings=Settings(logformat="fw-%s:"),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert forward[-1]["expr"][-2] == {"log": {"level": "info", "prefix": "fw-forward:"}}
+
+
+def test_over_length_rendered_prefix_fails_fast() -> None:
+    # Template is within the 127-char limit, but substituting the chain name renders past it —
+    # the generator must validate the *rendered* prefix, not just the template.
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="info"),),
+        settings=Settings(logformat="L" * 124 + "%s:"),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "127" in str(exc.value) and "prefix" in str(exc.value)
+
+
+def test_logformat_with_too_many_slots_fails_fast() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("net", "eth0")),
+        policies=(Policy(source="net", dest="all", action="DROP", log_level="info"),),
+        settings=Settings(logformat="a:%s:%s:%s:"),
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "%s" in str(exc.value)
 
 
 def test_multiple_zone_interfaces_use_anonymous_set() -> None:

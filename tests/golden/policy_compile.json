@@ -310,7 +310,8 @@
             },
             {
               "log": {
-                "level": "info"
+                "level": "debug",
+                "prefix": "Shorewall:forward:REJECT:"
               }
             },
             {
@@ -340,7 +341,8 @@
             },
             {
               "log": {
-                "level": "info"
+                "level": "info",
+                "prefix": "Shorewall:forward:DROP:"
               }
             },
             {
@@ -359,7 +361,8 @@
           "expr": [
             {
               "log": {
-                "level": "info"
+                "level": "info",
+                "prefix": "Shorewall:forward:REJECT:"
               }
             },
             {

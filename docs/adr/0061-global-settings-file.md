@@ -90,7 +90,7 @@ file, added when a task needs them.
 | Key | Values | Default | nftables-native meaning |
 |-----|--------|---------|-------------------------|
 | `LOG_LEVEL` | syslog level (`emerg`…`debug`) | `info` | Default `log level` for rules that log. |
-| `LOGFORMAT` | string with up to two `%s` | `ShorewallNF:%s:%s:` | Template for the `log prefix`; `%s` slots fill with chain / disposition. Length is validated against the kernel prefix limit. |
+| `LOGFORMAT` | string with up to two `%s` | `Shorewall:%s:%s:` | Template for the `log prefix`; `%s` slots fill with chain / disposition. Default mirrors upstream Shorewall for migration compatibility. Length is validated against the kernel prefix limit. |
 | `BLACKLIST_LOG_LEVEL` | syslog level or empty | empty (off) | Log level for the blacklist check; empty means don't log. |
 | `TCP_FLAGS_LOG_LEVEL` | syslog level or empty | empty (off) | Log level for the invalid-TCP-flags check. |
 | `RPFILTER_LOG_LEVEL` | syslog level or empty | empty (off) | Log level for the reverse-path check. |

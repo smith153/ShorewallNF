@@ -4,6 +4,6 @@ loc     fw      ACCEPT
 fw      net     ACCEPT
 fw      dmz     ACCEPT
 dmz     net     ACCEPT
-dmz     loc     REJECT      info
+dmz     loc     REJECT      debug
 net     all     DROP        info
 all     all     REJECT      info
