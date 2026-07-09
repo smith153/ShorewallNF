@@ -198,12 +198,19 @@ def parse_interfaces(records: Iterable[Record], zones: tuple[Zone, ...]) -> Pars
                 options_field = _interfaces_options_field(record)
             continue  # directive rows configure parsing; they are not interface entries
         device = require_field(record, 1, "interface")
-        options = (
-            tuple(record.fields[options_field].split(","))
-            if len(record.fields) > options_field
-            else ()
+        raw_options = (
+            record.fields[options_field] if len(record.fields) > options_field else ""
         )
-        interfaces.append(Interface(name=device, options=options))
+        opts = _parse_interface_options(raw_options, record)
+        interfaces.append(
+            Interface(
+                name=device,
+                options=opts.options,
+                rpfilter=opts.rpfilter,
+                tcpflags=opts.tcpflags,
+                sfilter=opts.sfilter,
+            )
+        )
         if head != "-":  # "-" is Shorewall's no-zone marker (e.g. an ifb device)
             if head not in zone_names:
                 raise ConfigError(f"unknown zone {head!r}", path=record.path, line=record.line)
@@ -240,6 +247,93 @@ def _interfaces_options_field(directive: Record) -> int:
         f"unsupported ?FORMAT {fmt} for interfaces (expected 1 or 2)",
         path=directive.path,
         line=directive.line,
+    )
+
+
+class _InterfaceOptions(NamedTuple):
+    """The interpreted OPTIONS column of one interface row (epic #310)."""
+
+    options: tuple[str, ...]
+    rpfilter: bool
+    tcpflags: bool
+    sfilter: tuple[str, ...]
+
+
+def _split_option_tokens(raw: str) -> list[str]:
+    """Split the OPTIONS column on commas, keeping commas inside ``(...)`` intact.
+
+    A list-valued option (``sfilter=(net,net)``) carries its own comma-separated list; the
+    parentheses shield those commas from the option separator so the whole list stays one token.
+    """
+    tokens: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for ch in raw:
+        if ch == "," and depth == 0:
+            tokens.append("".join(current))
+            current = []
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        current.append(ch)
+    tokens.append("".join(current))
+    return tokens
+
+
+def _parse_sfilter(token: str, record: Record) -> tuple[str, ...]:
+    """Parse an ``sfilter=net[,net...]`` token into its source-network list (ADR-0004).
+
+    The list may be wrapped in parentheses. A missing ``=``, an empty list, or an empty element
+    fails fast. Network literals are recorded verbatim; family (v4/v6) is resolved later.
+    """
+    _, sep, value = token.partition("=")
+    if not sep:
+        raise ConfigError(
+            "sfilter requires a network list (sfilter=net[,net...])",
+            path=record.path,
+            line=record.line,
+        )
+    if value.startswith("(") and value.endswith(")"):
+        value = value[1:-1]
+    nets = value.split(",")
+    if value == "" or any(net == "" for net in nets):
+        raise ConfigError(
+            f"malformed sfilter value {token!r} (expected sfilter=net[,net...])",
+            path=record.path,
+            line=record.line,
+        )
+    return tuple(nets)
+
+
+def _parse_interface_options(raw: str, record: Record) -> _InterfaceOptions:
+    """Interpret the OPTIONS column, lifting the protective-check options into typed fields.
+
+    ``rpfilter``/``tcpflags`` are bare boolean flags; ``sfilter=...`` carries a source-network
+    list. Every other token keeps today's verbatim passthrough (full option-name validation is
+    the validator epic's concern, not this stage's).
+    """
+    if raw == "":
+        return _InterfaceOptions(options=(), rpfilter=False, tcpflags=False, sfilter=())
+    rpfilter = False
+    tcpflags = False
+    sfilter: tuple[str, ...] = ()
+    passthrough: list[str] = []
+    for token in _split_option_tokens(raw):
+        if token == "rpfilter":
+            rpfilter = True
+        elif token == "tcpflags":
+            tcpflags = True
+        elif token == "sfilter" or token.startswith("sfilter="):
+            sfilter = _parse_sfilter(token, record)
+        else:
+            passthrough.append(token)
+    return _InterfaceOptions(
+        options=tuple(passthrough),
+        rpfilter=rpfilter,
+        tcpflags=tcpflags,
+        sfilter=sfilter,
     )
 
 

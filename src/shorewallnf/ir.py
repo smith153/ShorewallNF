@@ -92,10 +92,19 @@ class Interface:
 
     Zone membership is not modeled here — it lives on :class:`ZoneMember`. Which option
     tokens are valid is the zones/interfaces epic's concern.
+
+    The protective-check options (epic #310) are lifted out of the raw ``options`` passthrough
+    into typed fields the generator gates emission on: ``rpfilter``/``tcpflags`` are boolean
+    toggles, and ``sfilter`` is the anti-spoof source-network list (empty = disabled). All
+    default off, so an interface with none of them set is unchanged. The ``sfilter`` literals
+    are recorded verbatim; family classification (v4/v6) is deferred to the generator.
     """
 
     name: str
     options: tuple[str, ...] = ()
+    rpfilter: bool = False
+    tcpflags: bool = False
+    sfilter: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
