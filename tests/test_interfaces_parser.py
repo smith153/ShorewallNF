@@ -101,6 +101,38 @@ def test_sfilter_empty_element_raises() -> None:
     assert "sfilter" in str(exc.value)
 
 
+def test_sfilter_missing_close_paren_raises() -> None:
+    # A missing close paren must fail fast, not silently absorb the rest of the OPTIONS
+    # column (dhcp) into the network list (ADR-0004).
+    with pytest.raises(ConfigError) as exc:
+        parse_interfaces(
+            _records("net eth0", "net eth1 detect sfilter=(192.0.2.0/24,dhcp"), _ZONES
+        )
+    assert exc.value.line == 2
+
+
+def test_sfilter_stray_close_paren_raises() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_interfaces(_records("net eth0 detect sfilter=192.0.2.0/24)"), _ZONES)
+    assert exc.value.line == 1
+
+
+def test_sfilter_trailing_junk_after_close_paren_raises() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_interfaces(
+            _records("net eth0 detect sfilter=(192.0.2.0/24)extra"), _ZONES
+        )
+    assert "sfilter" in str(exc.value)
+
+
+def test_unbalanced_parens_in_option_column_raises() -> None:
+    # The tokenizer must reject unbalanced parens on any token, not only sfilter — an
+    # unclosed paren otherwise silently corrupts the verbatim passthrough too.
+    with pytest.raises(ConfigError) as exc:
+        parse_interfaces(_records("net eth0 detect foo=(a,dhcp"), _ZONES)
+    assert exc.value.line == 1
+
+
 def test_interface_without_options() -> None:
     result = parse_interfaces(_records("net eth0"), _ZONES)
     assert result.interfaces[0] == Interface(name="eth0", options=())

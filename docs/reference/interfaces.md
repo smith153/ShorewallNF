@@ -51,9 +51,10 @@ Three **protective-check** options are recognized and lifted into typed fields o
 | `tcpflags` | Malformed-TCP-flags checking flag for this interface. |
 | `sfilter=net[,net...]` | Anti-spoof source-network list. A multi-network list must be wrapped in parentheses so its commas do not split the options — e.g. `sfilter=(192.0.2.0/24,198.51.100.0/24)`. A single network needs no parentheses. |
 
-A malformed `sfilter` (no `=`, an empty list, or an empty element) fails fast with a
-`file:line` error. Network literals are recorded verbatim; their family (IPv4 vs IPv6) is not
-classified here.
+A malformed `sfilter` (no `=`, an empty list, an empty element, or unbalanced/mismatched
+parentheses such as `sfilter=(net,net` or `sfilter=(net)extra`) fails fast with a `file:line`
+error. Network literals are recorded verbatim; their family (IPv4 vs IPv6) is not classified
+here.
 
 !!! warning "Options are recognized but not yet enforced"
     The three options above are parsed into the interface model, but ShorewallNF does **not**

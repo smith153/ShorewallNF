@@ -259,11 +259,13 @@ class _InterfaceOptions(NamedTuple):
     sfilter: tuple[str, ...]
 
 
-def _split_option_tokens(raw: str) -> list[str]:
+def _split_option_tokens(raw: str, record: Record) -> list[str]:
     """Split the OPTIONS column on commas, keeping commas inside ``(...)`` intact.
 
     A list-valued option (``sfilter=(net,net)``) carries its own comma-separated list; the
     parentheses shield those commas from the option separator so the whole list stays one token.
+    Unbalanced parentheses fail fast (ADR-0004): an unclosed ``(`` would otherwise silently
+    absorb the rest of the column, and a stray ``)`` would corrupt a token verbatim.
     """
     tokens: list[str] = []
     current: list[str] = []
@@ -277,7 +279,19 @@ def _split_option_tokens(raw: str) -> list[str]:
             depth += 1
         elif ch == ")":
             depth -= 1
+            if depth < 0:
+                raise ConfigError(
+                    f"unbalanced parentheses in interface options {raw!r}",
+                    path=record.path,
+                    line=record.line,
+                )
         current.append(ch)
+    if depth != 0:
+        raise ConfigError(
+            f"unbalanced parentheses in interface options {raw!r}",
+            path=record.path,
+            line=record.line,
+        )
     tokens.append("".join(current))
     return tokens
 
@@ -285,8 +299,9 @@ def _split_option_tokens(raw: str) -> list[str]:
 def _parse_sfilter(token: str, record: Record) -> tuple[str, ...]:
     """Parse an ``sfilter=net[,net...]`` token into its source-network list (ADR-0004).
 
-    The list may be wrapped in parentheses. A missing ``=``, an empty list, or an empty element
-    fails fast. Network literals are recorded verbatim; family (v4/v6) is resolved later.
+    The list may be wrapped in parentheses. A missing ``=``, an empty list, an empty element,
+    or mismatched/stray parentheses fails fast. Network literals are recorded verbatim; family
+    (v4/v6) is resolved later.
     """
     _, sep, value = token.partition("=")
     if not sep:
@@ -295,10 +310,24 @@ def _parse_sfilter(token: str, record: Record) -> tuple[str, ...]:
             path=record.path,
             line=record.line,
         )
-    if value.startswith("(") and value.endswith(")"):
+    # Parens must wrap the whole value or be absent: a lone leading/trailing paren, or trailing
+    # junk after the close (`(net)extra`), is a malformed value, not part of a network literal.
+    if value.startswith("(") != value.endswith(")"):
+        raise ConfigError(
+            f"unbalanced parentheses in sfilter value {token!r}",
+            path=record.path,
+            line=record.line,
+        )
+    if value.startswith("("):
         value = value[1:-1]
     nets = value.split(",")
     if value == "" or any(net == "" for net in nets):
+        raise ConfigError(
+            f"malformed sfilter value {token!r} (expected sfilter=net[,net...])",
+            path=record.path,
+            line=record.line,
+        )
+    if any("(" in net or ")" in net for net in nets):
         raise ConfigError(
             f"malformed sfilter value {token!r} (expected sfilter=net[,net...])",
             path=record.path,
@@ -320,7 +349,7 @@ def _parse_interface_options(raw: str, record: Record) -> _InterfaceOptions:
     tcpflags = False
     sfilter: tuple[str, ...] = ()
     passthrough: list[str] = []
-    for token in _split_option_tokens(raw):
+    for token in _split_option_tokens(raw, record):
         if token == "rpfilter":
             rpfilter = True
         elif token == "tcpflags":
