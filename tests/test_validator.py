@@ -671,6 +671,115 @@ def test_firewall_zone_without_members_has_no_interface_refs() -> None:
     assert validate(rs) is rs
 
 
+# --- cross-family (IPv4/IPv6) literal misuse (#332, epic #312) ----------------
+#
+# A rule/NAT whose family is narrowed to one family (by an address literal, per ADR-0002)
+# must not reference a zone that can only carry the other family — such a reference can never
+# match and would be silently mis-emitted. A zone's family is emergent from its members: a
+# zone is single-family only when every member agrees on that one family; a firewall zone, a
+# member-less zone, or a mixed-family (dual) zone can carry both. Each misuse fails fast with
+# one located ConfigError naming both conflicting families (ADR-0002, ADR-0004). Dual-stack
+# rules/zones and correctly-scoped single-family configs are unaffected (no false positives).
+
+_V6_ONLY = Zone(
+    name="v6only",
+    members=(ZoneMember(interface="eth6", family=Family.IPV6, host="2001:db8::1"),),
+)
+_V4_ONLY = Zone(
+    name="v4only",
+    members=(ZoneMember(interface="eth4", family=Family.IPV4, host="192.0.2.1"),),
+)
+_DUAL = Zone(name="loc", members=(ZoneMember(interface="eth0", family=Family.BOTH),))
+
+# Interfaces named by the cross-family zone fixtures above, so the no-false-positive cases
+# clear the interface-reference check (#324) and reach the family-scope logic under test (#332).
+_XFAM_IFACES = (
+    Interface(name="eth0"),
+    Interface(name="eth4"),
+    Interface(name="eth6"),
+    Interface(name="e"),
+)
+
+
+def test_ipv4_literal_in_ipv6_only_zone_fails_with_location() -> None:
+    # An IPv4 literal narrows the rule to ipv4, but its source zone is ipv6-only: dead reference.
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), rules=(
+        Rule(action="ACCEPT", source="v6only:203.0.113.5", dest="loc",
+             family=Family.IPV4, path="rules", line=5),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:5: ")  # located
+    assert "v6only" in msg  # names the offending zone
+    assert "ipv4" in msg and "ipv6" in msg  # names both conflicting families
+
+
+def test_ipv6_literal_in_ipv4_only_zone_fails_with_location() -> None:
+    # The vice-versa case: an IPv6 literal narrows to ipv6, but its dest zone is ipv4-only.
+    rs = Ruleset(zones=(_V4_ONLY, _DUAL), rules=(
+        Rule(action="ACCEPT", source="loc", dest="v4only:2001:db8::5",
+             family=Family.IPV6, path="rules", line=8),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:8: ")
+    assert "v4only" in msg
+    assert "ipv4" in msg and "ipv6" in msg
+
+
+def test_stopped_rule_cross_family_fails_with_location() -> None:
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), stopped_rules=(
+        Rule(action="ACCEPT", source="v6only:203.0.113.5", dest="loc",
+             family=Family.IPV4, path="stoppedrules", line=2),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("stoppedrules:2: ") and "v6only" in msg
+    assert "ipv4" in msg and "ipv6" in msg
+
+
+def test_dnat_ipv4_target_to_ipv6_only_zone_fails_with_location() -> None:
+    # A DNAT narrowed to ipv4 by its target literal, delivered into an ipv6-only internal zone.
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), nats=(
+        Nat(action="DNAT", source="loc", dest="v6only", to="203.0.113.5", proto="tcp",
+            dport="80", family=Family.IPV4, path="rules", line=3),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:3: ") and "v6only" in msg
+    assert "ipv4" in msg and "ipv6" in msg
+
+
+def test_correctly_scoped_single_family_zone_unaffected() -> None:
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), interfaces=_XFAM_IFACES, rules=(
+        Rule(action="ACCEPT", source="v6only:2001:db8::5", dest="loc", family=Family.IPV6),
+    ))
+    assert validate(rs) is rs
+
+
+def test_both_family_rule_against_single_family_zone_unaffected() -> None:
+    # A dual-stack (Family.BOTH) rule is not narrowed, so it may reference any zone.
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), interfaces=_XFAM_IFACES, rules=(
+        Rule(action="ACCEPT", source="v6only", dest="loc", family=Family.BOTH),
+    ))
+    assert validate(rs) is rs
+
+
+def test_dual_stack_zone_unaffected() -> None:
+    # A zone with a bare-interface (Family.BOTH) member carries both families — no conflict.
+    rs = Ruleset(zones=(_DUAL,), interfaces=_XFAM_IFACES, rules=(
+        Rule(action="ACCEPT", source="loc:203.0.113.5", dest="loc", family=Family.IPV4),
+    ))
+    assert validate(rs) is rs
+
+
+def test_mixed_family_members_are_dual_stack() -> None:
+    # A zone populated by both an IPv4 and an IPv6 host can carry both — not single-family.
+    mixed = Zone(name="mix", members=(
+        ZoneMember(interface="e", family=Family.IPV4, host="192.0.2.1"),
+        ZoneMember(interface="e", family=Family.IPV6, host="2001:db8::1"),
+    ))
+    rs = Ruleset(zones=(mixed,), interfaces=_XFAM_IFACES, rules=(
+        Rule(action="ACCEPT", source="mix:203.0.113.5", dest="mix", family=Family.IPV4),
+    ))
+    assert validate(rs) is rs
+
 def test_compile_rejects_snat_to_undeclared_interface(tmp_path: Path) -> None:
     cfg = _config(tmp_path, "")
     (cfg / "snat").write_text("MASQUERADE 192.0.2.0/24 eth9\n")
