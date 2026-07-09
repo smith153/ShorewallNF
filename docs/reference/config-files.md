@@ -21,8 +21,9 @@ only the files it knows about, in a fixed order; anything else in the directory 
 | `mangle` | Packet marking and `TPROXY`. |
 | [`stoppedrules`](stoppedrules.md) | Admin-access rules that stay in force in the stopped safe state. |
 
-A global settings file (`shorewallnf.conf`, an nftables-native subset of Shorewall's
-`shorewall.conf`) is [planned](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0061-global-settings-file.md).
+`shorewallnf.conf` — an optional, **non-tabular** `KEY=value` settings file for whole-ruleset
+behaviour (logging, kernel sysctl toggles) — is documented separately: see
+[`shorewallnf.conf` reference](shorewallnf-conf.md).
 
 ## Preprocessing
 

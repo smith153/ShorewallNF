@@ -569,22 +569,105 @@ def test_source_nat_without_out_interface_fails_with_location(action: str) -> No
 
 
 def test_valid_nats_pass_unchanged() -> None:
-    rs = Ruleset(nats=(
-        Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5:8080", proto="tcp",
-            dport="80"),
-        Nat(action="DNAT", source="net", dest="loc", to="2001:db8::1", family=Family.IPV6),
-        Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0"),
-        Nat(action="SNAT", source_nets="10.0.0.0/8", out_interface="eth0",
-            snat_to="203.0.113.5"),
-    ))
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0"),),
+        nats=(
+            Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5:8080", proto="tcp",
+                dport="80"),
+            Nat(action="DNAT", source="net", dest="loc", to="2001:db8::1", family=Family.IPV6),
+            Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0"),
+            Nat(action="SNAT", source_nets="10.0.0.0/8", out_interface="eth0",
+                snat_to="203.0.113.5"),
+        ),
+    )
     assert validate(rs) is rs  # pure IR -> IR, no false positives
 
 
 def test_masquerade_without_address_is_allowed() -> None:
     # MASQUERADE has no explicit address by design (it uses the egress interface's own address).
-    rs = Ruleset(nats=(
-        Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0", snat_to=None),
-    ))
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0"),),
+        nats=(
+            Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0",
+                snat_to=None),
+        ),
+    )
+    assert validate(rs) is rs
+
+
+# --- interface reference integrity: zone members + NAT egress (#324, epic #312) ---
+#
+# Every interface named by a `zones` member or a source-NAT `out_interface` must be declared in
+# `interfaces`. This extends the provider->interface integrity guarantee to zone membership and
+# NAT egress; an undeclared reference fails fast with one located ConfigError (ADR-0004). Valid
+# configs are unaffected (no false positives).
+
+_IFACES = (Interface(name="eth0"), Interface(name="eth1"))
+
+
+def test_zone_member_undeclared_interface_fails_with_location() -> None:
+    rs = Ruleset(
+        zones=(
+            Zone(
+                name="net",
+                members=(
+                    ZoneMember(interface="eth9", family=Family.BOTH,
+                               path="interfaces", line=5),
+                ),
+            ),
+        ),
+        interfaces=_IFACES,
+    )
+    msg = str(_message(rs))
+    assert msg.startswith("interfaces:5: ")  # located at the offending member
+    assert "eth9" in msg  # names the unknown interface
+    assert "net" in msg  # names the owning zone
+
+
+def test_nat_egress_undeclared_interface_fails_with_location() -> None:
+    rs = Ruleset(
+        nats=(
+            Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth9",
+                path="snat", line=3),
+        ),
+        interfaces=_IFACES,
+    )
+    msg = str(_message(rs))
+    assert msg.startswith("snat:3: ")  # located at the offending snat entry
+    assert "eth9" in msg  # names the unknown interface
+
+
+def test_snat_egress_undeclared_interface_fails_with_location() -> None:
+    rs = Ruleset(
+        nats=(
+            Nat(action="SNAT", source_nets="10.0.0.0/8", out_interface="eth9",
+                snat_to="203.0.113.5", path="snat", line=7),
+        ),
+        interfaces=_IFACES,
+    )
+    msg = str(_message(rs))
+    assert msg.startswith("snat:7: ") and "eth9" in msg
+
+
+def test_valid_interface_references_pass_unchanged() -> None:
+    rs = Ruleset(
+        zones=(
+            Zone(
+                name="net",
+                members=(ZoneMember(interface="eth0", family=Family.BOTH),),
+            ),
+        ),
+        interfaces=_IFACES,
+        nats=(
+            Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth1"),
+        ),
+    )
+    assert validate(rs) is rs  # pure IR -> IR, no false positives
+
+
+def test_firewall_zone_without_members_has_no_interface_refs() -> None:
+    # The firewall zone has no interface members; it must not trip the interface-reference check.
+    rs = Ruleset(zones=(Zone(name="fw", is_firewall=True),), interfaces=_IFACES)
     assert validate(rs) is rs
 
 
@@ -687,3 +770,10 @@ def test_mixed_family_members_are_dual_stack() -> None:
         Rule(action="ACCEPT", source="mix:203.0.113.5", dest="mix", family=Family.IPV4),
     ))
     assert validate(rs) is rs
+
+def test_compile_rejects_snat_to_undeclared_interface(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "")
+    (cfg / "snat").write_text("MASQUERADE 192.0.2.0/24 eth9\n")
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    assert "eth9" in str(exc.value)
