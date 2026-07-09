@@ -22,6 +22,11 @@ Checks so far:
   source/dest (including the zone part of a ``zone:host`` token) must be declared in ``zones`` —
   the firewall zone included — or be the ``all`` wildcard. This cross-file reference check lives
   here (not the parser), mirroring the provider→interface check; the parser stays syntactic.
+- **Cross-family literal misuse (#332).** A rule/NAT narrowed to one family (by an address
+  literal, ADR-0002) must not reference a zone that can only carry the other family — the
+  reference can never match and would be silently mis-emitted. A zone's family is emergent
+  from its members (single-family only when every member agrees; firewall/member-less/mixed
+  zones are dual-stack). Fails fast with one located error naming both conflicting families.
 - **Duplicate/contradictory policies (#326).** A ``policy`` file may hold only one entry per
   ``(source, dest)`` pair: a second entry is dead (never reached), and a second with a
   *different* action is a silent footgun. Both are rejected with one located error naming both
@@ -58,6 +63,7 @@ def validate(ruleset: Ruleset) -> Ruleset:
         _reject_shadowed_section_rule(rule)
         _reject_malformed_proto_port(rule)
     _validate_zone_references(ruleset)
+    _validate_family_scope(ruleset)
     _validate_policy_uniqueness(ruleset.policies)
     _validate_nats(ruleset.nats)
     _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
@@ -225,6 +231,78 @@ def _validate_zone_references(ruleset: Ruleset) -> None:
         check(rule.source, rule.dest, "rule", rule.path, rule.line)
     for rule in ruleset.stopped_rules:
         check(rule.source, rule.dest, "stoppedrules rule", rule.path, rule.line)
+
+
+def _zone_family(zone: Zone) -> Family:
+    """The family a zone can carry, emergent from its members (ADR-0002).
+
+    A zone is single-family (``IPV4``/``IPV6``) only when every member agrees on that one
+    family. A firewall zone, a member-less zone, and a mixed-family (v4 + v6 hosts) zone can
+    all carry both, so they resolve to :data:`Family.BOTH` — the dual-capable case that never
+    conflicts.
+    """
+    families = {member.family for member in zone.members}
+    if not families or Family.BOTH in families or len(families) > 1:
+        return Family.BOTH
+    return families.pop()
+
+
+def _reject_cross_family(
+    prefix: str,
+    family: Family,
+    tokens: tuple[str, ...],
+    zones: dict[str, Zone],
+    path: str | None,
+    line: int | None,
+) -> None:
+    """Reject a ``family``-narrowed rule/NAT that references a zone of the other family (#332).
+
+    A rule/NAT narrowed to one family (by an address literal, ADR-0002) whose source/dest names
+    a single-family zone of the *other* family can never match — the literal is mis-scoped. Fail
+    fast with one located error naming both conflicting families. A dual-stack (``Family.BOTH``)
+    rule/NAT is unconstrained; a wildcard or otherwise unresolved token is left to the reference
+    check (#323).
+    """
+    if family is Family.BOTH:
+        return
+    for token in tokens:
+        zone = zones.get(_zone_name(token))
+        if zone is None:  # the `all` wildcard or an unresolved token — not this check's concern
+            continue
+        zone_family = _zone_family(zone)
+        if zone_family is not Family.BOTH and zone_family is not family:
+            raise ConfigError(
+                f"{prefix}: cross-family reference — {family.value} traffic can never reach "
+                f"{zone_family.value}-only zone {zone.name!r} (ADR-0002)",
+                path=path,
+                line=line,
+            )
+
+
+def _validate_family_scope(ruleset: Ruleset) -> None:
+    """Reject a rule/NAT literal used against a zone of the opposite family (#332, ADR-0002).
+
+    Family is already inferred onto each record; this compares that scoped family against the
+    resolved family of every zone the record references (the zone part of a ``zone:host`` token
+    resolves the same way). Dual-stack records and correctly-scoped single-family configs are
+    unaffected (no false positives).
+    """
+    zones = {zone.name: zone for zone in ruleset.zones}
+    for rule in ruleset.rules:
+        _reject_cross_family(
+            f"rule {rule.action} {rule.source!r} {rule.dest!r}",
+            rule.family, (rule.source, rule.dest), zones, rule.path, rule.line,
+        )
+    for rule in ruleset.stopped_rules:
+        _reject_cross_family(
+            f"stoppedrules rule {rule.action} {rule.source!r} {rule.dest!r}",
+            rule.family, (rule.source, rule.dest), zones, rule.path, rule.line,
+        )
+    for nat in ruleset.nats:
+        _reject_cross_family(
+            f"{nat.action} {nat.source!r} {nat.dest!r}",
+            nat.family, (nat.source, nat.dest), zones, nat.path, nat.line,
+        )
 
 
 def _validate_providers(
