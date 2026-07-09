@@ -17,9 +17,11 @@ family consistency). The concrete builders live in the feature epics.
 from __future__ import annotations
 
 import ipaddress
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import NamedTuple, TypeVar
+from enum import Enum
+from typing import Any, NamedTuple, TypeVar
 
 from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
@@ -32,16 +34,22 @@ from .ir import (
     MacroRule,
     MangleRule,
     Nat,
+    OnOffKeep,
     Policy,
     Provider,
     Rule,
     Ruleset,
+    Settings,
+    YesNoKeep,
     Zone,
     ZoneMember,
 )
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
+
+# All-defaults settings: an absent ``shorewallnf.conf`` yields this immutable singleton.
+_DEFAULT_SETTINGS = Settings()
 
 
 @dataclass(frozen=True, slots=True)
@@ -901,13 +909,18 @@ def _family_of_literal(host: str, record: Record) -> Family:
     return Family.IPV4 if network.version == 4 else Family.IPV6
 
 
-def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
+def parse_config(
+    streams: Mapping[str, list[SourceLine]], settings: Settings = _DEFAULT_SETTINGS
+) -> Ruleset:
     """Assemble a :class:`~shorewallnf.ir.Ruleset` from the preprocessed per-file streams.
 
     Dispatches each known config file to its per-file parser and combines the results. Zones
     are parsed first so ``interfaces`` can validate references and attach membership, then
     ``policy`` is validated against the populated zones (the ``interfaces`` result carries the
     zones with their members populated). Files absent from ``streams`` are simply skipped.
+
+    ``settings`` is the non-tabular ``shorewallnf.conf`` result (ADR-0061), threaded onto the
+    IR so it reaches the generator; it defaults to the all-defaults :class:`Settings`.
     """
     zones: tuple[Zone, ...] = ()
     interfaces: tuple[Interface, ...] = ()
@@ -957,4 +970,109 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         providers=providers,
         mangle_rules=mangle_rules,
         actions=actions,
+        settings=settings,
     )
+
+
+# ---- shorewallnf.conf global settings (ADR-0061) ----------------------------------------
+
+# A well-formed settings key: uppercase word characters (ADR-0061 §2). Unknown-but-well-formed
+# keys fail fast as "unknown setting"; anything else is a malformed key.
+_SETTINGS_KEY = re.compile(r"[A-Z0-9_]+")
+
+# nftables truncates a log prefix at NF_LOG_PREFIXLEN (128) including the NUL terminator; a
+# template longer than that can never render within the kernel limit (ADR-0061 §4).
+_LOG_PREFIX_MAX = 127
+
+_SettingConverter = Callable[[str, str, str, int], object]
+
+
+def _convert_log_level(value: str, key: str, path: str, line: int) -> str:
+    if not value:
+        raise ConfigError(f"empty value for {key}", path=path, line=line)
+    return value
+
+
+def _convert_logformat(value: str, key: str, path: str, line: int) -> str:
+    if len(value) > _LOG_PREFIX_MAX:
+        raise ConfigError(
+            f"{key} of {len(value)} chars exceeds the {_LOG_PREFIX_MAX}-char kernel "
+            "log-prefix limit",
+            path=path,
+            line=line,
+        )
+    return value
+
+
+def _enum_converter(enum_cls: type[Enum]) -> _SettingConverter:
+    """A converter mapping a value (case-insensitively) onto an enum member, else failing fast."""
+    members = {member.value.lower(): member for member in enum_cls}
+    allowed = "/".join(member.value for member in enum_cls)
+
+    def convert(value: str, key: str, path: str, line: int) -> object:
+        member = members.get(value.lower())
+        if member is None:
+            raise ConfigError(
+                f"invalid value {value!r} for {key} (expected {allowed})", path=path, line=line
+            )
+        return member
+
+    return convert
+
+
+# Known keys → (Settings field, string→typed converter). A key lives here exactly when a field
+# consumes it; every other key (typos, legacy shorewall.conf knobs, not-yet-built ADR-0061
+# options) is an unknown setting and fails fast (ADR-0061 §3/§4).
+_SETTINGS_KEYS: dict[str, tuple[str, _SettingConverter]] = {
+    "LOG_LEVEL": ("log_level", _convert_log_level),
+    "LOGFORMAT": ("logformat", _convert_logformat),
+    "IP_FORWARDING": ("ip_forwarding", _enum_converter(OnOffKeep)),
+    "LOG_MARTIANS": ("log_martians", _enum_converter(YesNoKeep)),
+    "ROUTE_FILTER": ("route_filter", _enum_converter(YesNoKeep)),
+}
+
+
+def _settings_value(rest: str, path: str, line: int) -> str:
+    """The value side of a ``KEY=value`` line: a quoted string (quotes stripped, content kept
+    verbatim) or a bare token with an optional ``#`` comment trimmed. Never shell-expanded."""
+    text = rest.strip()
+    if text[:1] in ("'", '"'):
+        quote = text[0]
+        end = text.find(quote, 1)
+        if end == -1:
+            raise ConfigError("unterminated quoted value", path=path, line=line)
+        trailing = text[end + 1 :].strip()
+        if trailing and not trailing.startswith("#"):
+            raise ConfigError("unexpected text after quoted value", path=path, line=line)
+        return text[1:end]
+    comment = text.find("#")
+    if comment != -1:
+        text = text[:comment].rstrip()
+    return text
+
+
+def parse_settings(text: str, *, path: str = "shorewallnf.conf") -> Settings:
+    """Parse ``shorewallnf.conf`` text into a frozen :class:`Settings` (ADR-0061).
+
+    The grammar is a deliberate subset of shell: one ``KEY=value`` (or ``KEY="value"``)
+    assignment per line, ``#`` comments and blank lines ignored, no sourcing and no ``$VAR``
+    expansion. An unknown key, a malformed line, or a malformed/out-of-range value fails fast
+    with a located :class:`~shorewallnf.errors.ConfigError` (ADR-0004) — never warn-and-ignore.
+    """
+    fields: dict[str, Any] = {}
+    for line, raw in enumerate(text.splitlines(), 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, rest = stripped.partition("=")
+        key = key.strip()
+        if not sep:
+            raise ConfigError("malformed line (expected KEY=value)", path=path, line=line)
+        if not _SETTINGS_KEY.fullmatch(key):
+            raise ConfigError(f"malformed setting key {key!r}", path=path, line=line)
+        spec = _SETTINGS_KEYS.get(key)
+        if spec is None:
+            raise ConfigError(f"unknown setting {key!r}", path=path, line=line)
+        field_name, convert = spec
+        fields[field_name] = convert(_settings_value(rest, path, line), key, path, line)
+    return replace(Settings(), **fields)
