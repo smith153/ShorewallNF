@@ -31,6 +31,10 @@ Checks so far:
   ``out_interface`` are high-signal mistakes the Generator would otherwise reject *unlocated*.
   Catching them here cites ``file:line`` (ADR-0004). Scope is these common mistakes only, not
   reachability solving (YAGNI).
+- **Interface reference integrity (#324).** Every interface named by a ``zones`` member or a
+  source-NAT ``out_interface`` must be declared in ``interfaces`` — extending the provider->
+  interface integrity check to zone membership and NAT egress. An undeclared reference fails fast
+  with one located error naming the unknown interface (ADR-0004).
 """
 
 from __future__ import annotations
@@ -54,14 +58,43 @@ _WILDCARD_ZONE = "all"
 
 def validate(ruleset: Ruleset) -> Ruleset:
     """Run every semantic check over ``ruleset``; return it unchanged, or raise ``ConfigError``."""
+    interface_names = {iface.name for iface in ruleset.interfaces}
     for rule in ruleset.rules:
         _reject_shadowed_section_rule(rule)
         _reject_malformed_proto_port(rule)
     _validate_zone_references(ruleset)
     _validate_policy_uniqueness(ruleset.policies)
     _validate_nats(ruleset.nats)
-    _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
+    _validate_interface_references(ruleset, interface_names)
+    _validate_providers(ruleset.providers, interface_names)
     return ruleset
+
+
+def _validate_interface_references(ruleset: Ruleset, interface_names: set[str]) -> None:
+    """Reject a zone member or NAT egress naming an undeclared interface (#324, ADR-0004).
+
+    Extends the provider->interface integrity guarantee to zone membership and source-NAT egress:
+    every interface named by a ``zones`` member or a ``SNAT``/``MASQUERADE`` ``out_interface`` must
+    be declared in ``interfaces``. Cross-file reference integrity is the validator's job (the parser
+    stays syntactic). Fails fast with one located error naming the unknown interface.
+    """
+    for zone in ruleset.zones:
+        for member in zone.members:
+            if member.interface not in interface_names:
+                raise ConfigError(
+                    f"zone {zone.name!r} member names unknown interface "
+                    f"{member.interface!r} (no such interface is configured)",
+                    path=member.path,
+                    line=member.line,
+                )
+    for nat in ruleset.nats:
+        if nat.out_interface and nat.out_interface not in interface_names:
+            raise ConfigError(
+                f"{nat.action} egress names unknown interface {nat.out_interface!r} "
+                f"(no such interface is configured)",
+                path=nat.path,
+                line=nat.line,
+            )
 
 
 def _policy_location(policy: Policy) -> str:
