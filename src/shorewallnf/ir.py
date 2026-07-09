@@ -383,6 +383,17 @@ class YesNoKeep(Enum):
     KEEP = "Keep"
 
 
+class ClampMss(Enum):
+    """``CLAMPMSS=Yes`` path-MTU sentinel (ADR-0061).
+
+    The clamp is a three-state setting kept distinct without conflating ``bool`` with ``int``
+    (``bool ⊂ int``): ``None`` is off, this sentinel clamps the forwarded-SYN MSS to the route's
+    path MTU (``Yes``), and a positive ``int`` clamps to that fixed size.
+    """
+
+    PATH_MTU = "Yes"
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Whole-ruleset behaviour from ``shorewallnf.conf`` (ADR-0061).
@@ -405,6 +416,9 @@ class Settings:
     # generator family-gates the ruleset to IPv4-only (ADR-0061/ADR-0002, #369). Default False =
     # today's dual-stack output.
     disable_ipv6: bool = False
+    # CLAMPMSS (ADR-0061, #368): None = off (default; no clamp rule), ClampMss.PATH_MTU = clamp
+    # the forwarded-SYN MSS to path MTU (Yes), a positive int = a fixed MSS. Read by the generator.
+    clampmss: int | ClampMss | None = None
 
 
 @dataclass(frozen=True, slots=True)

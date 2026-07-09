@@ -7,6 +7,7 @@ import pytest
 from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate, generate_stopped
 from shorewallnf.ir import (
+    ClampMss,
     ConntrackHelper,
     Family,
     HelperCapabilities,
@@ -18,6 +19,7 @@ from shorewallnf.ir import (
     Zone,
     ZoneMember,
 )
+from shorewallnf.parser import parse_settings
 from tests.golden_harness import assert_golden
 
 POLICY_GOLDEN = Path(__file__).parent / "golden" / "policy_default_rules.json"
@@ -1799,3 +1801,79 @@ def test_disable_ipv6_matches_golden() -> None:
     )
     rs = Ruleset(zones=zones, rules=rules, policies=policies, settings=_DISABLE_IPV6)
     assert_golden(rs, "disable_ipv6")
+
+
+# ---- CLAMPMSS forward-path TCP MSS clamp (ADR-0061, #368) --------------------
+
+_SYN_MATCH = {
+    "match": {
+        "op": "in",
+        "left": {"payload": {"protocol": "tcp", "field": "flags"}},
+        "right": "syn",
+    }
+}
+
+
+def _clamp_rule(value: Any) -> list[dict[str, Any]]:
+    return [
+        _SYN_MATCH,
+        {"mangle": {"key": {"tcp option": {"name": "maxseg", "field": "size"}}, "value": value}},
+    ]
+
+
+def _forward_exprs(ruleset: Ruleset) -> list[list[dict[str, Any]]]:
+    return [r["expr"] for r in _rules(ruleset) if r["chain"] == "forward"]
+
+
+def test_clampmss_off_leaves_base_skeleton_unchanged() -> None:
+    # None (the default) emits no clamp rule; explicit CLAMPMSS=No parses to the same None.
+    assert generate(Ruleset(settings=Settings(clampmss=None))) == generate(Ruleset())
+    assert_golden(Ruleset(settings=Settings(clampmss=None)), "base_skeleton")
+    assert_golden(Ruleset(settings=parse_settings("CLAMPMSS=No\n")), "base_skeleton")
+
+
+def test_clampmss_yes_emits_path_mtu_clamp_golden() -> None:
+    assert_golden(Ruleset(settings=Settings(clampmss=ClampMss.PATH_MTU)), "clampmss_yes")
+
+
+def test_clampmss_fixed_emits_fixed_size_clamp_golden() -> None:
+    assert_golden(Ruleset(settings=Settings(clampmss=1400)), "clampmss_fixed")
+
+
+def test_clampmss_yes_is_a_single_inet_path_mtu_rule() -> None:
+    forward = _forward_exprs(Ruleset(settings=Settings(clampmss=ClampMss.PATH_MTU)))
+    assert _clamp_rule({"rt": {"key": "mtu"}}) in forward
+
+
+def test_clampmss_clamp_precedes_policy_fall_through() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        policies=(Policy(source="loc", dest="net", action="ACCEPT"),),
+        settings=Settings(clampmss=1400),
+    )
+    forward = _forward_exprs(rs)
+    clamp = _clamp_rule(1400)
+    policy = [_iif("eth1"), _oif("eth0"), {"accept": None}]
+    assert clamp in forward
+    assert forward.index(clamp) < forward.index(policy)
+
+
+def test_clampmss_clamp_precedes_forward_stateful_accept() -> None:
+    # The reply SYN-ACK of a NEW connection is already ct-state established, so a clamp placed
+    # after the forward established/related accept never sees it (one-directional clamp). Pinning
+    # the clamp ahead of that terminating accept is what clamps BOTH handshake directions (#375).
+    forward = _forward_exprs(Ruleset(settings=Settings(clampmss=1400)))
+    stateful: list[dict[str, Any]] = [
+        {
+            "match": {
+                "op": "in",
+                "left": {"ct": {"key": "state"}},
+                "right": {"set": ["established", "related"]},
+            }
+        },
+        {"accept": None},
+    ]
+    clamp = _clamp_rule(1400)
+    assert clamp in forward
+    assert stateful in forward
+    assert forward.index(clamp) < forward.index(stateful)
