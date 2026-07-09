@@ -999,6 +999,23 @@ def _convert_logformat(value: str, key: str, path: str, line: int) -> str:
     return value
 
 
+def _convert_yes_no(value: str, key: str, path: str, line: int) -> bool:
+    """Map a plain ``Yes``/``No`` (case-insensitive) onto a bool, else fail fast (ADR-0004).
+
+    For settings that are strictly two-state (no ``Keep``), so a bool field rather than the
+    :class:`YesNoKeep` tri-state — mirrors ``_enum_converter``'s case-insensitive matching.
+    """
+    match value.lower():
+        case "yes":
+            return True
+        case "no":
+            return False
+        case _:
+            raise ConfigError(
+                f"invalid value {value!r} for {key} (expected Yes/No)", path=path, line=line
+            )
+
+
 def _enum_converter(enum_cls: type[Enum]) -> _SettingConverter:
     """A converter mapping a value (case-insensitively) onto an enum member, else failing fast."""
     members = {member.value.lower(): member for member in enum_cls}
@@ -1024,6 +1041,7 @@ _SETTINGS_KEYS: dict[str, tuple[str, _SettingConverter]] = {
     "IP_FORWARDING": ("ip_forwarding", _enum_converter(OnOffKeep)),
     "LOG_MARTIANS": ("log_martians", _enum_converter(YesNoKeep)),
     "ROUTE_FILTER": ("route_filter", _enum_converter(YesNoKeep)),
+    "DISABLE_IPV6": ("disable_ipv6", _convert_yes_no),
 }
 
 

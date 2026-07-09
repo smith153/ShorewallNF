@@ -68,7 +68,7 @@ def generate(
     (ADR-0041). It defaults to the empty surface, so a helper is emitted only when the caller
     declares the platform provides it.
     """
-    commands = _filter_base()
+    commands = _filter_base(ruleset.settings.disable_ipv6)
     commands += _mangle_rules(ruleset)
     commands += _nat_base(ruleset)
     commands += _ct_helpers(ruleset, capabilities)
@@ -153,15 +153,27 @@ def generate_tproxy_routing(ruleset: Ruleset) -> tuple[TproxyRoutingArtifact, ..
     )
 
 
-def _filter_base() -> list[_Command]:
+def _filter_base(disable_ipv6: bool = False) -> list[_Command]:
     """The always-present ADR-0005 filter skeleton: table, default-drop base chains, and the
-    no-lockout baseline accepts (established/related on input+forward, loopback on input)."""
+    no-lockout baseline accepts (established/related on input+forward, loopback on input).
+
+    With ``disable_ipv6`` (ADR-0061/ADR-0002, #369) a ``meta nfproto ipv6 drop`` is installed at
+    the head of every base chain — ahead of the no-lockout accepts and of all feature/policy rules
+    — so nothing downstream passes IPv6 and the ``inet`` ruleset is effectively IPv4-only.
+    """
     commands: list[_Command] = [_table()]
     commands += [_chain(name, policy) for name, policy in _BASE_CHAINS]
+    if disable_ipv6:
+        commands += [_ipv6_drop(name) for name, _ in _BASE_CHAINS]
     commands.append(_rule("input", [_ct_established_related(), _accept()]))
     commands.append(_rule("input", [_ifname("iifname", "lo"), _accept()]))
     commands.append(_rule("forward", [_ct_established_related(), _accept()]))
     return commands
+
+
+def _ipv6_drop(chain: str) -> _Command:
+    """A ``meta nfproto ipv6 drop`` rule for ``chain`` — the DISABLE_IPV6 family-gate (#369)."""
+    return _rule(chain, [_nfproto_match("ipv6"), _verdict("DROP")])
 
 
 def _firewalls(ruleset: Ruleset) -> set[str]:
@@ -257,7 +269,12 @@ def _feature_rules(ruleset: Ruleset) -> list[_Command]:
     """
     interfaces = _zone_interfaces(ruleset.zones)
     firewalls = _firewalls(ruleset)
-    return _translate_rules(ruleset.rules, interfaces, firewalls)
+    rules = ruleset.rules
+    if ruleset.settings.disable_ipv6:
+        # Family-gate (#369): drop v6-scoped rules entirely; v4 and unguarded `both` rules stay
+        # (the base IPv6 drop is what keeps the surviving `both` rules from passing IPv6, ADR-0002).
+        rules = tuple(rule for rule in rules if rule.family is not Family.IPV6)
+    return _translate_rules(rules, interfaces, firewalls)
 
 
 def _translate_rules(

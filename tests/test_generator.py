@@ -1711,3 +1711,91 @@ def test_ct_helpers_match_golden() -> None:
         return generate(r, capabilities=_ALL_HELPERS)
 
     assert_golden(rs, "ct_helpers", generator=gen)
+
+
+# ---- DISABLE_IPV6 family-gate (#369, ADR-0061 / ADR-0002) --------------------------------
+
+_DISABLE_IPV6 = Settings(disable_ipv6=True)
+
+
+def _nfproto_ipv6() -> dict[str, Any]:
+    return {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv6"}}
+
+
+def _ipv6_drop_expr() -> list[dict[str, Any]]:
+    return [_nfproto_ipv6(), {"drop": None}]
+
+
+def test_disable_ipv6_installs_base_drop_in_every_base_chain() -> None:
+    rs = Ruleset(settings=_DISABLE_IPV6)
+    for chain in ("input", "forward", "output"):
+        chain_rules = [r for r in _rules(rs) if r["chain"] == chain]
+        assert chain_rules[0]["expr"] == _ipv6_drop_expr()
+
+
+def test_disable_ipv6_drop_precedes_no_lockout_baseline_accepts() -> None:
+    rs = Ruleset(settings=_DISABLE_IPV6)
+    input_rules = [r["expr"] for r in _rules(rs) if r["chain"] == "input"]
+    stateful = {
+        "match": {
+            "op": "in",
+            "left": {"ct": {"key": "state"}},
+            "right": {"set": ["established", "related"]},
+        }
+    }
+    loopback = {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "lo"}}
+    # the IPv6 drop is rule 0 in input, ahead of the established/related + loopback accepts.
+    assert input_rules[0] == _ipv6_drop_expr()
+    assert input_rules.index(_ipv6_drop_expr()) < input_rules.index([stateful, {"accept": None}])
+    assert input_rules.index(_ipv6_drop_expr()) < input_rules.index([loopback, {"accept": None}])
+
+
+def test_disable_ipv6_suppresses_ipv6_feature_rules_keeps_v4_and_both() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rules = (
+        Rule(action="ACCEPT", source="loc", dest="net:203.0.113.5", family=Family.IPV4),
+        Rule(action="ACCEPT", source="loc", dest="net:2001:db8::5", family=Family.IPV6),
+        Rule(action="ACCEPT", source="loc", dest="net", family=Family.BOTH),
+    )
+    rs = Ruleset(zones=zones, rules=rules, settings=_DISABLE_IPV6)
+    base = _rules(Ruleset(zones=zones, settings=_DISABLE_IPV6))
+    added = _rules(rs)[len(base) :]
+    # the v6 rule is dropped; the v4 rule and the unguarded both rule remain.
+    daddrs = [
+        e["match"]["right"]
+        for r in added
+        for e in r["expr"]
+        if e.get("match", {}).get("left", {}).get("payload", {}).get("field") == "daddr"
+    ]
+    assert "2001:db8::5" not in daddrs
+    assert "203.0.113.5" in daddrs
+    assert len(added) == 2  # v4 + both, v6 gone
+
+
+def test_disable_ipv6_off_is_byte_for_byte_todays_dual_stack() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rules = (
+        Rule(action="ACCEPT", source="loc", dest="net:203.0.113.5", family=Family.IPV4),
+        Rule(action="ACCEPT", source="loc", dest="net:2001:db8::5", family=Family.IPV6),
+    )
+    policies = (Policy(source="loc", dest="net", action="ACCEPT"),)
+    base = Ruleset(zones=zones, rules=rules, policies=policies)
+    explicit_off = Ruleset(
+        zones=zones, rules=rules, policies=policies, settings=Settings(disable_ipv6=False)
+    )
+    assert generate(explicit_off) == generate(base)
+
+
+def test_disable_ipv6_matches_golden() -> None:
+    zones = (_FW, _zone("loc", "eth1"), _zone("net", "eth0"))
+    rules = (
+        Rule(action="ACCEPT", source="loc", dest="net:203.0.113.5", family=Family.IPV4),
+        Rule(action="ACCEPT", source="loc", dest="net:2001:db8::5", family=Family.IPV6),
+        Rule(action="ACCEPT", source="loc", dest="net", family=Family.BOTH),
+    )
+    policies = (
+        Policy(source="loc", dest="net", action="ACCEPT"),
+        Policy(source="all", dest="all", action="DROP"),
+    )
+    rs = Ruleset(zones=zones, rules=rules, policies=policies, settings=_DISABLE_IPV6)
+    assert_golden(rs, "disable_ipv6")
