@@ -19,6 +19,7 @@ from . import reader
 from .applier import (
     DEFAULT_RULESET_PATH,
     apply_ruleset,
+    apply_sysctls,
     check_ruleset,
     clear_ruleset,
     restore_ruleset,
@@ -133,6 +134,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         ruleset = compile_config(args.config_dir)
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
+        apply_sysctls(_read_settings(args.config_dir))
         save_ruleset(ruleset)
         print(f"applied: {args.config_dir}")
         return 0
@@ -140,6 +142,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         ruleset = compile_config(args.config_dir)
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
+        apply_sysctls(_read_settings(args.config_dir))
         print(f"{_LIFECYCLE_MESSAGE[args.verb]}: {args.config_dir}")
         return 0
     if args.verb == "stop":
