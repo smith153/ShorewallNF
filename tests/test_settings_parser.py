@@ -13,7 +13,7 @@ import dataclasses
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import OnOffKeep, Settings, YesNoKeep
+from shorewallnf.ir import ClampMss, OnOffKeep, Settings, YesNoKeep
 from shorewallnf.parser import parse_settings
 
 # --- the Settings model ------------------------------------------------------
@@ -92,6 +92,40 @@ def test_enum_values_are_case_insensitive() -> None:
     assert parse_settings("ROUTE_FILTER=YES\n").route_filter is YesNoKeep.YES
 
 
+# --- CLAMPMSS: enum-or-int tri-state (ADR-0061, #368) ------------------------
+
+
+def test_clampmss_defaults_off() -> None:
+    # None (off) is the default, so an absent key and an explicit No both mean no clamp.
+    assert Settings().clampmss is None
+    assert parse_settings("").clampmss is None
+    assert parse_settings("CLAMPMSS=No\n").clampmss is None
+
+
+def test_clampmss_yes_is_path_mtu_sentinel() -> None:
+    assert parse_settings("CLAMPMSS=Yes\n").clampmss is ClampMss.PATH_MTU
+
+
+def test_clampmss_is_case_insensitive() -> None:
+    assert parse_settings("CLAMPMSS=yes\n").clampmss is ClampMss.PATH_MTU
+    assert parse_settings("CLAMPMSS=NO\n").clampmss is None
+
+
+def test_clampmss_positive_integer_is_fixed_size() -> None:
+    s = parse_settings("CLAMPMSS=1400\n")
+    assert s.clampmss == 1400
+    # a plain int, never a bool (bool ⊂ int in Python) — the three states stay distinct.
+    assert type(s.clampmss) is int
+
+
+@pytest.mark.parametrize("value", ["Maybe", "", "0", "-1", "14.0", "1400x", "0x10", "+5"])
+def test_clampmss_malformed_value_fails_fast(value: str) -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_settings(f"CLAMPMSS={value}\n")
+    assert "CLAMPMSS" in str(exc.value)
+    assert exc.value.line == 1
+
+
 # --- fail fast: unknown keys -------------------------------------------------
 
 
@@ -114,8 +148,8 @@ def test_legacy_shorewall_conf_knob_fails_fast() -> None:
 def test_out_of_scope_adr_key_fails_fast() -> None:
     # An ADR-0061 key owned by a later epic (no consumer yet) is still unknown here.
     with pytest.raises(ConfigError) as exc:
-        parse_settings("CLAMPMSS=Yes\n")
-    assert "CLAMPMSS" in str(exc.value)
+        parse_settings("RPFILTER_DISPOSITION=DROP\n")
+    assert "RPFILTER_DISPOSITION" in str(exc.value)
 
 
 # --- fail fast: duplicate keys -----------------------------------------------

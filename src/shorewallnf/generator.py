@@ -20,6 +20,7 @@ from .errors import ConfigError
 from .ir import (
     TPROXY_MARK,
     TPROXY_TABLE_ID,
+    ClampMss,
     ConntrackHelper,
     Family,
     HelperCapabilities,
@@ -68,7 +69,7 @@ def generate(
     (ADR-0041). It defaults to the empty surface, so a helper is emitted only when the caller
     declares the platform provides it.
     """
-    commands = _filter_base(ruleset.settings.disable_ipv6)
+    commands = _filter_base(ruleset.settings.disable_ipv6, _clampmss(ruleset.settings))
     commands += _mangle_rules(ruleset)
     commands += _nat_base(ruleset)
     commands += _ct_helpers(ruleset, capabilities)
@@ -153,13 +154,20 @@ def generate_tproxy_routing(ruleset: Ruleset) -> tuple[TproxyRoutingArtifact, ..
     )
 
 
-def _filter_base(disable_ipv6: bool = False) -> list[_Command]:
+def _filter_base(
+    disable_ipv6: bool = False, forward_prefix: list[_Command] | None = None
+) -> list[_Command]:
     """The always-present ADR-0005 filter skeleton: table, default-drop base chains, and the
     no-lockout baseline accepts (established/related on input+forward, loopback on input).
 
     With ``disable_ipv6`` (ADR-0061/ADR-0002, #369) a ``meta nfproto ipv6 drop`` is installed at
     the head of every base chain — ahead of the no-lockout accepts and of all feature/policy rules
     — so nothing downstream passes IPv6 and the ``inet`` ruleset is effectively IPv4-only.
+
+    ``forward_prefix`` is emitted into the forward chain **ahead of** its established/related
+    accept — for non-terminating rules that must run before the terminating stateful accept, e.g.
+    the CLAMPMSS clamp (#368/#375), which has to see the reply SYN-ACK that accept would otherwise
+    swallow. Empty (the default) for the stopped ruleset, which carries no such rules.
     """
     commands: list[_Command] = [_table()]
     commands += [_chain(name, policy) for name, policy in _BASE_CHAINS]
@@ -167,6 +175,7 @@ def _filter_base(disable_ipv6: bool = False) -> list[_Command]:
         commands += [_ipv6_drop(name) for name, _ in _BASE_CHAINS]
     commands.append(_rule("input", [_ct_established_related(), _accept()]))
     commands.append(_rule("input", [_ifname("iifname", "lo"), _accept()]))
+    commands += forward_prefix or []
     commands.append(_rule("forward", [_ct_established_related(), _accept()]))
     return commands
 
@@ -174,6 +183,38 @@ def _filter_base(disable_ipv6: bool = False) -> list[_Command]:
 def _ipv6_drop(chain: str) -> _Command:
     """A ``meta nfproto ipv6 drop`` rule for ``chain`` — the DISABLE_IPV6 family-gate (#369)."""
     return _rule(chain, [_nfproto_match("ipv6"), _verdict("DROP")])
+
+
+def _clampmss(settings: Settings) -> list[_Command]:
+    """The forward-path TCP MSS clamp (ADR-0061, #368), or empty when ``CLAMPMSS=No``.
+
+    A single ``inet`` rule (ADR-0002 — ``tcp option maxseg``/``rt mtu`` are family-agnostic, so no
+    per-family duplication) that matches forwarded SYNs and sets the MSS to the route's path MTU
+    (``CLAMPMSS=Yes``) or a fixed size. ``tcp flags syn`` (op ``in``) matches both the client's SYN
+    and the server's SYN-ACK, clamping **both** handshake directions.
+
+    Placement matters (#375): the caller threads this in ahead of the forward
+    ``established,related`` accept. Conntrack classifies the reply SYN-ACK of a NEW connection as
+    already ``established``, so were the clamp behind that terminating accept the SYN-ACK would be
+    accepted before ever reaching it — leaving the client→server direction (the one that
+    PMTU-black-holes) unclamped. The rule is non-terminating and matches only SYNs, so sitting
+    first is lockout-safe and untouched by established data packets.
+    """
+    mss = settings.clampmss
+    if mss is None:
+        return []
+    size: Any = {"rt": {"key": "mtu"}} if mss is ClampMss.PATH_MTU else mss
+    syn: _Command = {
+        "match": {
+            "op": "in",
+            "left": {"payload": {"protocol": "tcp", "field": "flags"}},
+            "right": "syn",
+        }
+    }
+    clamp: _Command = {
+        "mangle": {"key": {"tcp option": {"name": "maxseg", "field": "size"}}, "value": size}
+    }
+    return [_rule("forward", [syn, clamp])]
 
 
 def _firewalls(ruleset: Ruleset) -> set[str]:

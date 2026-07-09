@@ -26,6 +26,7 @@ from typing import Any, NamedTuple, TypeVar
 from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
 from .ir import (
+    ClampMss,
     ConntrackHelper,
     Family,
     HelperDef,
@@ -972,6 +973,10 @@ _SETTINGS_KEY = re.compile(r"[A-Z0-9_]+")
 # template longer than that can never render within the kernel limit (ADR-0061 §4).
 _LOG_PREFIX_MAX = 127
 
+# A bare positive decimal integer (CLAMPMSS fixed size). No sign, no radix prefix, ASCII digits
+# only (``str.isdigit`` also matches non-ASCII digit code points, which nft would reject).
+_DECIMAL = re.compile(r"[0-9]+")
+
 _SettingConverter = Callable[[str, str, str, int], object]
 
 
@@ -1016,6 +1021,24 @@ def _convert_yes_no(value: str, key: str, path: str, line: int) -> bool:
             )
 
 
+def _convert_clampmss(value: str, key: str, path: str, line: int) -> object:
+    """CLAMPMSS is enum-or-int (ADR-0061): ``No`` -> off (``None``), ``Yes`` -> the path-MTU
+    sentinel, a bare positive decimal -> that fixed MSS. Anything else fails fast (ADR-0004);
+    deep MSS range/plausibility checks are the validator-hardening epic's (#312)."""
+    lowered = value.lower()
+    if lowered == "no":
+        return None
+    if lowered == "yes":
+        return ClampMss.PATH_MTU
+    if _DECIMAL.fullmatch(value) and int(value) > 0:
+        return int(value)
+    raise ConfigError(
+        f"invalid value {value!r} for {key} (expected Yes/No or a positive integer)",
+        path=path,
+        line=line,
+    )
+
+
 def _enum_converter(enum_cls: type[Enum]) -> _SettingConverter:
     """A converter mapping a value (case-insensitively) onto an enum member, else failing fast."""
     members = {member.value.lower(): member for member in enum_cls}
@@ -1042,6 +1065,7 @@ _SETTINGS_KEYS: dict[str, tuple[str, _SettingConverter]] = {
     "LOG_MARTIANS": ("log_martians", _enum_converter(YesNoKeep)),
     "ROUTE_FILTER": ("route_filter", _enum_converter(YesNoKeep)),
     "DISABLE_IPV6": ("disable_ipv6", _convert_yes_no),
+    "CLAMPMSS": ("clampmss", _convert_clampmss),
 }
 
 
