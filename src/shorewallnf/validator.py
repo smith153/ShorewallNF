@@ -22,12 +22,16 @@ Checks so far:
   source/dest (including the zone part of a ``zone:host`` token) must be declared in ``zones`` —
   the firewall zone included — or be the ``all`` wildcard. This cross-file reference check lives
   here (not the parser), mirroring the provider→interface check; the parser stays syntactic.
+- **Duplicate/contradictory policies (#326).** A ``policy`` file may hold only one entry per
+  ``(source, dest)`` pair: a second entry is dead (never reached), and a second with a
+  *different* action is a silent footgun. Both are rejected with one located error naming both
+  entries' ``file:line`` and the conflicting actions (ADR-0004).
 """
 
 from __future__ import annotations
 
 from .errors import ConfigError
-from .ir import Provider, Rule, Ruleset, Zone
+from .ir import Policy, Provider, Rule, Ruleset, Zone
 
 # ESTABLISHED/RELATED are accepted by the ADR-0005 base chain before any feature rule; INVALID
 # and NEW are not, so a DROP/REJECT there is reachable and unaffected.
@@ -49,8 +53,45 @@ def validate(ruleset: Ruleset) -> Ruleset:
         _reject_shadowed_section_rule(rule)
         _reject_malformed_proto_port(rule)
     _validate_zone_references(ruleset)
+    _validate_policy_uniqueness(ruleset.policies)
     _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
     return ruleset
+
+
+def _policy_location(policy: Policy) -> str:
+    """Render a policy's ``path:line`` for citing it inside another policy's error message."""
+    if policy.path is None:
+        return "an earlier entry"
+    return policy.path if policy.line is None else f"{policy.path}:{policy.line}"
+
+
+def _validate_policy_uniqueness(policies: tuple[Policy, ...]) -> None:
+    """Reject a second ``policy`` entry for a ``(source, dest)`` pair (#326, ADR-0004).
+
+    A pair may have only one default policy: a second entry is dead (never reached), and a
+    second with a *different* action is a silent footgun. Both fail fast with one located error
+    naming the first entry's ``file:line`` and the conflicting actions.
+    """
+    seen: dict[tuple[str, str], Policy] = {}
+    for policy in policies:
+        first = seen.get((policy.source, policy.dest))
+        if first is None:
+            seen[(policy.source, policy.dest)] = policy
+            continue
+        if policy.action != first.action:
+            raise ConfigError(
+                f"policy {policy.source} -> {policy.dest}: contradictory default actions — "
+                f"{first.action} at {_policy_location(first)} and {policy.action} here; a "
+                "source/dest pair may have only one policy",
+                path=policy.path,
+                line=policy.line,
+            )
+        raise ConfigError(
+            f"policy {policy.source} -> {policy.dest}: duplicate policy — already defined as "
+            f"{policy.action} at {_policy_location(first)}; the second entry is dead, remove it",
+            path=policy.path,
+            line=policy.line,
+        )
 
 
 def _reject_malformed_proto_port(rule: Rule) -> None:

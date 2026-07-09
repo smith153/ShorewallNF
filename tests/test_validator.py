@@ -447,3 +447,68 @@ def test_valid_zone_references_pass_unchanged() -> None:
         stopped_rules=(Rule(action="ACCEPT", source="net", dest="fw"),),
     )
     assert validate(rs) is rs
+
+
+# --- duplicate / contradictory policies (#326, epic #312) --------------------
+#
+# A `policy` file may hold only one entry per (source, dest) pair: a second entry is dead
+# (never reached), and a second with a *different* action is a silent footgun. Both fail fast
+# with one located ConfigError naming both entries' file:line (ADR-0004). Distinct pairs —
+# including `all`/wildcard rows — are unaffected.
+
+
+def test_contradictory_policies_fail_with_both_locations() -> None:
+    rs = _zone_rs(policies=(
+        Policy(source="net", dest="loc", action="ACCEPT", path="policy", line=3),
+        Policy(source="net", dest="loc", action="DROP", path="policy", line=8),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("policy:8: ")  # located at the second (offending) entry
+    assert "policy:3" in msg  # cites the first entry's location too
+    assert "ACCEPT" in msg and "DROP" in msg  # names both conflicting actions
+
+
+def test_exact_duplicate_policy_fails_with_both_locations() -> None:
+    rs = _zone_rs(policies=(
+        Policy(source="net", dest="loc", action="DROP", path="policy", line=2),
+        Policy(source="net", dest="loc", action="DROP", path="policy", line=5),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("policy:5: ")  # located at the second (dead) entry
+    assert "policy:2" in msg  # cites the first entry's location too
+    assert "duplicate" in msg.lower()
+
+
+def test_distinct_policy_pairs_pass_unchanged() -> None:
+    rs = _zone_rs(policies=(
+        Policy(source="net", dest="loc", action="DROP"),
+        Policy(source="loc", dest="net", action="ACCEPT"),
+        Policy(source="all", dest="all", action="REJECT"),  # wildcard row is its own pair
+    ))
+    assert validate(rs) is rs
+
+
+def test_swapped_source_dest_is_a_distinct_pair() -> None:
+    # (net, loc) and (loc, net) are different directions, not a duplicate.
+    rs = _zone_rs(policies=(
+        Policy(source="net", dest="loc", action="ACCEPT"),
+        Policy(source="loc", dest="net", action="DROP"),
+    ))
+    assert validate(rs) is rs
+
+
+def test_compile_rejects_contradictory_policy(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "")
+    (cfg / "policy").write_text("net loc ACCEPT\nnet loc DROP\n")
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    msg = str(exc.value)
+    assert "ACCEPT" in msg and "DROP" in msg
+
+
+def test_compile_rejects_duplicate_policy(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "")
+    (cfg / "policy").write_text("net loc DROP\nnet loc DROP\n")
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    assert "duplicate" in str(exc.value).lower()
