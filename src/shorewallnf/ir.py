@@ -53,11 +53,17 @@ class ZoneMember:
     A bare interface (``host is None``) is dual-stack (``Family.BOTH``); a host/CIDR entry
     carries the family of its literal (``Family.IPV4`` or ``Family.IPV6``). A zone is
     therefore dual, v4-only, or v6-only as an emergent consequence of its members.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
     """
 
     interface: str
     family: Family
     host: str | None = None
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +73,17 @@ class Zone:
     Family is not modeled on the zone; it lives on each :class:`ZoneMember`. ``is_firewall``
     marks the single ``firewall``-type zone (Shorewall's ``$FW``) — the firewall host itself,
     which has no interface members, so ``members`` defaults to empty.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
     """
 
     name: str
     members: tuple[ZoneMember, ...] = ()
     is_firewall: bool = False
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +100,19 @@ class Interface:
 
 @dataclass(frozen=True, slots=True)
 class Policy:
-    """A default policy for traffic from one zone to another (the ``policy`` file)."""
+    """A default policy for traffic from one zone to another (the ``policy`` file).
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
+    """
 
     source: str
     dest: str
     action: str
     log_level: str | None = None
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +194,10 @@ class Nat:
     ``family`` is IPv4 for true NAT (ADR-0002: IPv6 does no NAT) — the default, and always IPv4
     for source NAT — but a ``DNAT`` whose target is an IPv6 literal is scoped :data:`Family.IPV6`
     and compiles to a plain ``ACCEPT`` to the global address instead of NAT.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
     """
 
     action: str
@@ -187,6 +210,8 @@ class Nat:
     out_interface: str | None = None
     snat_to: str | None = None
     family: Family = Family.IPV4
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

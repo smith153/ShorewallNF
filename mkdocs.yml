@@ -58,9 +58,15 @@ exclude_docs: |
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Walkthrough: walkthrough.md
+  - Concepts: concepts.md
   - Reference:
       - Configuration files: reference/config-files.md
       - snat: reference/snat.md
       - conntrack: reference/conntrack.md
       - mangle: reference/mangle.md
+      - zones: reference/zones.md
+      - interfaces: reference/interfaces.md
+      - policy: reference/policy.md
+      - rules: reference/rules.md
   - Design docs ↗: https://github.com/smith153/ShorewallNF/tree/master/docs

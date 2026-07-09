@@ -247,3 +247,16 @@ def test_dnat_without_target_host_fails_fast() -> None:
 def test_dnat_unknown_target_zone_fails_fast() -> None:
     with pytest.raises(ConfigError, match="zone"):
         _nats("DNAT net bogus:192.0.2.5 tcp 22")
+
+
+def test_parsed_dnat_carries_source_location() -> None:
+    # #316: located diagnostics — the parser stamps the row's path/line onto the Nat.
+    (nat,) = _nats("DNAT net loc:192.0.2.5 tcp 22")
+    assert (nat.path, nat.line) == ("rules", 1)
+
+
+def test_dnat_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5", path="rules", line=1)
+    b = Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5", path="other", line=9)
+    assert a == b

@@ -151,7 +151,12 @@ def _build_zone(record: Record) -> Zone:
         raise ConfigError(
             f"unknown zone type {zone_type!r}", path=record.path, line=record.line
         )
-    return Zone(name=name, is_firewall=zone_type == "firewall")
+    return Zone(
+        name=name,
+        is_firewall=zone_type == "firewall",
+        path=record.path,
+        line=record.line,
+    )
 
 
 class ParsedInterfaces(NamedTuple):
@@ -194,7 +199,12 @@ def parse_interfaces(records: Iterable[Record], zones: tuple[Zone, ...]) -> Pars
             if head not in zone_names:
                 raise ConfigError(f"unknown zone {head!r}", path=record.path, line=record.line)
             new_members.setdefault(head, []).append(
-                ZoneMember(interface=device, family=Family.BOTH)
+                ZoneMember(
+                    interface=device,
+                    family=Family.BOTH,
+                    path=record.path,
+                    line=record.line,
+                )
             )
 
     populated = tuple(
@@ -275,7 +285,14 @@ def _build_policy(record: Record) -> Policy:
             path=record.path,
             line=record.line,
         )
-    return Policy(source=source, dest=dest, action=action, log_level=log_level)
+    return Policy(
+        source=source,
+        dest=dest,
+        action=action,
+        log_level=log_level,
+        path=record.path,
+        line=record.line,
+    )
 
 
 _RULE_ACTIONS = frozenset({"ACCEPT", "DROP", "REJECT"})
@@ -388,6 +405,7 @@ def _build_nat(record: Record, zone_names: set[str]) -> Nat:
     return Nat(
         action=action, source=source, dest=zone, to=host, proto=proto,
         dport=_optional(record, 4), family=family,
+        path=record.path, line=record.line,
     )
 
 
@@ -448,6 +466,8 @@ def _build_snat(record: Record) -> Nat:
         out_interface=out_interface,
         snat_to=snat_to,
         family=Family.IPV4,
+        path=record.path,
+        line=record.line,
     )
 
 
