@@ -33,11 +33,14 @@ before it can benefit from the stateful base-accept; dual-stack in one `inet` ru
 
 ## Decision
 
-### 1. A dedicated prerouting filter chain for ingress anti-spoof
+### 1. A dedicated prerouting_raw filter chain for ingress anti-spoof
 
 Add one chain to the ADR-0005 skeleton:
 
-- **`prerouting`** — `type filter hook prerouting priority raw` (numeric `-300`), `policy accept`.
+- **`prerouting_raw`** — `type filter hook prerouting priority raw` (numeric `-300`),
+  `policy accept`. Named `prerouting_raw`, not `prerouting`: the mangle chain
+  ([ADR-0042](0042-mangle-compilation.md)) already owns the base-chain name `prerouting` in
+  `inet filter`, and base-chain names are unique per table.
 
 It hosts, in order:
 
@@ -58,7 +61,7 @@ ahead of the ADR-0005 `ct state established,related accept`. Illegal-flag packet
 of the packet, not the flow, so they must be caught even mid-connection; placing tcpflags after
 the base-accept would let a malformed-flag packet on an established flow through.
 
-tcpflags is not in the prerouting chain: it is not an anti-spoof / routing-fib check, and
+tcpflags is not in the prerouting_raw chain: it is not an anti-spoof / routing-fib check, and
 scoping it to the two forwarded/local base chains keeps it off the firewall's own `output`.
 
 ### 3. Anti-shadowing ordering rule
@@ -110,7 +113,7 @@ default disposition for all three is DROP.
   chain covers both families.
 - **sfilter** — source networks are per-family, so it scopes each family explicitly: `ip saddr
   <v4 nets>` and `ip6 saddr <v6 nets>` as separate rules (each carrying an implicit family match)
-  in the single `inet` prerouting chain. A config with only v4 nets emits only the `ip saddr`
+  in the single `inet` prerouting_raw chain. A config with only v4 nets emits only the `ip saddr`
   rule; only v6, only `ip6 saddr` (ADR-0002).
 
 Example sfilter drop for a documentation-range source set (illustrative):
@@ -126,7 +129,7 @@ ip6 saddr { 2001:db8::/32 } iifname "ethX" log prefix "…" drop
   (`log?` → `verdict`), so the checks differ only in their match; placement is decided once, and
   the prerouting hook gives anti-spoof a single early choke point that cannot be shadowed by the
   stateful base-accept. Dual-stack falls out of the `inet` chain for free.
-- **Trade-off:** the skeleton now has a fourth base chain (`prerouting`) that exists even when no
+- **Trade-off:** the skeleton now has a fourth base chain (`prerouting_raw`) that exists even when no
   protective check is configured — but its `policy accept` and empty body make it inert, and a
   fixed skeleton is ADR-0005's chosen shape. sfilter emits up to two rules per interface (one per
   family present) rather than one family-neutral rule; that is inherent to per-family source nets,
@@ -137,7 +140,7 @@ ip6 saddr { 2001:db8::/32 } iifname "ethX" log prefix "…" drop
 
 ## Alternatives considered
 
-- **All three checks at the head of `input`/`forward`** (no prerouting chain). Rejected:
+- **All three checks at the head of `input`/`forward`** (no prerouting_raw chain). Rejected:
   - rpfilter's `fib saddr . iif oif missing` idiom belongs in **prerouting**, before the routing
     decision — replicating it in both input and forward is redundant and loses the natural
     "before conntrack" ordering.
@@ -145,12 +148,12 @@ ip6 saddr { 2001:db8::/32 } iifname "ethX" log prefix "…" drop
     would be duplicated across two chains.
   - Placing anti-spoof *at* the head of input/forward still works only because it precedes the
     base-accept there, but it runs **after** conntrack has already tracked the spoofed packet;
-    the prerouting chain drops it earlier (`priority raw`). Early ingress drop before the
-    conntrack base-accept is the whole point, so the prerouting chain is preferred.
+    the prerouting_raw chain drops it earlier (`priority raw`). Early ingress drop before the
+    conntrack base-accept is the whole point, so the prerouting_raw chain is preferred.
 
   tcpflags is the one check that *is* kept at the head of input/forward — it is a packet-property
-  check, not a routing-fib/source anti-spoof check, so it has no reason to move to prerouting and
-  every reason to guard both the local and forwarded paths.
+  check, not a routing-fib/source anti-spoof check, so it has no reason to move to the
+  prerouting_raw chain and every reason to guard both the local and forwarded paths.
 
 - **Per-check disposition rendering** (each of the three emits its own log+verdict logic).
   Rejected as needless duplication — the shape is identical to the existing policy-rule rendering,
