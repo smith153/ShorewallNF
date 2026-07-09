@@ -7,8 +7,10 @@ guarded like the core rules.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from reconcile.core import ActionKind, Board, Issue, Mergeability, PullRequest
@@ -220,7 +222,8 @@ def _stub_merge(monkeypatch: pytest.MonkeyPatch, *, conflict_on: str | None) -> 
     def fake_git(*args, **kw):  # type: ignore[no-untyped-def]
         calls.append(list(args))
         rc = 0
-        if args[0] == "merge" and conflict_on is not None and conflict_on in args[-1]:
+        # the merge carries leading `-c user.*` identity flags (#372); match on the branch arg
+        if "merge" in args and conflict_on is not None and conflict_on in args[-1]:
             rc = 1
         return subprocess.CompletedProcess(list(args), rc, "", "")
 
@@ -236,7 +239,7 @@ def test_test_merge_clean_runs_gate_and_cleans_up(monkeypatch: pytest.MonkeyPatc
     assert result is BatchResult.CLEAN
     # both branches merged, worktree removed at the end
     assert ["worktree", "remove"] == [c[:2] for c in calls if c[:2] == ["worktree", "remove"]][0]
-    assert sum(1 for c in calls if c[0] == "merge" and c[1] == "--no-edit") == 2
+    assert sum(1 for c in calls if "merge" in c and "--no-edit" in c) == 2
 
 
 def test_test_merge_conflict_short_circuits_and_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,6 +256,106 @@ def test_test_merge_gate_red(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("reconcile.run._run_gate", lambda cwd: "pytest")
     result, detail = _test_merge_batch(list(_board(7, 8).pulls), _board(7, 8))
     assert result is BatchResult.GATE_RED and detail == "pytest"
+
+
+# --- regression (#372): real `git`, no ambient identity ---------------------------------------
+# The stubbed tests above can't catch #372: a non-first branch that needs a real (non-ff) merge
+# commit fails with "unable to auto-detect email address" when the runner has no git identity, and
+# the gate must not mislabel that as a content conflict. These drive the real `git` binary with
+# every identity source removed (author/committer env unset, system+global config -> /dev/null,
+# no local `user.*`), reproducing a GitHub-hosted runner.
+
+
+def _git_id_env() -> dict[str, str]:
+    """A copy of the ambient env with an identity, for building fixtures (which need commits)."""
+    return {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        "GIT_COMMITTER_NAME": "Fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+    }
+
+
+def _git_setup(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args], cwd=cwd, env=_git_id_env(), check=True, capture_output=True, text=True
+    )
+
+
+def _commit_file(repo: Path, name: str, content: str, message: str) -> None:
+    (repo / name).write_text(content)
+    _git_setup(repo, "add", name)
+    _git_setup(repo, "commit", "-q", "-m", message)
+
+
+def _strip_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every source git could read an identity from, so a merge commit can only be authored
+    if the code under test supplies one itself."""
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+
+
+def _clone_into_cwd(tmp_path: Path, origin: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clone ``origin`` (so ``origin/*`` remote-tracking refs exist) and chdir into it — the cwd
+    `_test_merge_batch` fetches and adds its throwaway worktree from. The fresh clone has no local
+    `user.*`."""
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(clone)],
+        env=_git_id_env(), check=True, capture_output=True, text=True,
+    )
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr("reconcile.run._pr_branch", lambda n: f"task/{n - 100}")
+    monkeypatch.setattr("reconcile.run._run_gate", lambda cwd: None)
+
+
+def test_test_merge_no_identity_non_ff_second_branch_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#372: batch where the first branch fast-forwards but the second needs a real merge commit,
+    on disjoint files, must return CLEAN with no ambient git identity — not a false CONFLICT."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git_setup(origin, "init", "-q", "-b", "master")
+    _commit_file(origin, "base.txt", "base\n", "base")
+    _git_setup(origin, "checkout", "-q", "-b", "task/365")  # ff-able: from master, adds a new file
+    _commit_file(origin, "f365.txt", "f365\n", "add f365")
+    _git_setup(origin, "checkout", "-q", "master")
+    _git_setup(origin, "checkout", "-q", "-b", "task/367")  # diverges: needs a merge commit next
+    _commit_file(origin, "f367.txt", "f367\n", "add f367")
+    _git_setup(origin, "checkout", "-q", "master")
+
+    _clone_into_cwd(tmp_path, origin, monkeypatch)
+    _strip_identity(monkeypatch)
+
+    result, detail = _test_merge_batch(list(_board(365, 367).pulls), _board(365, 367))
+    assert result is BatchResult.CLEAN, f"expected CLEAN, got {result.value} at {detail!r}"
+
+
+def test_test_merge_real_conflict_still_reported_without_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine content conflict is still CONFLICT at the offending branch — the identity fix must
+    not swallow real conflicts."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git_setup(origin, "init", "-q", "-b", "master")
+    _commit_file(origin, "shared.txt", "base\n", "base")
+    _git_setup(origin, "checkout", "-q", "-b", "task/365")  # ff-able edit of shared.txt
+    _commit_file(origin, "shared.txt", "from-365\n", "365 edits shared")
+    _git_setup(origin, "checkout", "-q", "master")
+    _git_setup(origin, "checkout", "-q", "-b", "task/367")  # conflicting edit of the same line
+    _commit_file(origin, "shared.txt", "from-367\n", "367 edits shared")
+    _git_setup(origin, "checkout", "-q", "master")
+
+    _clone_into_cwd(tmp_path, origin, monkeypatch)
+    _strip_identity(monkeypatch)
+
+    result, detail = _test_merge_batch(list(_board(365, 367).pulls), _board(365, 367))
+    assert result is BatchResult.CONFLICT and "task/367" in detail
 
 
 # _process_batch: map the merge outcome to the right pure action set

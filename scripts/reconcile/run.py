@@ -328,7 +328,15 @@ def _test_merge_batch(
     try:
         for pr in candidates:
             branch = _pr_branch(pr.number)
-            merged = _git("merge", "--no-edit", f"origin/{branch}", cwd=path)
+            # A non-first branch may need a real merge commit, which git can only author with an
+            # identity. GitHub-hosted runners have none, so supply a deterministic bot identity
+            # scoped to this one command (#372) — without it, git aborts and the gate would
+            # mislabel a clean, disjoint merge as a content conflict.
+            merged = _git(
+                "-c", "user.name=ShorewallNF reconcile bot",
+                "-c", "user.email=reconcile-bot@users.noreply.github.com",
+                "merge", "--no-edit", f"origin/{branch}", cwd=path,
+            )
             if merged.returncode != 0:
                 _git("merge", "--abort", cwd=path)
                 return BatchResult.CONFLICT, branch
