@@ -16,7 +16,7 @@ import pytest
 
 from shorewallnf import cli
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Family, Interface, Policy, Provider, Rule, Ruleset, Zone
+from shorewallnf.ir import Family, Interface, Nat, Policy, Provider, Rule, Ruleset, Zone
 from shorewallnf.validator import validate
 
 
@@ -512,3 +512,67 @@ def test_compile_rejects_duplicate_policy(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as exc:
         cli.compile_config(cfg)
     assert "duplicate" in str(exc.value).lower()
+
+
+# --- NAT targets that cannot apply (#327, epic #312) -------------------------
+#
+# Sanity checks over `Nat` records catch high-signal NAT mistakes the applier would otherwise
+# carry out: a DNAT with no usable `to` target, an explicit SNAT missing its `snat_to` address,
+# or a MASQUERADE/SNAT with no egress `out_interface`. Each fails fast with a located ConfigError
+# (ADR-0004). Valid NAT entries are unaffected (no false positives). Scope is common mistakes
+# only — not reachability solving (YAGNI).
+
+
+@pytest.mark.parametrize("to", [None, ""])
+def test_dnat_without_target_fails_with_location(to: str | None) -> None:
+    rs = Ruleset(nats=(
+        Nat(action="DNAT", source="net", dest="loc", to=to, proto="tcp", dport="80",
+            path="rules", line=6),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:6: ")  # located
+    assert "DNAT" in msg
+
+
+def test_snat_without_address_fails_with_location() -> None:
+    # An explicit SNAT must carry its SNAT(<addr>) target; without it there is nothing to map to.
+    rs = Ruleset(nats=(
+        Nat(action="SNAT", source_nets="10.0.0.0/8", out_interface="eth0", snat_to=None,
+            path="snat", line=2),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("snat:2: ")
+    assert "SNAT" in msg
+
+
+@pytest.mark.parametrize("action", ["MASQUERADE", "SNAT"])
+def test_source_nat_without_out_interface_fails_with_location(action: str) -> None:
+    snat_to = "203.0.113.5" if action == "SNAT" else None
+    rs = Ruleset(nats=(
+        Nat(action=action, source_nets="10.0.0.0/8", out_interface=None, snat_to=snat_to,
+            path="snat", line=4),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("snat:4: ")
+    assert action in msg
+    assert "interface" in msg.lower()
+
+
+def test_valid_nats_pass_unchanged() -> None:
+    rs = Ruleset(nats=(
+        Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5:8080", proto="tcp",
+            dport="80"),
+        Nat(action="DNAT", source="net", dest="loc", to="2001:db8::1", family=Family.IPV6),
+        Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0"),
+        Nat(action="SNAT", source_nets="10.0.0.0/8", out_interface="eth0",
+            snat_to="203.0.113.5"),
+    ))
+    assert validate(rs) is rs  # pure IR -> IR, no false positives
+
+
+def test_masquerade_without_address_is_allowed() -> None:
+    # MASQUERADE has no explicit address by design (it uses the egress interface's own address).
+    rs = Ruleset(nats=(
+        Nat(action="MASQUERADE", source_nets="10.0.0.0/8", out_interface="eth0", snat_to=None),
+    ))
+    assert validate(rs) is rs
