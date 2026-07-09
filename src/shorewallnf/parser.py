@@ -251,22 +251,16 @@ _LOG_LEVELS = frozenset(
 )
 
 
-def parse_policies(records: Iterable[Record], zones: tuple[Zone, ...]) -> tuple[Policy, ...]:
+def parse_policies(records: Iterable[Record]) -> tuple[Policy, ...]:
     """Parse ``policy``-file records (``<source> <dest> <action> [log_level]``) into
     :class:`~shorewallnf.ir.Policy` IR — the inter-zone default policies.
 
-    ``source``/``dest`` must each be a known zone (the firewall zone included) or the wildcard
-    ``all``. The action must be ``ACCEPT``/``DROP``/``REJECT``. A malformed line, unknown zone,
-    or unknown action fails fast with :class:`ConfigError`.
+    ``source``/``dest`` are the raw ``zone`` tokens or the wildcard ``all``; the action must be
+    ``ACCEPT``/``DROP``/``REJECT``. A malformed line or unknown action fails fast with
+    :class:`ConfigError`. Zone-reference integrity (every named zone is declared) is a cross-file
+    semantic check the Validator owns (#323), so the parser stays purely syntactic.
     """
-    zone_names = {zone.name for zone in zones}
-
-    def check_zones(policy: Policy, record: Record) -> None:
-        for zone in (policy.source, policy.dest):
-            if zone != "all" and zone not in zone_names:
-                raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
-
-    return tuple(build_records(records, _build_policy, check_zones))
+    return tuple(build_records(records, _build_policy))
 
 
 def _build_policy(record: Record) -> Policy:
@@ -324,9 +318,10 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
     SOURCE/DEST are a bare ``zone`` or ``zone:host`` (host an IPv4/IPv6 address or CIDR literal).
     ``?SECTION`` rows set the section attached to the filter rules that follow (``None`` before the
     first marker; sections don't apply to ``DNAT``). Family is inferred per ADR-0002 — a host
-    literal or ``icmp``/``ipv6-icmp`` pins it; mixed families, an unknown action/zone, an
-    unsupported host form, or trailing (unsupported) columns fail fast with a located
-    :class:`ConfigError`.
+    literal or ``icmp``/``ipv6-icmp`` pins it; mixed families, an unsupported host form, or
+    trailing (unsupported) columns fail fast with a located :class:`ConfigError`. Zone-reference
+    integrity (every named zone is declared) is a cross-file check the Validator owns (#323); the
+    ``zones`` here only drive the DNAT target-zone check retained for ``snat``-adjacent NAT.
     """
     zone_names = {zone.name for zone in zones}
     rules: list[Rule] = []
@@ -340,11 +335,11 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
         if record.fields[0] in _NAT_ACTIONS:
             nats.append(_build_nat(record, zone_names))
         else:
-            rules.append(_build_rule(record, section, zone_names))
+            rules.append(_build_rule(record, section))
     return ParsedRules(tuple(rules), tuple(nats))
 
 
-def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Rule:
+def _build_rule(record: Record, section: str | None) -> Rule:
     # The ACTION column is a plain str: a built-in verdict or a macro/action name (ADR-0020 §2).
     # The parser stays purely syntactic and macro-unaware — the resolver (#184) tells them apart
     # by registry lookup and fails fast on an unknown name, so no verdict check happens here.
@@ -363,7 +358,6 @@ def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Ru
     proto = _optional(record, 3)
     if proto is not None:
         proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase (#134)
-    _check_zones(source, dest, zone_names, record)
     return Rule(
         action=action,
         source=source,
@@ -867,13 +861,6 @@ def _optional(record: Record, index: int) -> str | None:
     return None if value == _UNSET else value
 
 
-def _check_zones(source: str, dest: str, zone_names: set[str], record: Record) -> None:
-    for token in (source, dest):
-        zone = token.split(":", 1)[0]
-        if zone != "all" and zone not in zone_names:
-            raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
-
-
 def _infer_family(source: str, dest: str, proto: str | None, record: Record) -> Family:
     """Infer a rule's family (ADR-0002); mixed IPv4/IPv6 hints fail fast."""
     families: set[Family] = set()
@@ -915,9 +902,10 @@ def parse_config(
     """Assemble a :class:`~shorewallnf.ir.Ruleset` from the preprocessed per-file streams.
 
     Dispatches each known config file to its per-file parser and combines the results. Zones
-    are parsed first so ``interfaces`` can validate references and attach membership, then
-    ``policy`` is validated against the populated zones (the ``interfaces`` result carries the
-    zones with their members populated). Files absent from ``streams`` are simply skipped.
+    are parsed first so ``interfaces`` can validate references and attach membership (the
+    ``interfaces`` result carries the zones with their members populated). Zone-reference
+    integrity for ``policy``/``rules`` is a Validator concern (#323), not a parse-time check.
+    Files absent from ``streams`` are simply skipped.
 
     ``settings`` is the non-tabular ``shorewallnf.conf`` result (ADR-0061), threaded onto the
     IR so it reaches the generator; it defaults to the all-defaults :class:`Settings`.
@@ -932,7 +920,7 @@ def parse_config(
         parsed = parse_interfaces(parse(streams["interfaces"]), zones)
         zones, interfaces = parsed.zones, parsed.interfaces
     if "policy" in streams:
-        policies = parse_policies(parse(streams["policy"]), zones)
+        policies = parse_policies(parse(streams["policy"]))
     nats: tuple[Nat, ...] = ()
     if "rules" in streams:
         parsed_rules = parse_rules(parse(streams["rules"]), zones)
