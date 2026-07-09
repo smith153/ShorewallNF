@@ -58,6 +58,7 @@ exclude_docs: |
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Operations: operations.md
   - Walkthrough: walkthrough.md
   - Concepts: concepts.md
   - Reference:
