@@ -691,6 +691,15 @@ _V4_ONLY = Zone(
 )
 _DUAL = Zone(name="loc", members=(ZoneMember(interface="eth0", family=Family.BOTH),))
 
+# Interfaces named by the cross-family zone fixtures above, so the no-false-positive cases
+# clear the interface-reference check (#324) and reach the family-scope logic under test (#332).
+_XFAM_IFACES = (
+    Interface(name="eth0"),
+    Interface(name="eth4"),
+    Interface(name="eth6"),
+    Interface(name="e"),
+)
+
 
 def test_ipv4_literal_in_ipv6_only_zone_fails_with_location() -> None:
     # An IPv4 literal narrows the rule to ipv4, but its source zone is ipv6-only: dead reference.
@@ -738,7 +747,7 @@ def test_dnat_ipv4_target_to_ipv6_only_zone_fails_with_location() -> None:
 
 
 def test_correctly_scoped_single_family_zone_unaffected() -> None:
-    rs = Ruleset(zones=(_V6_ONLY, _DUAL), rules=(
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), interfaces=_XFAM_IFACES, rules=(
         Rule(action="ACCEPT", source="v6only:2001:db8::5", dest="loc", family=Family.IPV6),
     ))
     assert validate(rs) is rs
@@ -746,7 +755,7 @@ def test_correctly_scoped_single_family_zone_unaffected() -> None:
 
 def test_both_family_rule_against_single_family_zone_unaffected() -> None:
     # A dual-stack (Family.BOTH) rule is not narrowed, so it may reference any zone.
-    rs = Ruleset(zones=(_V6_ONLY, _DUAL), rules=(
+    rs = Ruleset(zones=(_V6_ONLY, _DUAL), interfaces=_XFAM_IFACES, rules=(
         Rule(action="ACCEPT", source="v6only", dest="loc", family=Family.BOTH),
     ))
     assert validate(rs) is rs
@@ -754,7 +763,7 @@ def test_both_family_rule_against_single_family_zone_unaffected() -> None:
 
 def test_dual_stack_zone_unaffected() -> None:
     # A zone with a bare-interface (Family.BOTH) member carries both families — no conflict.
-    rs = Ruleset(zones=(_DUAL,), rules=(
+    rs = Ruleset(zones=(_DUAL,), interfaces=_XFAM_IFACES, rules=(
         Rule(action="ACCEPT", source="loc:203.0.113.5", dest="loc", family=Family.IPV4),
     ))
     assert validate(rs) is rs
@@ -766,7 +775,7 @@ def test_mixed_family_members_are_dual_stack() -> None:
         ZoneMember(interface="e", family=Family.IPV4, host="192.0.2.1"),
         ZoneMember(interface="e", family=Family.IPV6, host="2001:db8::1"),
     ))
-    rs = Ruleset(zones=(mixed,), rules=(
+    rs = Ruleset(zones=(mixed,), interfaces=_XFAM_IFACES, rules=(
         Rule(action="ACCEPT", source="mix:203.0.113.5", dest="mix", family=Family.IPV4),
     ))
     assert validate(rs) is rs
