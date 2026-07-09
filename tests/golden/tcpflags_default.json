@@ -76,16 +76,7 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn",
-                        "rst",
-                        "psh",
-                        "ack",
-                        "urg"
-                      ]
-                    }
+                    63
                   ]
                 },
                 "right": 0
@@ -127,25 +118,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn",
-                        "rst",
-                        "psh",
-                        "ack",
-                        "urg"
-                      ]
-                    }
+                    63
                   ]
                 },
-                "right": {
-                  "|": [
-                    "fin",
-                    "psh",
-                    "urg"
-                  ]
-                }
+                "right": 41
               }
             },
             {
@@ -184,20 +160,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "syn",
-                        "rst"
-                      ]
-                    }
+                    6
                   ]
                 },
-                "right": {
-                  "|": [
-                    "syn",
-                    "rst"
-                  ]
-                }
+                "right": 6
               }
             },
             {
@@ -236,20 +202,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn"
-                      ]
-                    }
+                    3
                   ]
                 },
-                "right": {
-                  "|": [
-                    "fin",
-                    "syn"
-                  ]
-                }
+                "right": 3
               }
             },
             {
@@ -288,17 +244,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn",
-                        "rst",
-                        "ack"
-                      ]
-                    }
+                    23
                   ]
                 },
-                "right": "syn"
+                "right": 2
               }
             },
             {
@@ -404,16 +353,7 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn",
-                        "rst",
-                        "psh",
-                        "ack",
-                        "urg"
-                      ]
-                    }
+                    63
                   ]
                 },
                 "right": 0
@@ -455,25 +395,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn",
-                        "rst",
-                        "psh",
-                        "ack",
-                        "urg"
-                      ]
-                    }
+                    63
                   ]
                 },
-                "right": {
-                  "|": [
-                    "fin",
-                    "psh",
-                    "urg"
-                  ]
-                }
+                "right": 41
               }
             },
             {
@@ -512,20 +437,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "syn",
-                        "rst"
-                      ]
-                    }
+                    6
                   ]
                 },
-                "right": {
-                  "|": [
-                    "syn",
-                    "rst"
-                  ]
-                }
+                "right": 6
               }
             },
             {
@@ -564,20 +479,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn"
-                      ]
-                    }
+                    3
                   ]
                 },
-                "right": {
-                  "|": [
-                    "fin",
-                    "syn"
-                  ]
-                }
+                "right": 3
               }
             },
             {
@@ -616,17 +521,10 @@
                         "field": "flags"
                       }
                     },
-                    {
-                      "|": [
-                        "fin",
-                        "syn",
-                        "rst",
-                        "ack"
-                      ]
-                    }
+                    23
                   ]
                 },
-                "right": "syn"
+                "right": 2
               }
             },
             {

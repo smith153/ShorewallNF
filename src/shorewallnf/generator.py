@@ -303,11 +303,23 @@ def _fib_rpfilter() -> _Command:
 # ---- tcpflags illegal-flag check (ADR-0063 §2, #381) ------------------------------------
 
 # Shorewall's setup_tcp_flags rejects five nonsensical TCP-flag combinations. Each is one
-# `tcp flags & <mask> == <value>` match; the classic iptables `--tcp-flags ALL` mask is the six
-# flags below (fin,syn,rst,psh,ack,urg), and `--syn` examines fin,syn,rst,ack. Family-neutral —
-# one inet match per combo covers IPv4 and IPv6 (ADR-0063 §5). The mask/value encodings are pinned
-# against a real `nft` binary (golden fixtures + the `nft --check` golden tier).
+# `tcp flags & <mask> == <value>` match, emitted with **numeric** mask/value: the symbolic
+# `{"|": [<flag>...]}` OR-of-named-flags JSON form is rejected by nft < 1.1 (#381 — it loaded on
+# 1.1.x but failed `nft -j -f` on the 1.0.9 CI runner), whereas numbers load on every version and
+# normalise to the same ruleset. The classic iptables `--tcp-flags ALL` mask is the six flags
+# below (fin,syn,rst,psh,ack,urg); `--syn` examines fin,syn,rst,ack. Family-neutral — one inet
+# match per combo covers IPv4 and IPv6 (ADR-0063 §5). Pinned against a real `nft --check` (golden
+# fixtures + the `nft`-marked golden tier).
+_TCP_FLAG_BITS = {"fin": 0x01, "syn": 0x02, "rst": 0x04, "psh": 0x08, "ack": 0x10, "urg": 0x20}
 _TCP_FLAGS_ALL = ["fin", "syn", "rst", "psh", "ack", "urg"]
+
+
+def _flag_bits(flags: list[str]) -> int:
+    """The OR of the numeric TCP-flag bits named in ``flags`` (empty ⇒ ``0``, no flags set)."""
+    bits = 0
+    for flag in flags:
+        bits |= _TCP_FLAG_BITS[flag]
+    return bits
 
 
 def _tcpflags_rules(ruleset: Ruleset) -> tuple[list[_Command], list[_Command]]:
@@ -341,25 +353,26 @@ def _tcpflags_rules(ruleset: Ruleset) -> tuple[list[_Command], list[_Command]]:
 def _tcpflags_matches() -> list[list[_Command]]:
     """The five invalid TCP-flag matches (Shorewall ``setup_tcp_flags``), each as the match list
     that precedes the shared disposition tail: null / no-flags, Xmas (FIN+PSH+URG), SYN+RST,
-    SYN+FIN, and a new-connection SYN from source port 0 (``tcp sport 0`` added to the flag match).
-    Flag names are in nft's canonical order so the emitted JSON round-trips through ``nft``."""
+    SYN+FIN, and a new-connection SYN from source port 0 (``tcp sport 0`` added to the flag
+    match)."""
     return [
-        [_tcpflags_match(_TCP_FLAGS_ALL, 0)],
-        [_tcpflags_match(_TCP_FLAGS_ALL, {"|": ["fin", "psh", "urg"]})],
-        [_tcpflags_match(["syn", "rst"], {"|": ["syn", "rst"]})],
-        [_tcpflags_match(["fin", "syn"], {"|": ["fin", "syn"]})],
-        [_tcpflags_match(["fin", "syn", "rst", "ack"], "syn"), _port_match("tcp", "sport", "0")],
+        [_tcpflags_match(_TCP_FLAGS_ALL, [])],
+        [_tcpflags_match(_TCP_FLAGS_ALL, ["fin", "psh", "urg"])],
+        [_tcpflags_match(["syn", "rst"], ["syn", "rst"])],
+        [_tcpflags_match(["fin", "syn"], ["fin", "syn"])],
+        [_tcpflags_match(["fin", "syn", "rst", "ack"], ["syn"]), _port_match("tcp", "sport", "0")],
     ]
 
 
-def _tcpflags_match(mask: list[str], value: Any) -> _Command:
+def _tcpflags_match(mask: list[str], value: list[str]) -> _Command:
     """One ``tcp flags & <mask> == <value>`` match — the flag bits masked by ``mask`` must equal
-    ``value`` (a single flag name, an ``{"|": [...]}`` OR of flags, or ``0`` for no-flags-set)."""
+    ``value``, both emitted as numeric bitmasks (``value == []`` ⇒ ``0``, no-flags-set). Numeric,
+    not the symbolic ``{"|": [...]}`` form, so the JSON loads on nft < 1.1 too (#381)."""
     return {
         "match": {
             "op": "==",
-            "left": {"&": [{"payload": {"protocol": "tcp", "field": "flags"}}, {"|": mask}]},
-            "right": value,
+            "left": {"&": [{"payload": {"protocol": "tcp", "field": "flags"}}, _flag_bits(mask)]},
+            "right": _flag_bits(value),
         }
     }
 

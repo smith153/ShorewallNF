@@ -422,10 +422,20 @@ def test_stopped_ruleset_has_no_prerouting_chain() -> None:
 # ---- tcpflags illegal-flag check (ADR-0063 §2, #381) ------------------------------------
 
 _TCPF_PAYLOAD = {"payload": {"protocol": "tcp", "field": "flags"}}
+_TCPF_BITS = {"fin": 0x01, "syn": 0x02, "rst": 0x04, "psh": 0x08, "ack": 0x10, "urg": 0x20}
 
 
-def _tcpf(mask: list[str], value: Any) -> dict[str, Any]:
-    return {"match": {"op": "==", "left": {"&": [_TCPF_PAYLOAD, {"|": mask}]}, "right": value}}
+def _bits(flags: list[str]) -> int:
+    total = 0
+    for flag in flags:
+        total |= _TCPF_BITS[flag]
+    return total
+
+
+def _tcpf(mask: list[str], value: list[str]) -> dict[str, Any]:
+    # Numeric mask/value — the portable form that loads on nft < 1.1 too (#381).
+    left = {"&": [_TCPF_PAYLOAD, _bits(mask)]}
+    return {"match": {"op": "==", "left": left, "right": _bits(value)}}
 
 
 _TCPF_SPORT0 = {
@@ -433,11 +443,11 @@ _TCPF_SPORT0 = {
 }
 # The five nonsensical TCP-flag matches (Shorewall setup_tcp_flags), nft canonical flag order.
 _TCPF_MATCHES = [
-    [_tcpf(["fin", "syn", "rst", "psh", "ack", "urg"], 0)],  # null / no flags
-    [_tcpf(["fin", "syn", "rst", "psh", "ack", "urg"], {"|": ["fin", "psh", "urg"]})],  # Xmas
-    [_tcpf(["syn", "rst"], {"|": ["syn", "rst"]})],  # SYN+RST
-    [_tcpf(["fin", "syn"], {"|": ["fin", "syn"]})],  # SYN+FIN
-    [_tcpf(["fin", "syn", "rst", "ack"], "syn"), _TCPF_SPORT0],  # new SYN from source port 0
+    [_tcpf(["fin", "syn", "rst", "psh", "ack", "urg"], [])],  # null / no flags
+    [_tcpf(["fin", "syn", "rst", "psh", "ack", "urg"], ["fin", "psh", "urg"])],  # Xmas
+    [_tcpf(["syn", "rst"], ["syn", "rst"])],  # SYN+RST
+    [_tcpf(["fin", "syn"], ["fin", "syn"])],  # SYN+FIN
+    [_tcpf(["fin", "syn", "rst", "ack"], ["syn"]), _TCPF_SPORT0],  # new SYN from source port 0
 ]
 _ESTABLISHED_RELATED = {
     "match": {
