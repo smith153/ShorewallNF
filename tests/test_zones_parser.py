@@ -58,3 +58,16 @@ def test_duplicate_zone_raises_at_second_occurrence() -> None:
         parse_zones(_records("net ipv4", "net ipv6"))
     assert exc.value.line == 2
     assert "net" in str(exc.value)
+
+
+def test_parsed_zone_carries_source_location() -> None:
+    # #316: located diagnostics — the parser stamps the row's path/line onto the IR.
+    (zone,) = parse_zones(_records("net ipv4"))
+    assert (zone.path, zone.line) == ("zones", 1)
+
+
+def test_zone_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = Zone(name="net", path="zones", line=1)
+    b = Zone(name="net", path="other", line=9)
+    assert a == b

@@ -17,9 +17,11 @@ family consistency). The concrete builders live in the feature epics.
 from __future__ import annotations
 
 import ipaddress
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import NamedTuple, TypeVar
+from enum import Enum
+from typing import Any, NamedTuple, TypeVar
 
 from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
@@ -32,16 +34,22 @@ from .ir import (
     MacroRule,
     MangleRule,
     Nat,
+    OnOffKeep,
     Policy,
     Provider,
     Rule,
     Ruleset,
+    Settings,
+    YesNoKeep,
     Zone,
     ZoneMember,
 )
 from .preprocessor import SourceLine
 
 _T = TypeVar("_T")
+
+# All-defaults settings: an absent ``shorewallnf.conf`` yields this immutable singleton.
+_DEFAULT_SETTINGS = Settings()
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +159,12 @@ def _build_zone(record: Record) -> Zone:
         raise ConfigError(
             f"unknown zone type {zone_type!r}", path=record.path, line=record.line
         )
-    return Zone(name=name, is_firewall=zone_type == "firewall")
+    return Zone(
+        name=name,
+        is_firewall=zone_type == "firewall",
+        path=record.path,
+        line=record.line,
+    )
 
 
 class ParsedInterfaces(NamedTuple):
@@ -194,7 +207,12 @@ def parse_interfaces(records: Iterable[Record], zones: tuple[Zone, ...]) -> Pars
             if head not in zone_names:
                 raise ConfigError(f"unknown zone {head!r}", path=record.path, line=record.line)
             new_members.setdefault(head, []).append(
-                ZoneMember(interface=device, family=Family.BOTH)
+                ZoneMember(
+                    interface=device,
+                    family=Family.BOTH,
+                    path=record.path,
+                    line=record.line,
+                )
             )
 
     populated = tuple(
@@ -233,22 +251,16 @@ _LOG_LEVELS = frozenset(
 )
 
 
-def parse_policies(records: Iterable[Record], zones: tuple[Zone, ...]) -> tuple[Policy, ...]:
+def parse_policies(records: Iterable[Record]) -> tuple[Policy, ...]:
     """Parse ``policy``-file records (``<source> <dest> <action> [log_level]``) into
     :class:`~shorewallnf.ir.Policy` IR — the inter-zone default policies.
 
-    ``source``/``dest`` must each be a known zone (the firewall zone included) or the wildcard
-    ``all``. The action must be ``ACCEPT``/``DROP``/``REJECT``. A malformed line, unknown zone,
-    or unknown action fails fast with :class:`ConfigError`.
+    ``source``/``dest`` are the raw ``zone`` tokens or the wildcard ``all``; the action must be
+    ``ACCEPT``/``DROP``/``REJECT``. A malformed line or unknown action fails fast with
+    :class:`ConfigError`. Zone-reference integrity (every named zone is declared) is a cross-file
+    semantic check the Validator owns (#323), so the parser stays purely syntactic.
     """
-    zone_names = {zone.name for zone in zones}
-
-    def check_zones(policy: Policy, record: Record) -> None:
-        for zone in (policy.source, policy.dest):
-            if zone != "all" and zone not in zone_names:
-                raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
-
-    return tuple(build_records(records, _build_policy, check_zones))
+    return tuple(build_records(records, _build_policy))
 
 
 def _build_policy(record: Record) -> Policy:
@@ -275,7 +287,14 @@ def _build_policy(record: Record) -> Policy:
             path=record.path,
             line=record.line,
         )
-    return Policy(source=source, dest=dest, action=action, log_level=log_level)
+    return Policy(
+        source=source,
+        dest=dest,
+        action=action,
+        log_level=log_level,
+        path=record.path,
+        line=record.line,
+    )
 
 
 _RULE_ACTIONS = frozenset({"ACCEPT", "DROP", "REJECT"})
@@ -299,9 +318,10 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
     SOURCE/DEST are a bare ``zone`` or ``zone:host`` (host an IPv4/IPv6 address or CIDR literal).
     ``?SECTION`` rows set the section attached to the filter rules that follow (``None`` before the
     first marker; sections don't apply to ``DNAT``). Family is inferred per ADR-0002 — a host
-    literal or ``icmp``/``ipv6-icmp`` pins it; mixed families, an unknown action/zone, an
-    unsupported host form, or trailing (unsupported) columns fail fast with a located
-    :class:`ConfigError`.
+    literal or ``icmp``/``ipv6-icmp`` pins it; mixed families, an unsupported host form, or
+    trailing (unsupported) columns fail fast with a located :class:`ConfigError`. Zone-reference
+    integrity (every named zone is declared) is a cross-file check the Validator owns (#323); the
+    ``zones`` here only drive the DNAT target-zone check retained for ``snat``-adjacent NAT.
     """
     zone_names = {zone.name for zone in zones}
     rules: list[Rule] = []
@@ -315,11 +335,11 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
         if record.fields[0] in _NAT_ACTIONS:
             nats.append(_build_nat(record, zone_names))
         else:
-            rules.append(_build_rule(record, section, zone_names))
+            rules.append(_build_rule(record, section))
     return ParsedRules(tuple(rules), tuple(nats))
 
 
-def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Rule:
+def _build_rule(record: Record, section: str | None) -> Rule:
     # The ACTION column is a plain str: a built-in verdict or a macro/action name (ADR-0020 §2).
     # The parser stays purely syntactic and macro-unaware — the resolver (#184) tells them apart
     # by registry lookup and fails fast on an unknown name, so no verdict check happens here.
@@ -338,7 +358,6 @@ def _build_rule(record: Record, section: str | None, zone_names: set[str]) -> Ru
     proto = _optional(record, 3)
     if proto is not None:
         proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase (#134)
-    _check_zones(source, dest, zone_names, record)
     return Rule(
         action=action,
         source=source,
@@ -388,6 +407,7 @@ def _build_nat(record: Record, zone_names: set[str]) -> Nat:
     return Nat(
         action=action, source=source, dest=zone, to=host, proto=proto,
         dport=_optional(record, 4), family=family,
+        path=record.path, line=record.line,
     )
 
 
@@ -448,6 +468,8 @@ def _build_snat(record: Record) -> Nat:
         out_interface=out_interface,
         snat_to=snat_to,
         family=Family.IPV4,
+        path=record.path,
+        line=record.line,
     )
 
 
@@ -839,13 +861,6 @@ def _optional(record: Record, index: int) -> str | None:
     return None if value == _UNSET else value
 
 
-def _check_zones(source: str, dest: str, zone_names: set[str], record: Record) -> None:
-    for token in (source, dest):
-        zone = token.split(":", 1)[0]
-        if zone != "all" and zone not in zone_names:
-            raise ConfigError(f"unknown zone {zone!r}", path=record.path, line=record.line)
-
-
 def _infer_family(source: str, dest: str, proto: str | None, record: Record) -> Family:
     """Infer a rule's family (ADR-0002); mixed IPv4/IPv6 hints fail fast."""
     families: set[Family] = set()
@@ -881,13 +896,19 @@ def _family_of_literal(host: str, record: Record) -> Family:
     return Family.IPV4 if network.version == 4 else Family.IPV6
 
 
-def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
+def parse_config(
+    streams: Mapping[str, list[SourceLine]], settings: Settings = _DEFAULT_SETTINGS
+) -> Ruleset:
     """Assemble a :class:`~shorewallnf.ir.Ruleset` from the preprocessed per-file streams.
 
     Dispatches each known config file to its per-file parser and combines the results. Zones
-    are parsed first so ``interfaces`` can validate references and attach membership, then
-    ``policy`` is validated against the populated zones (the ``interfaces`` result carries the
-    zones with their members populated). Files absent from ``streams`` are simply skipped.
+    are parsed first so ``interfaces`` can validate references and attach membership (the
+    ``interfaces`` result carries the zones with their members populated). Zone-reference
+    integrity for ``policy``/``rules`` is a Validator concern (#323), not a parse-time check.
+    Files absent from ``streams`` are simply skipped.
+
+    ``settings`` is the non-tabular ``shorewallnf.conf`` result (ADR-0061), threaded onto the
+    IR so it reaches the generator; it defaults to the all-defaults :class:`Settings`.
     """
     zones: tuple[Zone, ...] = ()
     interfaces: tuple[Interface, ...] = ()
@@ -899,7 +920,7 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         parsed = parse_interfaces(parse(streams["interfaces"]), zones)
         zones, interfaces = parsed.zones, parsed.interfaces
     if "policy" in streams:
-        policies = parse_policies(parse(streams["policy"]), zones)
+        policies = parse_policies(parse(streams["policy"]))
     nats: tuple[Nat, ...] = ()
     if "rules" in streams:
         parsed_rules = parse_rules(parse(streams["rules"]), zones)
@@ -937,4 +958,109 @@ def parse_config(streams: Mapping[str, list[SourceLine]]) -> Ruleset:
         providers=providers,
         mangle_rules=mangle_rules,
         actions=actions,
+        settings=settings,
     )
+
+
+# ---- shorewallnf.conf global settings (ADR-0061) ----------------------------------------
+
+# A well-formed settings key: uppercase word characters (ADR-0061 §2). Unknown-but-well-formed
+# keys fail fast as "unknown setting"; anything else is a malformed key.
+_SETTINGS_KEY = re.compile(r"[A-Z0-9_]+")
+
+# nftables truncates a log prefix at NF_LOG_PREFIXLEN (128) including the NUL terminator; a
+# template longer than that can never render within the kernel limit (ADR-0061 §4).
+_LOG_PREFIX_MAX = 127
+
+_SettingConverter = Callable[[str, str, str, int], object]
+
+
+def _convert_log_level(value: str, key: str, path: str, line: int) -> str:
+    if not value:
+        raise ConfigError(f"empty value for {key}", path=path, line=line)
+    return value
+
+
+def _convert_logformat(value: str, key: str, path: str, line: int) -> str:
+    if len(value) > _LOG_PREFIX_MAX:
+        raise ConfigError(
+            f"{key} of {len(value)} chars exceeds the {_LOG_PREFIX_MAX}-char kernel "
+            "log-prefix limit",
+            path=path,
+            line=line,
+        )
+    return value
+
+
+def _enum_converter(enum_cls: type[Enum]) -> _SettingConverter:
+    """A converter mapping a value (case-insensitively) onto an enum member, else failing fast."""
+    members = {member.value.lower(): member for member in enum_cls}
+    allowed = "/".join(member.value for member in enum_cls)
+
+    def convert(value: str, key: str, path: str, line: int) -> object:
+        member = members.get(value.lower())
+        if member is None:
+            raise ConfigError(
+                f"invalid value {value!r} for {key} (expected {allowed})", path=path, line=line
+            )
+        return member
+
+    return convert
+
+
+# Known keys → (Settings field, string→typed converter). A key lives here exactly when a field
+# consumes it; every other key (typos, legacy shorewall.conf knobs, not-yet-built ADR-0061
+# options) is an unknown setting and fails fast (ADR-0061 §3/§4).
+_SETTINGS_KEYS: dict[str, tuple[str, _SettingConverter]] = {
+    "LOG_LEVEL": ("log_level", _convert_log_level),
+    "LOGFORMAT": ("logformat", _convert_logformat),
+    "IP_FORWARDING": ("ip_forwarding", _enum_converter(OnOffKeep)),
+    "LOG_MARTIANS": ("log_martians", _enum_converter(YesNoKeep)),
+    "ROUTE_FILTER": ("route_filter", _enum_converter(YesNoKeep)),
+}
+
+
+def _settings_value(rest: str, path: str, line: int) -> str:
+    """The value side of a ``KEY=value`` line: a quoted string (quotes stripped, content kept
+    verbatim) or a bare token with an optional ``#`` comment trimmed. Never shell-expanded."""
+    text = rest.strip()
+    if text[:1] in ("'", '"'):
+        quote = text[0]
+        end = text.find(quote, 1)
+        if end == -1:
+            raise ConfigError("unterminated quoted value", path=path, line=line)
+        trailing = text[end + 1 :].strip()
+        if trailing and not trailing.startswith("#"):
+            raise ConfigError("unexpected text after quoted value", path=path, line=line)
+        return text[1:end]
+    comment = text.find("#")
+    if comment != -1:
+        text = text[:comment].rstrip()
+    return text
+
+
+def parse_settings(text: str, *, path: str = "shorewallnf.conf") -> Settings:
+    """Parse ``shorewallnf.conf`` text into a frozen :class:`Settings` (ADR-0061).
+
+    The grammar is a deliberate subset of shell: one ``KEY=value`` (or ``KEY="value"``)
+    assignment per line, ``#`` comments and blank lines ignored, no sourcing and no ``$VAR``
+    expansion. An unknown key, a malformed line, or a malformed/out-of-range value fails fast
+    with a located :class:`~shorewallnf.errors.ConfigError` (ADR-0004) — never warn-and-ignore.
+    """
+    fields: dict[str, Any] = {}
+    for line, raw in enumerate(text.splitlines(), 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, rest = stripped.partition("=")
+        key = key.strip()
+        if not sep:
+            raise ConfigError("malformed line (expected KEY=value)", path=path, line=line)
+        if not _SETTINGS_KEY.fullmatch(key):
+            raise ConfigError(f"malformed setting key {key!r}", path=path, line=line)
+        spec = _SETTINGS_KEYS.get(key)
+        if spec is None:
+            raise ConfigError(f"unknown setting {key!r}", path=path, line=line)
+        field_name, convert = spec
+        fields[field_name] = convert(_settings_value(rest, path, line), key, path, line)
+    return replace(Settings(), **fields)

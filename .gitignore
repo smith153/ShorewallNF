@@ -16,6 +16,9 @@ dist/
 .coverage
 htmlcov/
 
+# Docs build output (MkDocs default site_dir)
+/site
+
 # Editors / OS
 .DS_Store
 *.swp
