@@ -26,12 +26,17 @@ Checks so far:
   ``(source, dest)`` pair: a second entry is dead (never reached), and a second with a
   *different* action is a silent footgun. Both are rejected with one located error naming both
   entries' ``file:line`` and the conflicting actions (ADR-0004).
+- **NAT targets that cannot apply (#327).** A ``DNAT`` with no usable ``to`` target host, an
+  explicit ``SNAT`` missing its ``snat_to`` address, or a ``MASQUERADE``/``SNAT`` with no egress
+  ``out_interface`` are high-signal mistakes the Generator would otherwise reject *unlocated*.
+  Catching them here cites ``file:line`` (ADR-0004). Scope is these common mistakes only, not
+  reachability solving (YAGNI).
 """
 
 from __future__ import annotations
 
 from .errors import ConfigError
-from .ir import Policy, Provider, Rule, Ruleset, Zone
+from .ir import Family, Nat, Policy, Provider, Rule, Ruleset, Zone
 
 # ESTABLISHED/RELATED are accepted by the ADR-0005 base chain before any feature rule; INVALID
 # and NEW are not, so a DROP/REJECT there is reachable and unaffected.
@@ -54,6 +59,7 @@ def validate(ruleset: Ruleset) -> Ruleset:
         _reject_malformed_proto_port(rule)
     _validate_zone_references(ruleset)
     _validate_policy_uniqueness(ruleset.policies)
+    _validate_nats(ruleset.nats)
     _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
     return ruleset
 
@@ -91,6 +97,58 @@ def _validate_policy_uniqueness(policies: tuple[Policy, ...]) -> None:
             f"{policy.action} at {_policy_location(first)}; the second entry is dead, remove it",
             path=policy.path,
             line=policy.line,
+        )
+
+
+# Source NAT actions (the ``snat`` file); a MASQUERADE/SNAT needs an egress interface, and an
+# explicit SNAT additionally needs its ``SNAT(<addr>)`` target address.
+_SOURCE_NAT_ACTIONS = frozenset({"SNAT", "MASQUERADE"})
+
+
+def _validate_nats(nats: tuple[Nat, ...]) -> None:
+    """Reject ``Nat`` records the applier could not carry out (#327, ADR-0004).
+
+    High-signal NAT mistakes that would otherwise reach the Generator as an *unlocated* error:
+    a ``DNAT`` with no usable ``to`` target, an explicit ``SNAT`` missing its ``snat_to`` address,
+    or a ``MASQUERADE``/``SNAT`` with no egress ``out_interface``. Each fails fast with one located
+    error. Scope is these common mistakes only — not reachability solving (YAGNI).
+    """
+    for nat in nats:
+        if nat.action == "DNAT":
+            _reject_dnat_without_target(nat)
+        elif nat.action in _SOURCE_NAT_ACTIONS:
+            if not nat.out_interface:
+                raise ConfigError(
+                    f"{nat.action} {nat.source_nets!r}: no egress interface — source NAT needs an "
+                    "out interface to masquerade/SNAT traffic onto",
+                    path=nat.path,
+                    line=nat.line,
+                )
+            if nat.action == "SNAT" and not nat.snat_to:
+                raise ConfigError(
+                    f"SNAT {nat.source_nets!r} {nat.out_interface!r}: no SNAT address — an "
+                    "explicit SNAT needs a SNAT(<addr>) target (use MASQUERADE for the egress "
+                    "interface's own address)",
+                    path=nat.path,
+                    line=nat.line,
+                )
+
+
+def _reject_dnat_without_target(nat: Nat) -> None:
+    """Fail fast on a ``DNAT`` with no usable ``to`` target host (#327, ADR-0004).
+
+    Mirrors the Generator's usability test: a v4 DNAT's ``to`` is ``host[:port]`` and needs a
+    non-empty host (the part before the first colon); a v6 direct-accept DNAT (ADR-0002) needs
+    only a non-empty address literal.
+    """
+    target = nat.to or ""
+    host = target if nat.family is Family.IPV6 else target.partition(":")[0]
+    if not host:
+        raise ConfigError(
+            f"DNAT {nat.source!r} {nat.dest!r}: no target host — a DNAT needs a zone:host[:port] "
+            "target to redirect the connection to",
+            path=nat.path,
+            line=nat.line,
         )
 
 
