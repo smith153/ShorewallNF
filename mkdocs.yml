@@ -62,6 +62,9 @@ nav:
   - Concepts: concepts.md
   - Reference:
       - Configuration files: reference/config-files.md
+      - params (+ preprocessing): reference/params.md
+      - providers: reference/providers.md
+      - stoppedrules: reference/stoppedrules.md
       - snat: reference/snat.md
       - conntrack: reference/conntrack.md
       - mangle: reference/mangle.md
