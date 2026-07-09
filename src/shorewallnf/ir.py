@@ -53,11 +53,17 @@ class ZoneMember:
     A bare interface (``host is None``) is dual-stack (``Family.BOTH``); a host/CIDR entry
     carries the family of its literal (``Family.IPV4`` or ``Family.IPV6``). A zone is
     therefore dual, v4-only, or v6-only as an emergent consequence of its members.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
     """
 
     interface: str
     family: Family
     host: str | None = None
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +73,17 @@ class Zone:
     Family is not modeled on the zone; it lives on each :class:`ZoneMember`. ``is_firewall``
     marks the single ``firewall``-type zone (Shorewall's ``$FW``) — the firewall host itself,
     which has no interface members, so ``members`` defaults to empty.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
     """
 
     name: str
     members: tuple[ZoneMember, ...] = ()
     is_firewall: bool = False
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +100,19 @@ class Interface:
 
 @dataclass(frozen=True, slots=True)
 class Policy:
-    """A default policy for traffic from one zone to another (the ``policy`` file)."""
+    """A default policy for traffic from one zone to another (the ``policy`` file).
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
+    """
 
     source: str
     dest: str
     action: str
     log_level: str | None = None
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +194,10 @@ class Nat:
     ``family`` is IPv4 for true NAT (ADR-0002: IPv6 does no NAT) — the default, and always IPv4
     for source NAT — but a ``DNAT`` whose target is an IPv6 literal is scoped :data:`Family.IPV6`
     and compiles to a plain ``ACCEPT`` to the global address instead of NAT.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
+    can cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001, #316).
     """
 
     action: str
@@ -187,6 +210,8 @@ class Nat:
     out_interface: str | None = None
     snat_to: str | None = None
     family: Family = Family.IPV4
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,6 +367,42 @@ class TproxyRoutingArtifact:
     family: Family
 
 
+class OnOffKeep(Enum):
+    """Tri-state kernel toggle (ADR-0061): enable, disable, or leave the value untouched."""
+
+    ON = "On"
+    OFF = "Off"
+    KEEP = "Keep"
+
+
+class YesNoKeep(Enum):
+    """Tri-state kernel toggle (ADR-0061) whose surface spelling is ``Yes``/``No``/``Keep``."""
+
+    YES = "Yes"
+    NO = "No"
+    KEEP = "Keep"
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """Whole-ruleset behaviour from ``shorewallnf.conf`` (ADR-0061).
+
+    Each in-scope key is one typed field with a default equal to today's behaviour, so an absent
+    file (or absent key) is the all-defaults instance and changes no output. Later epics add
+    fields as they build the behaviour a key configures (#310/#311); a key with no consumer yet
+    is an unknown key and fails fast in the parser. The generator reads emission-time settings
+    (``log_level``/``logformat``); the applier reads kernel-state settings (the tri-states).
+    """
+
+    # LOG_LEVEL / LOGFORMAT feed the generator's log emission (wired byte-for-byte by #309); the
+    # defaults mirror upstream Shorewall so an absent file reproduces today's output.
+    log_level: str = "info"
+    logformat: str = "Shorewall:%s:%s:"
+    ip_forwarding: OnOffKeep = OnOffKeep.KEEP
+    log_martians: YesNoKeep = YesNoKeep.KEEP
+    route_filter: YesNoKeep = YesNoKeep.KEEP
+
+
 @dataclass(frozen=True, slots=True)
 class Ruleset:
     """Top-level IR container. Immutable; built once by the parser.
@@ -364,3 +425,6 @@ class Ruleset:
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
     actions: Mapping[str, MacroDef] = field(default_factory=dict)
+    # Global settings from ``shorewallnf.conf`` (ADR-0061); the all-defaults instance when the
+    # file is absent, so every existing construction keeps today's behaviour.
+    settings: Settings = field(default_factory=Settings)

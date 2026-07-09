@@ -172,11 +172,6 @@ def test_missing_dest_fails_fast_with_location() -> None:
         _one("ACCEPT loc")
 
 
-def test_unknown_zone_fails_fast() -> None:
-    with pytest.raises(ConfigError, match="zone"):
-        _one("ACCEPT bogus net")
-
-
 def test_unsupported_trailing_columns_fail_fast() -> None:
     # A 7th column (ORIGINAL DEST / RATE LIMIT / USER / MARK ...) is not supported yet.
     with pytest.raises(ConfigError, match="unsupported"):
@@ -189,8 +184,10 @@ def test_unsupported_host_form_fails_fast() -> None:
 
 
 def test_error_carries_source_location() -> None:
+    # A parse error carries the offending row's line; use an unsupported host form (zone-reference
+    # integrity moved to the Validator, #323, so an unknown zone no longer fails at parse).
     with pytest.raises(ConfigError) as exc:
-        parse_rules(_records("ACCEPT loc net", "ACCEPT bogus net"), _ZONES)
+        parse_rules(_records("ACCEPT loc net", "ACCEPT loc:not-an-address net"), _ZONES)
     assert exc.value.line == 2
 
 
@@ -247,3 +244,16 @@ def test_dnat_without_target_host_fails_fast() -> None:
 def test_dnat_unknown_target_zone_fails_fast() -> None:
     with pytest.raises(ConfigError, match="zone"):
         _nats("DNAT net bogus:192.0.2.5 tcp 22")
+
+
+def test_parsed_dnat_carries_source_location() -> None:
+    # #316: located diagnostics — the parser stamps the row's path/line onto the Nat.
+    (nat,) = _nats("DNAT net loc:192.0.2.5 tcp 22")
+    assert (nat.path, nat.line) == ("rules", 1)
+
+
+def test_dnat_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5", path="rules", line=1)
+    b = Nat(action="DNAT", source="net", dest="loc", to="192.0.2.5", path="other", line=9)
+    assert a == b

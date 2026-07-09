@@ -60,11 +60,6 @@ def test_malformed_row_fails_fast_with_location() -> None:
     assert exc.value.line == 2
 
 
-def test_unknown_zone_fails_fast() -> None:
-    with pytest.raises(ConfigError):
-        parse_stopped_rules(_records("ACCEPT wan fw"), _ZONES)
-
-
 def test_dnat_row_is_rejected_with_location() -> None:
     # stoppedrules is admin-access filter traffic only; a DNAT row has no meaning here.
     with pytest.raises(ConfigError) as exc:

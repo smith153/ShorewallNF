@@ -10,16 +10,16 @@ only the files it knows about, in a fixed order; anything else in the directory 
 
 | File | Purpose |
 |------|---------|
-| `params` | Variable definitions substituted into the other files during preprocessing. |
+| [`params`](params.md) | Variable definitions substituted into the other files during preprocessing. |
 | `zones` | Named network zones (family-aware membership). |
 | `interfaces` | Interface-to-zone bindings and per-interface options. |
-| `providers` | Policy-routing providers. |
-| `policy` | Default inter-zone policies and their logging. |
-| `rules` | Per-connection filter rules and DNAT/port-forwarding. |
+| [`providers`](providers.md) | Policy-routing providers. |
+| [`policy`](policy.md) | Default inter-zone policies and their logging. |
+| [`rules`](rules.md) | Per-connection filter rules and DNAT/port-forwarding. |
 | `snat` | Source NAT / masquerading (IPv4). |
 | `conntrack` | Connection-tracking helper assignments (FTP, SIP, …). |
 | `mangle` | Packet marking and `TPROXY`. |
-| `stoppedrules` | Admin-access rules that stay in force in the stopped safe state. |
+| [`stoppedrules`](stoppedrules.md) | Admin-access rules that stay in force in the stopped safe state. |
 
 A global settings file (`shorewallnf.conf`, an nftables-native subset of Shorewall's
 `shorewall.conf`) is [planned](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0061-global-settings-file.md).

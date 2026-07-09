@@ -75,3 +75,18 @@ def test_multiple_interfaces_populate_their_zones() -> None:
     assert by_name["net"].members == (ZoneMember(interface="eth0", family=Family.BOTH),)
     assert by_name["loc"].members == (ZoneMember(interface="eth1", family=Family.BOTH),)
     assert by_name["fw"].members == ()  # untouched
+
+
+def test_parsed_zone_member_carries_source_location() -> None:
+    # #316: located diagnostics — the parser stamps the row's path/line onto the member.
+    result = parse_interfaces(_records("net eth0 detect"), _ZONES)
+    net = next(z for z in result.zones if z.name == "net")
+    (member,) = net.members
+    assert (member.path, member.line) == ("interfaces", 1)
+
+
+def test_zone_member_location_is_not_part_of_equality() -> None:
+    # path/line are compare=False metadata (ADR-0001), mirroring Rule (#195).
+    a = ZoneMember(interface="eth0", family=Family.BOTH, path="interfaces", line=1)
+    b = ZoneMember(interface="eth0", family=Family.BOTH, path="other", line=9)
+    assert a == b
