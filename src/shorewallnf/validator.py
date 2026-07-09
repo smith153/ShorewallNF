@@ -18,12 +18,16 @@ Checks so far:
   ``ipv6-icmp`` (which carry a *type* in the dest-port column, not a port — ADR-0007). Both
   are high-signal user mistakes the Generator would otherwise reject unlocated; catching them
   here cites ``file:line``. Full port-semantics modelling is out of scope (YAGNI).
+- **Zone reference integrity (#323).** Every zone named in ``policy``/``rules``/``stoppedrules``
+  source/dest (including the zone part of a ``zone:host`` token) must be declared in ``zones`` —
+  the firewall zone included — or be the ``all`` wildcard. This cross-file reference check lives
+  here (not the parser), mirroring the provider→interface check; the parser stays syntactic.
 """
 
 from __future__ import annotations
 
 from .errors import ConfigError
-from .ir import Provider, Rule, Ruleset
+from .ir import Provider, Rule, Ruleset, Zone
 
 # ESTABLISHED/RELATED are accepted by the ADR-0005 base chain before any feature rule; INVALID
 # and NEW are not, so a DROP/REJECT there is reachable and unaffected.
@@ -34,12 +38,17 @@ _REJECTING_ACTIONS = frozenset({"DROP", "REJECT"})
 # SOURCE PORT is meaningless there.
 _PORTLESS_PROTOS = frozenset({"icmp", "ipv6-icmp"})
 
+# The ``all`` wildcard is not a declared zone — it stands for "every zone" in a source/dest
+# column, so it always resolves.
+_WILDCARD_ZONE = "all"
+
 
 def validate(ruleset: Ruleset) -> Ruleset:
     """Run every semantic check over ``ruleset``; return it unchanged, or raise ``ConfigError``."""
     for rule in ruleset.rules:
         _reject_shadowed_section_rule(rule)
         _reject_malformed_proto_port(rule)
+    _validate_zone_references(ruleset)
     _validate_providers(ruleset.providers, {iface.name for iface in ruleset.interfaces})
     return ruleset
 
@@ -67,6 +76,56 @@ def _reject_malformed_proto_port(rule: Rule) -> None:
             path=rule.path,
             line=rule.line,
         )
+
+
+def _zone_name(token: str) -> str:
+    """The zone part of a ``zone`` or ``zone:host`` token (host narrowing is not relevant here)."""
+    return token.split(":", 1)[0]
+
+
+def _resolve_zone(
+    token: str, zones: dict[str, Zone], *, context: str, path: str | None, line: int | None
+) -> Zone | None:
+    """Resolve the zone part of ``token`` to its declared :class:`~shorewallnf.ir.Zone`.
+
+    Returns the ``Zone`` for a declared name (the firewall zone included — it is a declared zone
+    like any other), ``None`` for the ``all`` wildcard, and raises a located ``ConfigError`` for an
+    undeclared name. Shared so later reference/family checks resolve zone tokens the same way.
+    """
+    name = _zone_name(token)
+    if name == _WILDCARD_ZONE:
+        return None
+    zone = zones.get(name)
+    if zone is None:
+        raise ConfigError(
+            f"{context} names undeclared zone {name!r} — declare it in the zones file "
+            "or fix the reference",
+            path=path,
+            line=line,
+        )
+    return zone
+
+
+def _validate_zone_references(ruleset: Ruleset) -> None:
+    """Reject a ``policy``/``rules``/``stoppedrules`` source/dest naming an undeclared zone (#323).
+
+    Cross-file reference integrity is the validator's job (mirroring the provider→interface check):
+    the parser stays purely syntactic. Every zone named must be declared in ``zones`` (the firewall
+    zone included) or be the ``all`` wildcard; the zone part of a ``zone:host`` token resolves the
+    same way. Fails fast with one located error (ADR-0004).
+    """
+    zones = {zone.name: zone for zone in ruleset.zones}
+
+    def check(source: str, dest: str, kind: str, path: str | None, line: int | None) -> None:
+        _resolve_zone(source, zones, context=f"{kind} source", path=path, line=line)
+        _resolve_zone(dest, zones, context=f"{kind} dest", path=path, line=line)
+
+    for policy in ruleset.policies:
+        check(policy.source, policy.dest, "policy", policy.path, policy.line)
+    for rule in ruleset.rules:
+        check(rule.source, rule.dest, "rule", rule.path, rule.line)
+    for rule in ruleset.stopped_rules:
+        check(rule.source, rule.dest, "stoppedrules rule", rule.path, rule.line)
 
 
 def _validate_providers(

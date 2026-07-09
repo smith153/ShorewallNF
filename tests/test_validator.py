@@ -16,12 +16,15 @@ import pytest
 
 from shorewallnf import cli
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Family, Interface, Provider, Rule, Ruleset
+from shorewallnf.ir import Family, Interface, Policy, Provider, Rule, Ruleset, Zone
 from shorewallnf.validator import validate
 
 
 def _rs(action: str, section: str | None) -> Ruleset:
-    return Ruleset(rules=(Rule(action=action, source="net", dest="loc", section=section),))
+    return Ruleset(
+        zones=(Zone(name="net"), Zone(name="loc")),
+        rules=(Rule(action=action, source="net", dest="loc", section=section),),
+    )
 
 
 # --- the shadowed sections reject DROP/REJECT --------------------------------
@@ -107,6 +110,25 @@ def test_compile_allows_accept_in_established_section(tmp_path: Path) -> None:
 def test_compile_allows_drop_in_invalid_section(tmp_path: Path) -> None:
     cfg = _config(tmp_path, "?SECTION INVALID\nDROP net loc\n")
     cli.compile_config(cfg)  # unaffected; must not raise
+
+
+def test_compile_rejects_undeclared_zone_in_rules(tmp_path: Path) -> None:
+    # #323: end-to-end, an undeclared zone in `rules` is rejected by the Validator (the parser is
+    # now purely syntactic), with a located message naming the unknown zone.
+    cfg = _config(tmp_path, "ACCEPT wan loc\n")
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    msg = str(exc.value)
+    assert msg.startswith("rules:") and "wan" in msg
+
+
+def test_compile_rejects_undeclared_zone_in_policy(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "")
+    (cfg / "policy").write_text("net wan DROP\n")
+    with pytest.raises(ConfigError) as exc:
+        cli.compile_config(cfg)
+    msg = str(exc.value)
+    assert msg.startswith("policy:") and "wan" in msg
 
 
 def _message(rs: Ruleset) -> str:
@@ -255,7 +277,12 @@ def test_reserved_tproxy_table_id_fails_fast() -> None:
 def _rule_rs(**kw: object) -> Ruleset:
     base: dict[str, object] = {"action": "ACCEPT", "source": "net", "dest": "loc"}
     base.update(kw)
-    return Ruleset(rules=(Rule(**base),))  # type: ignore[arg-type]
+    # Declare the referenced zones so zone-reference validation (#323) doesn't fire first —
+    # these cases exercise proto/port checks, not undeclared-zone rejection.
+    return Ruleset(
+        zones=(Zone(name="net"), Zone(name="loc")),
+        rules=(Rule(**base),),  # type: ignore[arg-type]
+    )
 
 
 def test_dport_without_proto_fails_fast() -> None:
@@ -324,3 +351,99 @@ def test_compile_rejects_icmp_source_port(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as exc:
         cli.compile_config(cfg)
     assert "icmp" in str(exc.value)
+
+
+# --- zone reference integrity in policy and rules (#323, epic #312) -----------
+#
+# Every zone named in `policy`/`rules`/`stoppedrules` must be declared in `zones` (the firewall
+# zone included) or be the `all` wildcard; the zone part of a `zone:host` token is resolved the
+# same way. An undeclared reference fails fast with a located ConfigError (ADR-0004). This is the
+# validator's job (cross-file reference integrity), mirroring the provider/interface check above.
+
+_ZONES = (
+    Zone(name="net"),
+    Zone(name="loc"),
+    Zone(name="fw", is_firewall=True),
+)
+
+
+def _zone_rs(*, policies: tuple[Policy, ...] = (), rules: tuple[Rule, ...] = (),
+            stopped_rules: tuple[Rule, ...] = ()) -> Ruleset:
+    return Ruleset(zones=_ZONES, policies=policies, rules=rules, stopped_rules=stopped_rules)
+
+
+def test_policy_undeclared_source_zone_fails_with_location() -> None:
+    rs = _zone_rs(policies=(
+        Policy(source="wan", dest="loc", action="DROP", path="policy", line=4),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("policy:4: ")  # located
+    assert "wan" in msg  # names the unknown zone
+
+
+def test_policy_undeclared_dest_zone_fails_with_location() -> None:
+    rs = _zone_rs(policies=(
+        Policy(source="net", dest="dmz", action="DROP", path="policy", line=7),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("policy:7: ") and "dmz" in msg
+
+
+def test_rule_undeclared_source_zone_fails_with_location() -> None:
+    rs = _zone_rs(rules=(
+        Rule(action="ACCEPT", source="wan", dest="loc", path="rules", line=3),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:3: ") and "wan" in msg
+
+
+def test_rule_undeclared_dest_zone_fails_with_location() -> None:
+    rs = _zone_rs(rules=(
+        Rule(action="ACCEPT", source="net", dest="dmz", path="rules", line=9),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:9: ") and "dmz" in msg
+
+
+def test_rule_zone_host_undeclared_zone_part_fails() -> None:
+    # The zone part of a `zone:host` token is resolved; `wan:192.0.2.5` names undeclared `wan`.
+    rs = _zone_rs(rules=(
+        Rule(action="ACCEPT", source="wan:192.0.2.5", dest="loc", path="rules", line=2),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("rules:2: ") and "wan" in msg
+    assert "192.0.2.5" not in msg  # only the zone part is reported, not the host
+
+
+def test_stopped_rule_undeclared_zone_fails_with_location() -> None:
+    rs = _zone_rs(stopped_rules=(
+        Rule(action="ACCEPT", source="wan", dest="fw", path="stoppedrules", line=1),
+    ))
+    msg = str(_message(rs))
+    assert msg.startswith("stoppedrules:1: ") and "wan" in msg
+
+
+def test_firewall_zone_resolves_no_false_positive() -> None:
+    # The firewall zone (is_firewall) is declared like any other; referencing it must not raise.
+    rs = _zone_rs(
+        policies=(Policy(source="fw", dest="net", action="ACCEPT"),),
+        rules=(Rule(action="ACCEPT", source="fw", dest="loc"),),
+    )
+    assert validate(rs) is rs
+
+
+def test_all_wildcard_resolves() -> None:
+    rs = _zone_rs(
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+        rules=(Rule(action="ACCEPT", source="all", dest="net"),),
+    )
+    assert validate(rs) is rs
+
+
+def test_valid_zone_references_pass_unchanged() -> None:
+    rs = _zone_rs(
+        policies=(Policy(source="net", dest="loc", action="DROP"),),
+        rules=(Rule(action="ACCEPT", source="loc:192.0.2.0/24", dest="net"),),
+        stopped_rules=(Rule(action="ACCEPT", source="net", dest="fw"),),
+    )
+    assert validate(rs) is rs
