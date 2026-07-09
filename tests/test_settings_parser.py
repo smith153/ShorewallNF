@@ -118,6 +118,20 @@ def test_out_of_scope_adr_key_fails_fast() -> None:
     assert "CLAMPMSS" in str(exc.value)
 
 
+# --- fail fast: duplicate keys -----------------------------------------------
+
+
+def test_duplicate_key_fails_fast_at_second_occurrence() -> None:
+    # A repeated key must not silently last-win (ADR-0004 / ADR-0061 §4): it raises a
+    # located ConfigError naming the offending key at the second occurrence.
+    text = "IP_FORWARDING=On\nIP_FORWARDING=Off\n"
+    with pytest.raises(ConfigError) as exc:
+        parse_settings(text)
+    assert exc.value.line == 2
+    assert exc.value.path == "shorewallnf.conf"
+    assert "IP_FORWARDING" in str(exc.value)
+
+
 # --- fail fast: malformed values / lines -------------------------------------
 
 

@@ -1062,5 +1062,7 @@ def parse_settings(text: str, *, path: str = "shorewallnf.conf") -> Settings:
         if spec is None:
             raise ConfigError(f"unknown setting {key!r}", path=path, line=line)
         field_name, convert = spec
+        if field_name in fields:
+            raise ConfigError(f"duplicate setting {key!r}", path=path, line=line)
         fields[field_name] = convert(_settings_value(rest, path, line), key, path, line)
     return replace(Settings(), **fields)
