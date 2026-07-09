@@ -1,7 +1,8 @@
 """Generator — the pure IR → nftables JSON stage (ADR-0001/0003).
 
 Consumes the family-aware IR and emits the base ``inet`` skeleton (ADR-0005), the ADR-0063
-prerouting anti-spoof chain (rpfilter), then the per-connection feature rules from the ``Rule``
+prerouting anti-spoof chain (rpfilter) and the ADR-0063 §2 tcpflags illegal-flag check at the head
+of ``input``/``forward``, then the per-connection feature rules from the ``Rule``
 IR (ADR-0007), then the inter-zone default-policy rules from the ``Policy`` IR (ADR-0006), as
 ``python3-nftables`` JSON: one ``inet filter`` table, the fail-closed
 ``input``/``forward``/``output`` base chains, the always-present prerouting anti-spoof chain, the
@@ -72,7 +73,12 @@ def generate(
     (ADR-0041). It defaults to the empty surface, so a helper is emitted only when the caller
     declares the platform provides it.
     """
-    commands = _filter_base(ruleset.settings.disable_ipv6, _clampmss(ruleset.settings))
+    tcp_input, tcp_forward = _tcpflags_rules(ruleset)
+    commands = _filter_base(
+        ruleset.settings.disable_ipv6,
+        forward_prefix=tcp_forward + _clampmss(ruleset.settings),
+        input_prefix=tcp_input,
+    )
     commands += _prerouting_checks(ruleset)
     commands += _mangle_rules(ruleset)
     commands += _nat_base(ruleset)
@@ -165,7 +171,9 @@ def generate_tproxy_routing(ruleset: Ruleset) -> tuple[TproxyRoutingArtifact, ..
 
 
 def _filter_base(
-    disable_ipv6: bool = False, forward_prefix: list[_Command] | None = None
+    disable_ipv6: bool = False,
+    forward_prefix: list[_Command] | None = None,
+    input_prefix: list[_Command] | None = None,
 ) -> list[_Command]:
     """The always-present ADR-0005 filter skeleton: table, default-drop base chains, and the
     no-lockout baseline accepts (established/related on input+forward, loopback on input).
@@ -174,15 +182,17 @@ def _filter_base(
     the head of every base chain — ahead of the no-lockout accepts and of all feature/policy rules
     — so nothing downstream passes IPv6 and the ``inet`` ruleset is effectively IPv4-only.
 
-    ``forward_prefix`` is emitted into the forward chain **ahead of** its established/related
-    accept — for non-terminating rules that must run before the terminating stateful accept, e.g.
+    ``input_prefix``/``forward_prefix`` are emitted into their chain **ahead of** its
+    established/related accept — for rules that must run before that terminating stateful accept:
     the CLAMPMSS clamp (#368/#375), which has to see the reply SYN-ACK that accept would otherwise
-    swallow. Empty (the default) for the stopped ruleset, which carries no such rules.
+    swallow, and the ADR-0063 §2 tcpflags check, which must catch a malformed-flag packet even on
+    an already-established flow. Both empty (the default) for the stopped ruleset.
     """
     commands: list[_Command] = [_table()]
     commands += [_chain(name, policy) for name, policy in _BASE_CHAINS]
     if disable_ipv6:
         commands += [_ipv6_drop(name) for name, _ in _BASE_CHAINS]
+    commands += input_prefix or []
     commands.append(_rule("input", [_ct_established_related(), _accept()]))
     commands.append(_rule("input", [_ifname("iifname", "lo"), _accept()]))
     commands += forward_prefix or []
@@ -286,6 +296,70 @@ def _fib_rpfilter() -> _Command:
             "op": "==",
             "left": {"fib": {"result": "oif", "flags": ["saddr", "iif"]}},
             "right": False,
+        }
+    }
+
+
+# ---- tcpflags illegal-flag check (ADR-0063 §2, #381) ------------------------------------
+
+# Shorewall's setup_tcp_flags rejects five nonsensical TCP-flag combinations. Each is one
+# `tcp flags & <mask> == <value>` match; the classic iptables `--tcp-flags ALL` mask is the six
+# flags below (fin,syn,rst,psh,ack,urg), and `--syn` examines fin,syn,rst,ack. Family-neutral —
+# one inet match per combo covers IPv4 and IPv6 (ADR-0063 §5). The mask/value encodings are pinned
+# against a real `nft` binary (golden fixtures + the `nft --check` golden tier).
+_TCP_FLAGS_ALL = ["fin", "syn", "rst", "psh", "ack", "urg"]
+
+
+def _tcpflags_rules(ruleset: Ruleset) -> tuple[list[_Command], list[_Command]]:
+    """The ADR-0063 §2 illegal-TCP-flags check for every interface carrying ``tcpflags``, as an
+    ``(input, forward)`` pair of rule lists the caller prepends to the head of each base chain —
+    ahead of the ADR-0005 established/related accept, so a malformed-flag packet is caught even on
+    an already-established flow. Each flagged interface yields, per chain, one gated rule per
+    invalid combination (``iifname <if>`` then the flag match then the shared disposition tail).
+    Empty when no interface is flagged, so an un-flagged config reproduces the skeleton
+    byte-for-byte. The disposition tail is rendered once per chain (its ``%s`` log-prefix slot fills
+    with the chain name); tcpflags stays off ``output`` — it gates only forwarded/local ingress.
+    """
+    settings = ruleset.settings
+    flagged = [iface for iface in ruleset.interfaces if iface.tcpflags]
+    per_chain: dict[str, list[_Command]] = {"input": [], "forward": []}
+    for chain, out in per_chain.items():
+        tail = _disposition(
+            chain,
+            settings.tcp_flags_disposition,
+            settings.tcp_flags_log_level,
+            settings.logformat,
+            f"tcpflags in {chain} chain",
+        )
+        for iface in flagged:
+            gate = _ifname("iifname", iface.name)
+            for match in _tcpflags_matches():
+                out.append(_rule(chain, [gate, *match, *tail]))
+    return per_chain["input"], per_chain["forward"]
+
+
+def _tcpflags_matches() -> list[list[_Command]]:
+    """The five invalid TCP-flag matches (Shorewall ``setup_tcp_flags``), each as the match list
+    that precedes the shared disposition tail: null / no-flags, Xmas (FIN+PSH+URG), SYN+RST,
+    SYN+FIN, and a new-connection SYN from source port 0 (``tcp sport 0`` added to the flag match).
+    Flag names are in nft's canonical order so the emitted JSON round-trips through ``nft``."""
+    return [
+        [_tcpflags_match(_TCP_FLAGS_ALL, 0)],
+        [_tcpflags_match(_TCP_FLAGS_ALL, {"|": ["fin", "psh", "urg"]})],
+        [_tcpflags_match(["syn", "rst"], {"|": ["syn", "rst"]})],
+        [_tcpflags_match(["fin", "syn"], {"|": ["fin", "syn"]})],
+        [_tcpflags_match(["fin", "syn", "rst", "ack"], "syn"), _port_match("tcp", "sport", "0")],
+    ]
+
+
+def _tcpflags_match(mask: list[str], value: Any) -> _Command:
+    """One ``tcp flags & <mask> == <value>`` match — the flag bits masked by ``mask`` must equal
+    ``value`` (a single flag name, an ``{"|": [...]}`` OR of flags, or ``0`` for no-flags-set)."""
+    return {
+        "match": {
+            "op": "==",
+            "left": {"&": [{"payload": {"protocol": "tcp", "field": "flags"}}, {"|": mask}]},
+            "right": value,
         }
     }
 

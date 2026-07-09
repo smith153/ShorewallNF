@@ -147,10 +147,10 @@ def test_legacy_shorewall_conf_knob_fails_fast() -> None:
 
 def test_out_of_scope_adr_key_fails_fast() -> None:
     # An ADR-0061 key owned by a later epic (no consumer yet) is still unknown here.
-    # RPFILTER_* is now consumed (#380); the tcpflags pair (#381) is still unbuilt.
+    # RPFILTER_*/TCP_FLAGS_* are now consumed (#380/#381); the sfilter pair (#382) is still unbuilt.
     with pytest.raises(ConfigError) as exc:
-        parse_settings("TCP_FLAGS_DISPOSITION=DROP\n")
-    assert "TCP_FLAGS_DISPOSITION" in str(exc.value)
+        parse_settings("SFILTER_DISPOSITION=DROP\n")
+    assert "SFILTER_DISPOSITION" in str(exc.value)
 
 
 # --- RPFILTER_DISPOSITION / RPFILTER_LOG_LEVEL (#380, ADR-0063) ---------------
@@ -192,6 +192,47 @@ def test_rpfilter_bad_log_level_fails_fast() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_settings("RPFILTER_LOG_LEVEL=warning\n")  # syslog spelling, not nft's `warn`
     assert "RPFILTER_LOG_LEVEL" in str(exc.value)
+
+
+# --- TCP_FLAGS_DISPOSITION / TCP_FLAGS_LOG_LEVEL (#381, ADR-0063) -------------
+
+
+def test_tcp_flags_defaults_match_shorewall() -> None:
+    # Shorewall's default disposition is DROP; no log unless a level is set (ADR-0063 §2/§4).
+    assert Settings().tcp_flags_disposition is Disposition.DROP
+    assert Settings().tcp_flags_log_level is None
+    assert parse_settings("").tcp_flags_disposition is Disposition.DROP
+    assert parse_settings("").tcp_flags_log_level is None
+
+
+@pytest.mark.parametrize(
+    "value, disposition",
+    [
+        ("ACCEPT", Disposition.ACCEPT),
+        ("DROP", Disposition.DROP),
+        ("REJECT", Disposition.REJECT),
+        ("CONTINUE", Disposition.CONTINUE),
+        ("reject", Disposition.REJECT),  # case-insensitive
+    ],
+)
+def test_tcp_flags_disposition_parses(value: str, disposition: Disposition) -> None:
+    assert parse_settings(f"TCP_FLAGS_DISPOSITION={value}\n").tcp_flags_disposition is disposition
+
+
+def test_tcp_flags_log_level_parses_and_defaults_none() -> None:
+    assert parse_settings("TCP_FLAGS_LOG_LEVEL=info\n").tcp_flags_log_level == "info"
+
+
+def test_tcp_flags_bad_disposition_fails_fast() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_settings("TCP_FLAGS_DISPOSITION=MAYBE\n")
+    assert "TCP_FLAGS_DISPOSITION" in str(exc.value)
+
+
+def test_tcp_flags_bad_log_level_fails_fast() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_settings("TCP_FLAGS_LOG_LEVEL=warning\n")  # syslog spelling, not nft's `warn`
+    assert "TCP_FLAGS_LOG_LEVEL" in str(exc.value)
 
 
 # --- fail fast: duplicate keys -----------------------------------------------

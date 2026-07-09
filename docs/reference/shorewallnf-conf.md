@@ -55,9 +55,12 @@ fails fast until the epic that implements it lands (see [Keys not yet supported]
 | `DISABLE_IPV6` | `Yes` / `No` | `No` | When `Yes`, the generator emits an IPv4-only `inet` ruleset: no IPv6 feature rules plus a base `meta nfproto ipv6 drop` in the input/forward/output chains. `No` (the default) is today's dual-stack output. |
 | `RPFILTER_DISPOSITION` | `ACCEPT` / `DROP` / `REJECT` / `CONTINUE` | `DROP` | The verdict for the reverse-path (anti-spoof) check emitted for an interface carrying the `rpfilter` option. `DROP` (Shorewall's default) silently drops a spoofed packet; `REJECT` answers it; `CONTINUE` logs (if a level is set) but lets the packet fall through — a log-only mode. |
 | `RPFILTER_LOG_LEVEL` | An nft log-level keyword (as `LOG_LEVEL`), or unset | *(unset — no log)* | When set, the rpfilter check logs at this level (prefix from `LOGFORMAT`) before its verdict. Unset (the default) emits no `log` statement, so an rpfilter interface under default settings emits a bare `drop`. |
+| `TCP_FLAGS_DISPOSITION` | `ACCEPT` / `DROP` / `REJECT` / `CONTINUE` | `DROP` | The verdict for the illegal-TCP-flags check emitted for an interface carrying the `tcpflags` option. `DROP` (Shorewall's default) silently drops a malformed segment; `REJECT` answers it; `CONTINUE` logs (if a level is set) but lets the packet fall through — a log-only mode. |
+| `TCP_FLAGS_LOG_LEVEL` | An nft log-level keyword (as `LOG_LEVEL`), or unset | *(unset — no log)* | When set, the tcpflags check logs at this level (prefix from `LOGFORMAT`) before its verdict. Unset (the default) emits no `log` statement, so a tcpflags interface under default settings emits a bare `drop`. |
 
 Values for the tri-state (`On`/`Off`/`Keep`, `Yes`/`No`/`Keep`) keys, for `DISABLE_IPV6`
-(`Yes`/`No`), and for `RPFILTER_DISPOSITION` are matched case-insensitively.
+(`Yes`/`No`), and for `RPFILTER_DISPOSITION` / `TCP_FLAGS_DISPOSITION` are matched
+case-insensitively.
 
 ### `LOG_LEVEL` / `LOGFORMAT`
 
@@ -109,6 +112,25 @@ Shorewall's behaviour — `DROP` with no log — so an rpfilter interface under 
 a bare `drop` and no other setting changes output. `CONTINUE` emits no terminal verdict (the packet
 falls through), which with a log level set is a log-only mode. The check is family-neutral: one
 rule covers IPv4 and IPv6 in the single `inet` ruleset.
+
+### `TCP_FLAGS_DISPOSITION` / `TCP_FLAGS_LOG_LEVEL`
+
+These configure the illegal-TCP-flags check the generator emits for every interface that carries
+the `tcpflags` option (in the `interfaces` file). Unlike rpfilter's anti-spoof rule, this check is
+a property of the packet, not the flow, so it is emitted at the **head** of both the `input` and
+`forward` base chains — ahead of the ADR-0005 `ct state established,related accept` — so a
+malformed segment is caught even on an already-established connection
+([ADR-0063 §2](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0063-protective-check-placement-and-disposition-rendering.md)).
+Each flagged interface emits, per chain, one rule per nonsensical flag combination — no flags set,
+Xmas (FIN+PSH+URG), SYN+RST, SYN+FIN, and a new-connection SYN from source port 0 — matching
+Shorewall's `setup_tcp_flags`.
+
+`TCP_FLAGS_DISPOSITION` is the verdict (default `DROP`, matching Shorewall); `TCP_FLAGS_LOG_LEVEL`,
+when set, adds a `log` at that level (prefix from `LOGFORMAT`) before the verdict. Both default to
+Shorewall's behaviour — `DROP` with no log — so a tcpflags interface under default settings emits a
+bare `drop` and no other setting changes output. `CONTINUE` emits no terminal verdict (the packet
+falls through), which with a log level set is a log-only mode. The check is family-neutral: one
+rule per combination covers IPv4 and IPv6 in the single `inet` ruleset.
 
 ## Example
 

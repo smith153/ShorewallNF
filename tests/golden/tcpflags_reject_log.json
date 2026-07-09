@@ -1,0 +1,755 @@
+{
+  "nftables": [
+    {
+      "add": {
+        "table": {
+          "family": "inet",
+          "name": "filter"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "input",
+          "type": "filter",
+          "hook": "input",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "forward",
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "output",
+          "type": "filter",
+          "hook": "output",
+          "prio": 0,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn",
+                        "rst",
+                        "psh",
+                        "ack",
+                        "urg"
+                      ]
+                    }
+                  ]
+                },
+                "right": 0
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:input:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn",
+                        "rst",
+                        "psh",
+                        "ack",
+                        "urg"
+                      ]
+                    }
+                  ]
+                },
+                "right": {
+                  "|": [
+                    "fin",
+                    "psh",
+                    "urg"
+                  ]
+                }
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:input:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "syn",
+                        "rst"
+                      ]
+                    }
+                  ]
+                },
+                "right": {
+                  "|": [
+                    "syn",
+                    "rst"
+                  ]
+                }
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:input:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn"
+                      ]
+                    }
+                  ]
+                },
+                "right": {
+                  "|": [
+                    "fin",
+                    "syn"
+                  ]
+                }
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:input:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn",
+                        "rst",
+                        "ack"
+                      ]
+                    }
+                  ]
+                },
+                "right": "syn"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "sport"
+                  }
+                },
+                "right": 0
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:input:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "lo"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn",
+                        "rst",
+                        "psh",
+                        "ack",
+                        "urg"
+                      ]
+                    }
+                  ]
+                },
+                "right": 0
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:forward:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn",
+                        "rst",
+                        "psh",
+                        "ack",
+                        "urg"
+                      ]
+                    }
+                  ]
+                },
+                "right": {
+                  "|": [
+                    "fin",
+                    "psh",
+                    "urg"
+                  ]
+                }
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:forward:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "syn",
+                        "rst"
+                      ]
+                    }
+                  ]
+                },
+                "right": {
+                  "|": [
+                    "syn",
+                    "rst"
+                  ]
+                }
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:forward:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn"
+                      ]
+                    }
+                  ]
+                },
+                "right": {
+                  "|": [
+                    "fin",
+                    "syn"
+                  ]
+                }
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:forward:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "&": [
+                    {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "flags"
+                      }
+                    },
+                    {
+                      "|": [
+                        "fin",
+                        "syn",
+                        "rst",
+                        "ack"
+                      ]
+                    }
+                  ]
+                },
+                "right": "syn"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "sport"
+                  }
+                },
+                "right": 0
+              }
+            },
+            {
+              "log": {
+                "level": "info",
+                "prefix": "Shorewall:forward:REJECT:"
+              }
+            },
+            {
+              "reject": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "prerouting_raw",
+          "type": "filter",
+          "hook": "prerouting",
+          "prio": -300,
+          "policy": "accept"
+        }
+      }
+    }
+  ]
+}

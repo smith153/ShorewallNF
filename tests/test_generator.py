@@ -419,6 +419,170 @@ def test_stopped_ruleset_has_no_prerouting_chain() -> None:
     assert "prerouting_raw" not in chains
 
 
+# ---- tcpflags illegal-flag check (ADR-0063 §2, #381) ------------------------------------
+
+_TCPF_PAYLOAD = {"payload": {"protocol": "tcp", "field": "flags"}}
+
+
+def _tcpf(mask: list[str], value: Any) -> dict[str, Any]:
+    return {"match": {"op": "==", "left": {"&": [_TCPF_PAYLOAD, {"|": mask}]}, "right": value}}
+
+
+_TCPF_SPORT0 = {
+    "match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "sport"}}, "right": 0}
+}
+# The five nonsensical TCP-flag matches (Shorewall setup_tcp_flags), nft canonical flag order.
+_TCPF_MATCHES = [
+    [_tcpf(["fin", "syn", "rst", "psh", "ack", "urg"], 0)],  # null / no flags
+    [_tcpf(["fin", "syn", "rst", "psh", "ack", "urg"], {"|": ["fin", "psh", "urg"]})],  # Xmas
+    [_tcpf(["syn", "rst"], {"|": ["syn", "rst"]})],  # SYN+RST
+    [_tcpf(["fin", "syn"], {"|": ["fin", "syn"]})],  # SYN+FIN
+    [_tcpf(["fin", "syn", "rst", "ack"], "syn"), _TCPF_SPORT0],  # new SYN from source port 0
+]
+_ESTABLISHED_RELATED = {
+    "match": {
+        "op": "in",
+        "left": {"ct": {"key": "state"}},
+        "right": {"set": ["established", "related"]},
+    }
+}
+
+
+def _chain_rules(rs: Ruleset, chain: str) -> list[dict[str, Any]]:
+    return [r for r in _rules(rs) if r["chain"] == chain]
+
+
+def _tcpflags_rules_in(rs: Ruleset, chain: str) -> list[dict[str, Any]]:
+    flag_matches = [m[0] for m in _TCPF_MATCHES]
+    return [
+        r for r in _chain_rules(rs, chain) if any(e in flag_matches for e in r["expr"])
+    ]
+
+
+def test_tcpflags_interface_emits_five_matches_in_input_and_forward() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", tcpflags=True),))
+    for chain in ("input", "forward"):
+        rules = _tcpflags_rules_in(rs, chain)
+        # each invalid combination, gated on the ingress interface, with the default DROP verdict;
+        # family-neutral (no nfproto guard), no `log` (TCP_FLAGS_LOG_LEVEL unset).
+        assert [r["expr"] for r in rules] == [
+            [_iif("eth0"), *m, {"drop": None}] for m in _TCPF_MATCHES
+        ]
+
+
+def test_no_tcpflags_interface_emits_no_rule() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0"), Interface(name="eth1")))
+    assert _tcpflags_rules_in(rs, "input") == []
+    assert _tcpflags_rules_in(rs, "forward") == []
+
+
+def test_absent_tcpflags_reproduces_base_skeleton() -> None:
+    # No flagged interface / default settings ⇒ byte-for-byte the base skeleton (no tcpflags rules).
+    assert generate(Ruleset()) == generate(Ruleset(interfaces=(Interface(name="eth0"),)))
+
+
+def test_tcpflags_only_the_flagged_interfaces() -> None:
+    rs = Ruleset(
+        interfaces=(
+            Interface(name="eth0", tcpflags=True),
+            Interface(name="eth1"),
+            Interface(name="eth2", tcpflags=True),
+        )
+    )
+    for chain in ("input", "forward"):
+        gates = {r["expr"][0]["match"]["right"] for r in _tcpflags_rules_in(rs, chain)}
+        assert gates == {"eth0", "eth2"}
+
+
+def test_tcpflags_prepended_ahead_of_base_accept() -> None:
+    # ADR-0063 §2: tcpflags is the head of input AND forward, before the established/related accept.
+    rs = Ruleset(interfaces=(Interface(name="eth0", tcpflags=True),))
+    for chain in ("input", "forward"):
+        chain_rules = _chain_rules(rs, chain)
+        assert [r["expr"] for r in chain_rules[:5]] == [
+            [_iif("eth0"), *m, {"drop": None}] for m in _TCPF_MATCHES
+        ]
+        assert chain_rules[5]["expr"] == [_ESTABLISHED_RELATED, {"accept": None}]
+
+
+def test_tcpflags_precede_clampmss_in_forward() -> None:
+    # Both ride ahead of the forward established/related accept; tcpflags is the first rule (#375).
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", tcpflags=True),),
+        settings=Settings(clampmss=ClampMss.PATH_MTU),
+    )
+    forward = _chain_rules(rs, "forward")
+    assert len(_tcpflags_rules_in(rs, "forward")) == 5
+    # the five tcpflags rules are the first five, then the clampmss clamp, then the base-accept.
+    assert forward[5]["expr"][-1] == {
+        "mangle": {
+            "key": {"tcp option": {"name": "maxseg", "field": "size"}},
+            "value": {"rt": {"key": "mtu"}},
+        }
+    }
+    assert forward[6]["expr"] == [_ESTABLISHED_RELATED, {"accept": None}]
+
+
+def test_tcpflags_disposition_and_log_level_change_the_tail() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", tcpflags=True),),
+        settings=Settings(
+            tcp_flags_disposition=Disposition.REJECT, tcp_flags_log_level="info"
+        ),
+    )
+    # prefix %s slots: chain name then disposition (REJECT), from LOGFORMAT — chain-specific.
+    for chain in ("input", "forward"):
+        rules = _tcpflags_rules_in(rs, chain)
+        assert [r["expr"] for r in rules] == [
+            [
+                _iif("eth0"),
+                *m,
+                {"log": {"level": "info", "prefix": f"Shorewall:{chain}:REJECT:"}},
+                {"reject": None},
+            ]
+            for m in _TCPF_MATCHES
+        ]
+
+
+def test_tcpflags_continue_is_log_only_no_verdict() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", tcpflags=True),),
+        settings=Settings(
+            tcp_flags_disposition=Disposition.CONTINUE, tcp_flags_log_level="debug"
+        ),
+    )
+    rule = _tcpflags_rules_in(rs, "input")[0]
+    # CONTINUE falls through: the log line is emitted but there is NO terminal verdict.
+    assert rule["expr"] == [
+        _iif("eth0"),
+        *_TCPF_MATCHES[0],
+        {"log": {"level": "debug", "prefix": "Shorewall:input:CONTINUE:"}},
+    ]
+    assert all(v not in rule["expr"][-1] for v in ("accept", "drop", "reject"))
+
+
+def test_tcpflags_default_matches_golden() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", tcpflags=True),))
+    assert_golden(rs, "tcpflags_default")
+
+
+def test_tcpflags_reject_with_log_matches_golden() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", tcpflags=True),),
+        settings=Settings(
+            tcp_flags_disposition=Disposition.REJECT, tcp_flags_log_level="info"
+        ),
+    )
+    assert_golden(rs, "tcpflags_reject_log")
+
+
+def test_stopped_ruleset_has_no_tcpflags() -> None:
+    # Protective checks don't apply while stopped: no tcpflags rules in the stopped skeleton.
+    rs = Ruleset(interfaces=(Interface(name="eth0", tcpflags=True),))
+    stopped = generate_stopped(rs)["nftables"]
+    assert not any("field" in json.dumps(c) and "flags" in json.dumps(c) for c in stopped)
+
+
 # ---- per-connection feature rules (ADR-0007) --------------------------------------------
 
 def _port(field: str, proto: str, value: Any) -> dict[str, Any]:
