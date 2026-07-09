@@ -23,8 +23,11 @@ from shorewallnf.ir import (
     TPROXY_MARK,
     TPROXY_TABLE_ID,
     Family,
+    OnOffKeep,
     RoutingArtifact,
+    Settings,
     TproxyRoutingArtifact,
+    YesNoKeep,
 )
 
 
@@ -553,3 +556,113 @@ def test_apply_tproxy_routing_with_no_tproxy_is_a_noop(monkeypatch: pytest.Monke
     calls = _record_run(monkeypatch)
     applier.apply_tproxy_routing(())
     assert calls == []
+
+
+# --- kernel sysctl seam: IP_FORWARDING / LOG_MARTIANS / ROUTE_FILTER (#322, ADR-0062) --------
+#
+# The applier's first kernel mutation outside nftables. The pure `sysctl_plan` maps the tri-state
+# Settings toggles to (key, value) writes (only non-Keep contributes); `apply_sysctls` snapshots
+# then writes them, restoring the snapshot on any failure (fail-closed rollback). Hermetic: argv
+# captured, no root.
+
+
+def test_sysctl_plan_maps_every_toggle_to_its_keys_in_order() -> None:
+    settings = Settings(
+        ip_forwarding=OnOffKeep.ON,
+        log_martians=YesNoKeep.YES,
+        route_filter=YesNoKeep.YES,
+    )
+    assert applier.sysctl_plan(settings) == [
+        ("net.ipv4.ip_forward", "1"),
+        ("net.ipv6.conf.all.forwarding", "1"),
+        ("net.ipv4.conf.all.log_martians", "1"),
+        ("net.ipv4.conf.default.log_martians", "1"),
+        ("net.ipv4.conf.all.rp_filter", "1"),
+        ("net.ipv4.conf.default.rp_filter", "1"),
+    ]
+
+
+def test_sysctl_plan_off_and_no_map_to_zero() -> None:
+    settings = Settings(
+        ip_forwarding=OnOffKeep.OFF,
+        log_martians=YesNoKeep.NO,
+        route_filter=YesNoKeep.NO,
+    )
+    assert all(value == "0" for _key, value in applier.sysctl_plan(settings))
+
+
+def test_sysctl_plan_keep_and_absent_yield_no_entry() -> None:
+    # The all-defaults Settings (absent file) is all-Keep -> touches nothing.
+    assert applier.sysctl_plan(Settings()) == []
+    # A single non-Keep toggle contributes only its own keys; the Keep ones stay out.
+    assert applier.sysctl_plan(Settings(ip_forwarding=OnOffKeep.OFF)) == [
+        ("net.ipv4.ip_forward", "0"),
+        ("net.ipv6.conf.all.forwarding", "0"),
+    ]
+
+
+def _record_sysctl(
+    monkeypatch: pytest.MonkeyPatch, *, snapshot: str = "7", fail_on: str | None = None
+) -> list[list[str]]:
+    """Stub subprocess.run for sysctl: reads (``-n``) return ``snapshot``; a write of ``fail_on``
+    (a ``key=value`` string) returns rc 1. Records every argv."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[1] == "-w" and cmd[2] == fail_on:
+            return subprocess.CompletedProcess(cmd, 1, "", "sysctl: boom")
+        return subprocess.CompletedProcess(cmd, 0, snapshot, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_apply_sysctls_snapshots_then_writes_each_planned_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_sysctl(monkeypatch)
+    applier.apply_sysctls(Settings(ip_forwarding=OnOffKeep.ON))
+    # Every key is read (snapshot) before any write, then written in plan order.
+    assert calls == [
+        ["sysctl", "-n", "net.ipv4.ip_forward"],
+        ["sysctl", "-n", "net.ipv6.conf.all.forwarding"],
+        ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+        ["sysctl", "-w", "net.ipv6.conf.all.forwarding=1"],
+    ]
+
+
+def test_apply_sysctls_with_all_keep_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_sysctl(monkeypatch)
+    applier.apply_sysctls(Settings())  # all-Keep: never reads or writes a sysctl
+    assert calls == []
+
+
+def test_apply_sysctls_restores_snapshot_and_raises_on_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Plan: forwarding(2) + martians(2) + rp_filter(2). Fail the 3rd write (first martians key).
+    calls = _record_sysctl(
+        monkeypatch, snapshot="7", fail_on="net.ipv4.conf.all.log_martians=1"
+    )
+    settings = Settings(
+        ip_forwarding=OnOffKeep.ON,
+        log_martians=YesNoKeep.YES,
+        route_filter=YesNoKeep.YES,
+    )
+    with pytest.raises(ConfigError, match="boom"):
+        applier.apply_sysctls(settings)
+
+    writes = [c for c in calls if c[1] == "-w"]
+    # The two forwarding keys were written, then the failing martians write; on failure the two
+    # already-written keys are restored to their snapshot ("7"), in reverse order. The failing key
+    # is never counted as written, so it is not "restored".
+    assert writes == [
+        ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+        ["sysctl", "-w", "net.ipv6.conf.all.forwarding=1"],
+        ["sysctl", "-w", "net.ipv4.conf.all.log_martians=1"],  # the rejected write
+        ["sysctl", "-w", "net.ipv6.conf.all.forwarding=7"],  # rollback (reverse order)
+        ["sysctl", "-w", "net.ipv4.ip_forward=7"],
+    ]
+    # Fail-closed: the rp_filter keys after the failure point are never written.
+    assert not any("rp_filter" in c[-1] for c in writes)

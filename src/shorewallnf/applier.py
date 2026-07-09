@@ -20,10 +20,18 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError, ShorewallNFError
-from .ir import Family, RoutingArtifact, TproxyRoutingArtifact
+from .ir import (
+    Family,
+    OnOffKeep,
+    RoutingArtifact,
+    Settings,
+    TproxyRoutingArtifact,
+    YesNoKeep,
+)
 
 NFT = "nft"
 IP = "ip"
+SYSCTL = "sysctl"
 
 # The ``ip`` family flag per artifact family (ADR-0002): a provider routing table + fwmark rule is
 # scoped to one family (v4 or v6, never both), so every ``ip`` invocation carries -4 or -6.
@@ -308,3 +316,90 @@ def _run_best_effort(argvs: list[list[str]]) -> None:
     not an error), so their failure must not abort an apply or a teardown."""
     for argv in argvs:
         subprocess.run(argv, capture_output=True, text=True)
+
+
+# --- kernel sysctls: IP_FORWARDING / LOG_MARTIANS / ROUTE_FILTER (task #322, ADR-0062) ------
+#
+# The applier's first kernel mutation outside nftables. The ``shorewallnf.conf`` tri-state toggles
+# (ADR-0061) lower to ``sysctl`` writes here in the shell (ADR-0003); the pure :func:`sysctl_plan`
+# maps a :class:`Settings` to the exact (key, value) writes, so it is unit-tested without root.
+# Sysctls are applied *after* the atomic nft load (ADR-0010) — like the routing artifacts above —
+# so ``IP_FORWARDING=On`` only enables forwarding once the firewall that governs forwarded traffic
+# is in place; :func:`apply_sysctls` snapshots first and restores on any failure (fail-closed).
+
+# The sysctl keys each toggle drives. Family-aware (ADR-0002): forwarding spans IPv4 + IPv6; martian
+# logging and reverse-path filtering are IPv4 ``conf`` keys (no IPv6 kernel equivalent). ``all`` +
+# ``default`` cover existing and future interfaces.
+_FORWARDING_KEYS = ("net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding")
+_LOG_MARTIANS_KEYS = ("net.ipv4.conf.all.log_martians", "net.ipv4.conf.default.log_martians")
+_ROUTE_FILTER_KEYS = ("net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter")
+
+
+def sysctl_plan(settings: Settings) -> list[tuple[str, str]]:
+    """The ``(key, value)`` sysctl writes ``settings`` requests, in deterministic order (ADR-0062).
+
+    Only non-``Keep`` toggles contribute; a ``Keep`` (or absent, i.e. all-defaults) setting yields
+    no entry, so the kernel value is left untouched. ``On``/``Yes`` → ``"1"``, ``Off``/``No`` →
+    ``"0"``. Pure: no I/O, so it is unit-tested without root.
+    """
+    plan: list[tuple[str, str]] = []
+    if settings.ip_forwarding is not OnOffKeep.KEEP:
+        value = "1" if settings.ip_forwarding is OnOffKeep.ON else "0"
+        plan += [(key, value) for key in _FORWARDING_KEYS]
+    if settings.log_martians is not YesNoKeep.KEEP:
+        value = "1" if settings.log_martians is YesNoKeep.YES else "0"
+        plan += [(key, value) for key in _LOG_MARTIANS_KEYS]
+    if settings.route_filter is not YesNoKeep.KEEP:
+        value = "1" if settings.route_filter is YesNoKeep.YES else "0"
+        plan += [(key, value) for key in _ROUTE_FILTER_KEYS]
+    return plan
+
+
+def _sysctl_write_argv(key: str, value: str) -> list[str]:
+    return [SYSCTL, "-w", f"{key}={value}"]
+
+
+def _sysctl_read_argv(key: str) -> list[str]:
+    return [SYSCTL, "-n", key]
+
+
+def _sysctl_read(key: str) -> str | None:
+    """The current value of ``key``, or ``None`` when the key is absent (nothing to restore)."""
+    result = subprocess.run(_sysctl_read_argv(key), capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def apply_sysctls(settings: Settings) -> None:
+    """Mutate the kernel sysctls ``settings`` requests, fail-closed with rollback (#322, ADR-0062).
+
+    **Ordering:** run this *after* the atomic nft load (:func:`apply_ruleset`) so
+    ``IP_FORWARDING=On`` enables forwarding only once the firewall governing forwarded traffic is
+    loaded (mirroring the routing artifacts above, ADR-0010). Snapshot every
+    target key's current value, then write the :func:`sysctl_plan` values in order. On the first
+    write failure, restore every already-written key to its snapshot (reverse order) and raise
+    :class:`~shorewallnf.errors.ConfigError`, so a partial failure never leaves the toggles half-set
+    (fail-closed, ADR-0004/0021). ``Keep`` toggles contribute nothing and are never read or written.
+    """
+    plan = sysctl_plan(settings)
+    if not plan:
+        return
+    snapshot = {key: _sysctl_read(key) for key, _value in plan}
+    written: list[str] = []
+    for key, value in plan:
+        result = subprocess.run(_sysctl_write_argv(key, value), capture_output=True, text=True)
+        if result.returncode != 0:
+            _restore_sysctls(snapshot, written)
+            raise ConfigError(f"sysctl {key}={value} rejected: {result.stderr.strip()}")
+        written.append(key)
+
+
+def _restore_sysctls(snapshot: dict[str, str | None], written: list[str]) -> None:
+    """Restore each already-written key to its snapshot value (reverse of the write order).
+
+    A key whose snapshot is ``None`` (it was absent) is skipped — there is nothing to restore.
+    Restores are best-effort: rollback must not itself raise over an already-failing apply.
+    """
+    for key in reversed(written):
+        prior = snapshot[key]
+        if prior is not None:
+            subprocess.run(_sysctl_write_argv(key, prior), capture_output=True, text=True)

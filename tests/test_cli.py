@@ -120,6 +120,72 @@ def test_apply_verb_does_not_load_after_failed_check(
     assert "error:" in capsys.readouterr().err
 
 
+# ---- apply-time kernel sysctls threaded from shorewallnf.conf (task #322, ADR-0062) --------
+
+_SYSCTL_DIR = str(Path(__file__).parent / "fixtures" / "sysctl_dir")
+
+
+def test_apply_sets_sysctls_after_load_and_before_save(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: calls.append("check"))
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: calls.append("apply"))
+    monkeypatch.setattr(cli, "apply_sysctls", lambda s: calls.append("sysctls"))
+    monkeypatch.setattr(cli, "save_ruleset", lambda r: calls.append("save"))
+    assert cli.main(["apply", _SYSCTL_DIR]) == 0
+    # sysctls are mutated after the atomic nft load, and a failed sysctl step must precede save.
+    assert calls == ["check", "apply", "sysctls", "save"]
+
+
+def test_apply_threads_parsed_settings_to_apply_sysctls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from shorewallnf.ir import OnOffKeep, Settings, YesNoKeep
+
+    seen: list[Settings] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "save_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_sysctls", lambda s: seen.append(s))
+    assert cli.main(["apply", _SYSCTL_DIR]) == 0
+    # The Settings parsed from the config dir's shorewallnf.conf reach the applier verbatim.
+    assert seen == [Settings(ip_forwarding=OnOffKeep.ON, log_martians=YesNoKeep.YES)]
+
+
+def test_apply_does_not_save_after_failed_sysctls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_sysctls(_s: object) -> None:
+        raise ConfigError("sysctl net.ipv4.ip_forward=1 rejected: boom")
+
+    saved = False
+
+    def record_save(_r: object) -> None:
+        nonlocal saved
+        saved = True
+
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: None)
+    monkeypatch.setattr(cli, "apply_sysctls", failing_sysctls)
+    monkeypatch.setattr(cli, "save_ruleset", record_save)
+    assert cli.main(["apply", _SYSCTL_DIR]) == 1
+    assert saved is False
+    assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("verb", ["start", "reload", "restart"])
+def test_lifecycle_verb_sets_sysctls_after_load(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "check_ruleset", lambda r: calls.append("check"))
+    monkeypatch.setattr(cli, "apply_ruleset", lambda r: calls.append("apply"))
+    monkeypatch.setattr(cli, "apply_sysctls", lambda s: calls.append("sysctls"))
+    assert cli.main([verb, _SYSCTL_DIR]) == 0
+    assert calls == ["check", "apply", "sysctls"]
+
+
 @pytest.mark.parametrize("verb", ["start", "reload", "restart"])
 def test_lifecycle_verb_in_help(verb: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
