@@ -181,5 +181,3 @@ applied: router
   [Getting started](getting-started.md#lifecycle-verbs).
 - Each config file's full syntax is catalogued in the
   [configuration file reference](reference/config-files.md).
-</content>
-</invoke>
