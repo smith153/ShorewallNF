@@ -22,8 +22,9 @@ are not covered by the existing skeleton:
    packet that matches an existing conntrack entry would be accepted by that rule before an
    anti-spoof check placed after it ever runs.
 2. **How a check renders its disposition + log level.** All three share the same shape — an
-   optional log line then a verdict — and the generator already renders exactly that for policy
-   rules (`generator._log` then `generator._verdict`, prefix via LOGFORMAT per ADR-0061). The
+   optional log line then a verdict — and the generator already renders exactly that for
+   inter-zone policy rules ([ADR-0006 §3](0006-inter-zone-policy-compilation.md) "Verdict +
+   logging": `generator._log` then `generator._verdict`, prefix via LOGFORMAT per ADR-0061). The
    checks need one shared model rather than three ad-hoc renderings.
 
 Forces: fail-closed and early ([CLAUDE.md](../../CLAUDE.md)) — drop spoofed/invalid ingress
@@ -91,7 +92,8 @@ A check renders to an ordered nft statement list as: **optional `log`, then verd
   (its `%s` slots filled with the chain name and the disposition, length-checked against the
   kernel prefix limit — an over-long prefix fails fast, [ADR-0004](0004-error-handling.md)) —
   identical to the policy-rule rendering the generator already does
-  ([ADR-0007](0007-rules-compilation.md): `generator._log` then `generator._verdict`).
+  ([ADR-0006 §3](0006-inter-zone-policy-compilation.md) "Verdict + logging": `generator._log`
+  then `generator._verdict`).
 - **verdict** — `ACCEPT → accept`, `DROP → drop`, `REJECT → reject`. **`CONTINUE` emits no
   terminal verdict**: the matched packet falls through to the rest of the chain (the log line, if
   any, is still emitted). CONTINUE is what lets an operator log-only a check without dropping.
