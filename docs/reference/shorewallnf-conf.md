@@ -27,7 +27,9 @@ A firewall compiler that silently ignores a setting is worse than one that refus
   implement (e.g. `STARTUP_ENABLED`, `IPTABLES`) — is a hard error naming the file, line, and
   key: `shorewallnf.conf:12: unknown setting 'STARTUP_ENABLED'`.
 - A **malformed value** for a known key (not one of its accepted values, too long, etc.) is a
-  hard error with the same file/line/key context.
+  hard error with the same file/line/key context — with one exception: `LOG_LEVEL` only rejects
+  an empty value and otherwise accepts anything; see
+  [`LOG_LEVEL` / `LOGFORMAT`](#log_level-logformat) below.
 - A **malformed line** (no `=`, empty key, bad key charset) is a hard error.
 
 There is no warn-and-ignore and no partial acceptance — the compile stops at the first
@@ -47,7 +49,7 @@ fails fast until the epic that implements it lands (see [Keys not yet supported]
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
-| `LOG_LEVEL` | Any nftables (syslog) log level | `info` | Fallback log level for a logging rule/policy that doesn't specify its own `LOG LEVEL` column. |
+| `LOG_LEVEL` | Any non-empty string (unvalidated) | `info` | Fallback log level for a logging rule/policy that doesn't specify its own `LOG LEVEL` column. |
 | `LOGFORMAT` | A template string with up to two `%s` slots | `Shorewall:%s:%s:` | The log-prefix template for emitted `log` statements; the two `%s` slots fill with the chain name and the disposition (action). The *rendered* prefix must fit the kernel's 127-character log-prefix limit. |
 | `IP_FORWARDING` | `On` / `Off` / `Keep` | `Keep` | Writes `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding` (`On`→`1`, `Off`→`0`). `Keep` leaves the kernel value untouched. |
 | `LOG_MARTIANS` | `Yes` / `No` / `Keep` | `Keep` | Writes `net.ipv4.conf.{all,default}.log_martians` (`Yes`→`1`, `No`→`0`). `Keep` leaves it untouched. IPv4-only; there is no IPv6 kernel equivalent. |
@@ -63,6 +65,16 @@ per-policy or per-rule `LOG LEVEL` column, when present, always wins — `LOG_LE
 level used when logging is requested with no explicit level of its own. `LOGFORMAT` supplies
 the prefix template for every emitted log statement; see the
 [`policy`](policy.md#log-level) reference for how per-row logging works.
+
+`LOG_LEVEL` does **not** get the same fail-fast validation as the other four keys: the parser
+rejects only an empty value and otherwise accepts any string verbatim, unlike the tabular
+`policy`/`rules` `LOG LEVEL` column, which is checked against a fixed set of nft log-level
+keywords (`emerg`/`alert`/`crit`/`err`/`warn`/`notice`/`info`/`debug`/`audit`) and rejects
+anything else at parse time. A `shorewallnf.conf` `LOG_LEVEL` value that isn't one of those
+keywords compiles without error and is passed straight into the generated `log` statement — it
+would only surface as a problem, if ever, when nft loads the ruleset. Closing this gap so
+`LOG_LEVEL` gets the same validation as the column is tracked separately (#367); until then,
+stick to the keywords above even though the parser won't enforce it.
 
 ### `IP_FORWARDING` / `LOG_MARTIANS` / `ROUTE_FILTER`
 
