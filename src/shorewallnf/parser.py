@@ -28,6 +28,7 @@ from .errors import ConfigError
 from .ir import (
     ClampMss,
     ConntrackHelper,
+    Disposition,
     Family,
     HelperDef,
     Interface,
@@ -1189,6 +1190,8 @@ _SETTINGS_KEYS: dict[str, tuple[str, _SettingConverter]] = {
     "ROUTE_FILTER": ("route_filter", _enum_converter(YesNoKeep)),
     "DISABLE_IPV6": ("disable_ipv6", _convert_yes_no),
     "CLAMPMSS": ("clampmss", _convert_clampmss),
+    "RPFILTER_DISPOSITION": ("rpfilter_disposition", _enum_converter(Disposition)),
+    "RPFILTER_LOG_LEVEL": ("rpfilter_log_level", _convert_log_level),
 }
 
 

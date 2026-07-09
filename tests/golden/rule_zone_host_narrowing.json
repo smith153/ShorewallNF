@@ -134,6 +134,19 @@
     },
     {
       "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "prerouting_raw",
+          "type": "filter",
+          "hook": "prerouting",
+          "prio": -300,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
         "rule": {
           "family": "inet",
           "table": "filter",
