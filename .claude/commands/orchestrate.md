@@ -25,6 +25,12 @@ Each cycle:
    - `implementation-ready`, unblocked, unclaimed tasks → **implement**
    - `changes-requested` PRs → **fix**
    - if the delivery queue is thin, **decompose** an approved epic whose deps are landing.
+
+   Pick each subagent's model by role: **docs implementer tasks (`type:docs`) run on
+   Sonnet** (`model: sonnet`) to save cost on prose work; grooming, non-docs
+   implementation, and review stay on the default (Opus) — the stronger model earns its
+   keep on TDD-against-strict-mypy work and on the single adversarial review gate before a
+   human merge. Grooming a `type:docs` issue is **not** a docs task — groom on the default.
 4. **HARD RULE:** a reviewer is always a *separate cold* subagent from whatever wrote
    the code. Pass it only the PR number; it fetches the diff and the task's acceptance
    criteria from GitHub itself. Never let one subagent both write and review the same
