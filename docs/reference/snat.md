@@ -16,9 +16,9 @@ to a fixed address (`SNAT`). It is the counterpart to the `DNAT` port-forwards i
 Each non-comment row has three whitespace-separated columns, in order:
 
 ```
-#ACTION            SOURCE                 DEST
-MASQUERADE         10.0.0.0/8             eth0
-SNAT(203.0.113.5)  192.0.2.0/24           eth1
+#ACTION            SOURCE            DEST
+MASQUERADE         198.51.100.0/24   eth0
+SNAT(203.0.113.5)  192.0.2.0/24      eth1
 ```
 
 | Column | Required | Meaning |
@@ -42,8 +42,8 @@ Dynamic source NAT to the egress interface's current address — the right choic
 address is assigned dynamically (DHCP, PPPoE). Carries no address parameter.
 
 ```
-#ACTION      SOURCE       DEST
-MASQUERADE   10.0.0.0/8   eth0
+#ACTION      SOURCE            DEST
+MASQUERADE   198.51.100.0/24   eth0
 ```
 
 ### `SNAT(<addr>)`
@@ -63,7 +63,7 @@ SNAT(203.0.113.5)   192.0.2.0/24   eth1
 
 ```
 #ACTION      SOURCE                                        DEST
-MASQUERADE   10.0.0.0/8,192.0.2.0/24,203.0.113.0/24        eth0
+MASQUERADE   198.51.100.0/24,192.0.2.0/24,203.0.113.0/24   eth0
 ```
 
 ## What it compiles to
