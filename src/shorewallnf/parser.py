@@ -1194,6 +1194,8 @@ _SETTINGS_KEYS: dict[str, tuple[str, _SettingConverter]] = {
     "RPFILTER_LOG_LEVEL": ("rpfilter_log_level", _convert_log_level),
     "TCP_FLAGS_DISPOSITION": ("tcp_flags_disposition", _enum_converter(Disposition)),
     "TCP_FLAGS_LOG_LEVEL": ("tcp_flags_log_level", _convert_log_level),
+    "SFILTER_DISPOSITION": ("sfilter_disposition", _enum_converter(Disposition)),
+    "SFILTER_LOG_LEVEL": ("sfilter_log_level", _convert_log_level),
 }
 
 

@@ -269,6 +269,9 @@ def _prerouting_checks(ruleset: Ruleset) -> list[_Command]:
         for iface in ruleset.interfaces
         if iface.rpfilter
     ]
+    # sfilter follows rpfilter in the same chain (ADR-0063 §1 order), one rule per family present.
+    for iface in ruleset.interfaces:
+        commands += _sfilter_rules(iface, ruleset.settings)
     return commands
 
 
@@ -298,6 +301,56 @@ def _fib_rpfilter() -> _Command:
             "right": False,
         }
     }
+
+
+# ---- sfilter anti-spoof source check (ADR-0063 §5, #382) --------------------------------
+
+# The source-filter check drops packets whose source address falls in a network that cannot
+# legitimately arrive on the ingress interface (ADR-0063 §5). #378 records the sfilter nets as
+# verbatim literals; here they are classified into IPv4/IPv6 by the `":" in net` idiom (as in
+# `_addr_value`/`_addr_match`) so the one `inet` ruleset emits up to two family-correct rules per
+# interface (`ip saddr` for v4, `ip6 saddr` for v6, ADR-0002) — only the families actually present.
+
+
+def _sfilter_rules(iface: Interface, settings: Settings) -> list[_Command]:
+    """The ADR-0063 §5 source-filter rules for one interface: up to two `iifname <if>` rules —
+    `ip saddr {v4 nets}` and/or `ip6 saddr {v6 nets}` — each reaching the shared disposition tail.
+    Empty when the interface carries no sfilter list, so an un-filtered config is unchanged."""
+    if not iface.sfilter:
+        return []
+    v4 = [net for net in iface.sfilter if ":" not in net]
+    v6 = [net for net in iface.sfilter if ":" in net]
+    return [
+        _sfilter_rule(iface, settings, proto, nets)
+        for proto, nets in (("ip", v4), ("ip6", v6))
+        if nets
+    ]
+
+
+def _sfilter_rule(
+    iface: Interface, settings: Settings, proto: str, nets: list[str]
+) -> _Command:
+    """One family's source-filter rule: gate on ``iifname``, match the source nets (a scalar/prefix
+    or an anonymous set for a list) via ``<proto> saddr``, then the shared disposition tail."""
+    ctx = f"sfilter on interface {iface.name!r}"
+    expr: list[_Command] = [_ifname("iifname", iface.name), _sfilter_saddr(proto, nets)]
+    expr += _disposition(
+        _PREROUTING_RAW_CHAIN,
+        settings.sfilter_disposition,
+        settings.sfilter_log_level,
+        settings.logformat,
+        ctx,
+    )
+    return _rule(_PREROUTING_RAW_CHAIN, expr)
+
+
+def _sfilter_saddr(proto: str, nets: list[str]) -> _Command:
+    """``<proto> saddr`` over the family's source nets — a scalar/prefix for one, an anonymous set
+    for a list; each element reuses the ADR-0007 ``_addr_value`` prefix handling."""
+    elems = [_addr_value(net) for net in nets]
+    right = elems[0] if len(elems) == 1 else {"set": elems}
+    return {"match": {"op": "==", "left": {"payload": {"protocol": proto, "field": "saddr"}},
+                      "right": right}}
 
 
 # ---- tcpflags illegal-flag check (ADR-0063 §2, #381) ------------------------------------

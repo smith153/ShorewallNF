@@ -453,6 +453,11 @@ class Settings:
     # level is set — so a tcpflags interface under default settings emits `... drop` with no `log`.
     tcp_flags_disposition: Disposition = Disposition.DROP
     tcp_flags_log_level: str | None = None
+    # SFILTER_DISPOSITION / SFILTER_LOG_LEVEL (ADR-0063 §4/§5, #382): the source-filter anti-spoof
+    # check's verdict and log level. Defaults mirror Shorewall — DROP, and no log line unless a
+    # level is set — so an sfilter interface under default settings emits `... drop` with no `log`.
+    sfilter_disposition: Disposition = Disposition.DROP
+    sfilter_log_level: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

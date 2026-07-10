@@ -57,10 +57,12 @@ fails fast until the epic that implements it lands (see [Keys not yet supported]
 | `RPFILTER_LOG_LEVEL` | An nft log-level keyword (as `LOG_LEVEL`), or unset | *(unset — no log)* | When set, the rpfilter check logs at this level (prefix from `LOGFORMAT`) before its verdict. Unset (the default) emits no `log` statement, so an rpfilter interface under default settings emits a bare `drop`. |
 | `TCP_FLAGS_DISPOSITION` | `ACCEPT` / `DROP` / `REJECT` / `CONTINUE` | `DROP` | The verdict for the illegal-TCP-flags check emitted for an interface carrying the `tcpflags` option. `DROP` (Shorewall's default) silently drops a malformed segment; `REJECT` answers it; `CONTINUE` logs (if a level is set) but lets the packet fall through — a log-only mode. |
 | `TCP_FLAGS_LOG_LEVEL` | An nft log-level keyword (as `LOG_LEVEL`), or unset | *(unset — no log)* | When set, the tcpflags check logs at this level (prefix from `LOGFORMAT`) before its verdict. Unset (the default) emits no `log` statement, so a tcpflags interface under default settings emits a bare `drop`. |
+| `SFILTER_DISPOSITION` | `ACCEPT` / `DROP` / `REJECT` / `CONTINUE` | `DROP` | The verdict for the source-filter (anti-spoof) check emitted for an interface carrying an `sfilter` net-list. `DROP` (Shorewall's default) silently drops a packet whose source is in a network that cannot legitimately arrive on that interface; `REJECT` answers it; `CONTINUE` logs (if a level is set) but lets the packet fall through — a log-only mode. |
+| `SFILTER_LOG_LEVEL` | An nft log-level keyword (as `LOG_LEVEL`), or unset | *(unset — no log)* | When set, the sfilter check logs at this level (prefix from `LOGFORMAT`) before its verdict. Unset (the default) emits no `log` statement, so an sfilter interface under default settings emits a bare `drop`. |
 
 Values for the tri-state (`On`/`Off`/`Keep`, `Yes`/`No`/`Keep`) keys, for `DISABLE_IPV6`
-(`Yes`/`No`), and for `RPFILTER_DISPOSITION` / `TCP_FLAGS_DISPOSITION` are matched
-case-insensitively.
+(`Yes`/`No`), and for `RPFILTER_DISPOSITION` / `TCP_FLAGS_DISPOSITION` / `SFILTER_DISPOSITION`
+are matched case-insensitively.
 
 ### `LOG_LEVEL` / `LOGFORMAT`
 
@@ -132,6 +134,23 @@ bare `drop` and no other setting changes output. `CONTINUE` emits no terminal ve
 falls through), which with a log level set is a log-only mode. The check is family-neutral: one
 rule per combination covers IPv4 and IPv6 in the single `inet` ruleset.
 
+### `SFILTER_DISPOSITION` / `SFILTER_LOG_LEVEL`
+
+These configure the source-filter anti-spoof check the generator emits for every interface that
+carries an `sfilter` net-list (in the `interfaces` file). Each listed network names a source that
+must never legitimately arrive on that interface; a matching packet is dropped in the prerouting
+anti-spoof chain, alongside and after rpfilter and ahead of the ADR-0005 base-accept
+([ADR-0063 §5](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0063-protective-check-placement-and-disposition-rendering.md)).
+The listed networks are classified by family: IPv4 nets emit an `ip saddr` rule and IPv6 nets an
+`ip6 saddr` rule (an anonymous set when a family has more than one net), so an interface yields up
+to two rules — only for the families actually listed — in the single `inet` ruleset (ADR-0002).
+
+`SFILTER_DISPOSITION` is the verdict (default `DROP`, matching Shorewall); `SFILTER_LOG_LEVEL`,
+when set, adds a `log` at that level (prefix from `LOGFORMAT`) before the verdict. Both default to
+Shorewall's behaviour — `DROP` with no log — so an sfilter interface under default settings emits a
+bare `drop` and no other setting changes output. `CONTINUE` emits no terminal verdict (the packet
+falls through), which with a log level set is a log-only mode.
+
 ## Example
 
 ```
@@ -154,7 +173,6 @@ the behaviour it configures:
 | Key(s) | Arrives with |
 |--------|--------------|
 | `TCP_FLAGS_DISPOSITION` / `TCP_FLAGS_LOG_LEVEL` | #310 |
-| `SFILTER_DISPOSITION` / `SFILTER_LOG_LEVEL` | #310 |
 | `BLACKLIST_DISPOSITION` / `BLACKLIST_LOG_LEVEL` | #310 |
 | `CLAMPMSS` | #311 (generator global modes) |
 

@@ -593,6 +593,156 @@ def test_stopped_ruleset_has_no_tcpflags() -> None:
     assert not any("field" in json.dumps(c) and "flags" in json.dumps(c) for c in stopped)
 
 
+# ---- sfilter anti-spoof source check (ADR-0063 §5, #382) --------------------------------
+
+
+def _sf_saddr(proto: str, right: Any) -> dict[str, Any]:
+    return {"match": {"op": "==", "left": {"payload": {"protocol": proto, "field": "saddr"}},
+                      "right": right}}
+
+
+def test_sfilter_v4_only_emits_single_ip_saddr_rule() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", sfilter=("203.0.113.0/24",)),))
+    rules = _prerouting_rules(rs)
+    assert len(rules) == 1
+    # iifname gate, then ip saddr over the (single) v4 net, then the default DROP — no ip6 rule.
+    assert rules[0]["expr"] == [_iif("eth0"), _sf_saddr("ip", _prefix("203.0.113.0", 24)),
+                                {"drop": None}]
+
+
+def test_sfilter_v6_only_emits_single_ip6_saddr_rule() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", sfilter=("2001:db8::/32",)),))
+    rules = _prerouting_rules(rs)
+    assert len(rules) == 1
+    assert rules[0]["expr"] == [_iif("eth0"), _sf_saddr("ip6", _prefix("2001:db8::", 32)),
+                                {"drop": None}]
+
+
+def test_sfilter_mixed_emits_ip_then_ip6_rules() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", sfilter=("203.0.113.0/24", "2001:db8::/32")),)
+    )
+    rules = _prerouting_rules(rs)
+    assert len(rules) == 2
+    # v4 rule first (ADR-0002 family split), then the v6 rule — both gated on the same iifname.
+    assert rules[0]["expr"] == [_iif("eth0"), _sf_saddr("ip", _prefix("203.0.113.0", 24)),
+                                {"drop": None}]
+    assert rules[1]["expr"] == [_iif("eth0"), _sf_saddr("ip6", _prefix("2001:db8::", 32)),
+                                {"drop": None}]
+
+
+def test_sfilter_multiple_nets_per_family_use_anonymous_sets() -> None:
+    rs = Ruleset(
+        interfaces=(
+            Interface(
+                name="eth0",
+                sfilter=("203.0.113.0/24", "198.51.100.0/24", "2001:db8::/32", "2001:db8:1::/48"),
+            ),
+        )
+    )
+    rules = _prerouting_rules(rs)
+    assert rules[0]["expr"][1] == _sf_saddr(
+        "ip", {"set": [_prefix("203.0.113.0", 24), _prefix("198.51.100.0", 24)]}
+    )
+    assert rules[1]["expr"][1] == _sf_saddr(
+        "ip6", {"set": [_prefix("2001:db8::", 32), _prefix("2001:db8:1::", 48)]}
+    )
+
+
+def test_no_sfilter_interface_emits_no_rule() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0"), Interface(name="eth1")))
+    assert _prerouting_rules(rs) == []
+
+
+def test_absent_sfilter_reproduces_base_skeleton() -> None:
+    # No sfilter list / default settings ⇒ byte-for-byte the base skeleton (no sfilter rules).
+    assert generate(Ruleset()) == generate(Ruleset(interfaces=(Interface(name="eth0"),)))
+
+
+def test_sfilter_emitted_after_rpfilter_on_the_same_interface() -> None:
+    # ADR-0063 §1 order: rpfilter then sfilter, both in prerouting_raw.
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", rpfilter=True, sfilter=("203.0.113.0/24",)),)
+    )
+    rules = _prerouting_rules(rs)
+    assert rules[0]["expr"] == [_iif("eth0"), _FIB_MISSING, {"drop": None}]
+    assert rules[1]["expr"] == [_iif("eth0"), _sf_saddr("ip", _prefix("203.0.113.0", 24)),
+                                {"drop": None}]
+
+
+def test_sfilter_only_the_configured_interfaces() -> None:
+    rs = Ruleset(
+        interfaces=(
+            Interface(name="eth0", sfilter=("203.0.113.0/24",)),
+            Interface(name="eth1"),
+            Interface(name="eth2", sfilter=("198.51.100.0/24",)),
+        )
+    )
+    gates = [r["expr"][0] for r in _prerouting_rules(rs)]
+    assert gates == [_iif("eth0"), _iif("eth2")]
+
+
+def test_sfilter_disposition_and_log_level_change_the_tail() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", sfilter=("203.0.113.0/24",)),),
+        settings=Settings(sfilter_disposition=Disposition.REJECT, sfilter_log_level="info"),
+    )
+    (rule,) = _prerouting_rules(rs)
+    # prefix %s slots: chain name (prerouting_raw) then disposition (REJECT), from LOGFORMAT.
+    assert rule["expr"] == [
+        _iif("eth0"),
+        _sf_saddr("ip", _prefix("203.0.113.0", 24)),
+        {"log": {"level": "info", "prefix": "Shorewall:prerouting_raw:REJECT:"}},
+        {"reject": None},
+    ]
+
+
+def test_sfilter_continue_is_log_only_no_verdict() -> None:
+    rs = Ruleset(
+        interfaces=(Interface(name="eth0", sfilter=("203.0.113.0/24",)),),
+        settings=Settings(sfilter_disposition=Disposition.CONTINUE, sfilter_log_level="debug"),
+    )
+    (rule,) = _prerouting_rules(rs)
+    # CONTINUE falls through: the log line is emitted but there is NO terminal verdict.
+    assert rule["expr"] == [
+        _iif("eth0"),
+        _sf_saddr("ip", _prefix("203.0.113.0", 24)),
+        {"log": {"level": "debug", "prefix": "Shorewall:prerouting_raw:CONTINUE:"}},
+    ]
+    assert all(v not in rule["expr"][-1] for v in ("accept", "drop", "reject"))
+
+
+def test_sfilter_v4_only_matches_golden() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", sfilter=("203.0.113.0/24",)),))
+    assert_golden(rs, "sfilter_v4")
+
+
+def test_sfilter_v6_only_matches_golden() -> None:
+    rs = Ruleset(interfaces=(Interface(name="eth0", sfilter=("2001:db8::/32",)),))
+    assert_golden(rs, "sfilter_v6")
+
+
+def test_sfilter_mixed_reject_with_log_matches_golden() -> None:
+    rs = Ruleset(
+        interfaces=(
+            Interface(
+                name="eth0",
+                sfilter=("203.0.113.0/24", "198.51.100.0/24", "2001:db8::/32"),
+            ),
+        ),
+        settings=Settings(sfilter_disposition=Disposition.REJECT, sfilter_log_level="info"),
+    )
+    assert_golden(rs, "sfilter_mixed_reject_log")
+
+
+def test_stopped_ruleset_has_no_sfilter() -> None:
+    # Protective checks don't apply while stopped: no sfilter rules in the stopped skeleton.
+    rs = Ruleset(interfaces=(Interface(name="eth0", sfilter=("203.0.113.0/24",)),))
+    stopped = generate_stopped(rs)["nftables"]
+    chains = [c["add"]["chain"]["name"] for c in stopped if "chain" in c.get("add", {})]
+    assert "prerouting_raw" not in chains
+
+
 # ---- per-connection feature rules (ADR-0007) --------------------------------------------
 
 def _port(field: str, proto: str, value: Any) -> dict[str, Any]:

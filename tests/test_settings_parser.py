@@ -147,10 +147,11 @@ def test_legacy_shorewall_conf_knob_fails_fast() -> None:
 
 def test_out_of_scope_adr_key_fails_fast() -> None:
     # An ADR-0061 key owned by a later epic (no consumer yet) is still unknown here.
-    # RPFILTER_*/TCP_FLAGS_* are now consumed (#380/#381); the sfilter pair (#382) is still unbuilt.
+    # RPFILTER_*/TCP_FLAGS_*/SFILTER_* are now consumed (#380/#381/#382); the blacklist subsystem
+    # keys (ADR-0061, its own future epic) are still unbuilt.
     with pytest.raises(ConfigError) as exc:
-        parse_settings("SFILTER_DISPOSITION=DROP\n")
-    assert "SFILTER_DISPOSITION" in str(exc.value)
+        parse_settings("BLACKLIST_DISPOSITION=DROP\n")
+    assert "BLACKLIST_DISPOSITION" in str(exc.value)
 
 
 # --- RPFILTER_DISPOSITION / RPFILTER_LOG_LEVEL (#380, ADR-0063) ---------------
@@ -233,6 +234,47 @@ def test_tcp_flags_bad_log_level_fails_fast() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_settings("TCP_FLAGS_LOG_LEVEL=warning\n")  # syslog spelling, not nft's `warn`
     assert "TCP_FLAGS_LOG_LEVEL" in str(exc.value)
+
+
+# --- SFILTER_DISPOSITION / SFILTER_LOG_LEVEL (#382, ADR-0063) -----------------
+
+
+def test_sfilter_defaults_match_shorewall() -> None:
+    # Shorewall's default disposition is DROP; no log unless a level is set (ADR-0063 §4/§5).
+    assert Settings().sfilter_disposition is Disposition.DROP
+    assert Settings().sfilter_log_level is None
+    assert parse_settings("").sfilter_disposition is Disposition.DROP
+    assert parse_settings("").sfilter_log_level is None
+
+
+@pytest.mark.parametrize(
+    "value, disposition",
+    [
+        ("ACCEPT", Disposition.ACCEPT),
+        ("DROP", Disposition.DROP),
+        ("REJECT", Disposition.REJECT),
+        ("CONTINUE", Disposition.CONTINUE),
+        ("reject", Disposition.REJECT),  # case-insensitive
+    ],
+)
+def test_sfilter_disposition_parses(value: str, disposition: Disposition) -> None:
+    assert parse_settings(f"SFILTER_DISPOSITION={value}\n").sfilter_disposition is disposition
+
+
+def test_sfilter_log_level_parses_and_defaults_none() -> None:
+    assert parse_settings("SFILTER_LOG_LEVEL=info\n").sfilter_log_level == "info"
+
+
+def test_sfilter_bad_disposition_fails_fast() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_settings("SFILTER_DISPOSITION=MAYBE\n")
+    assert "SFILTER_DISPOSITION" in str(exc.value)
+
+
+def test_sfilter_bad_log_level_fails_fast() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_settings("SFILTER_LOG_LEVEL=warning\n")  # syslog spelling, not nft's `warn`
+    assert "SFILTER_LOG_LEVEL" in str(exc.value)
 
 
 # --- fail fast: duplicate keys -----------------------------------------------
