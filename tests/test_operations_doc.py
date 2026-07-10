@@ -1,9 +1,9 @@
-"""Docs-consistency guard for the Operations guide (task #331).
+"""Docs-consistency guard for the Operations guide (task #331, extended by #394).
 
 Keeps ``docs/operations.md`` wired to the real CLI: every lifecycle verb the CLI
 actually exposes must appear in the guide (so the prose can't silently drift from
-``cli._VERB_HELP``), the page must be in the published nav, and systemd install must
-stay labeled forthcoming (epic #308) rather than documented as current.
+``cli._VERB_HELP``), the page must be in the published nav, and the systemd service
+story is documented as shipped (epic #308), not left labeled forthcoming.
 """
 
 from pathlib import Path
@@ -30,11 +30,23 @@ def test_operations_covers_persistence_path() -> None:
     assert "/var/lib/shorewallnf/ruleset.json" in OPERATIONS.read_text()
 
 
-def test_operations_labels_systemd_forthcoming() -> None:
-    """systemd install is epic #308 (open) — documented as forthcoming, not current."""
+def test_operations_documents_the_systemd_service() -> None:
+    """systemd install has shipped (#392/#393) — documented as current, not forthcoming."""
     text = OPERATIONS.read_text()
-    assert "#308" in text, "operations.md must reference the systemd epic (#308)"
-    assert "forthcoming" in text.lower(), "systemd install must be labeled forthcoming"
+    assert "forthcoming" not in text.lower(), (
+        "systemd install has shipped; operations.md must not still label it forthcoming"
+    )
+    for unit in ("shorewallnf-restore.service", "shorewallnf.service"):
+        assert unit in text, f"operations.md must document the {unit} unit"
+    assert "systemctl enable --now" in text
+    assert "systemctl stop shorewallnf" in text
+    assert "ADR-0064" in text, "operations.md must cite the install-seam/ordering ADR (0064)"
+
+
+def test_operations_documents_startup_enabled_analog() -> None:
+    """The STARTUP_ENABLED replacement (systemd enablement) is documented, not a config knob."""
+    text = OPERATIONS.read_text()
+    assert "STARTUP_ENABLED" in text
 
 
 def test_operations_in_published_nav() -> None:

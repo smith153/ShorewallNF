@@ -9,7 +9,7 @@ All addresses below are from the documentation ranges (RFC 5737 / RFC 3849), so 
 files verbatim without pointing at anything real.
 
 !!! note "Prerequisites"
-    Install the `shorewallnf` command first — see [Install (from source)](getting-started.md#install-from-source).
+    Install the `shorewallnf` command first — see [Install](getting-started.md#install).
     `check` and `compile` run unprivileged anywhere; only `apply` touches the live ruleset and
     needs `sudo` on a real nftables host.
 
