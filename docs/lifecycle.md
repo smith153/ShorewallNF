@@ -81,6 +81,12 @@ ordering so nothing drags the unit back behind `basic.target`. The unit still or
 `After=local-fs.target` (with `RequiresMountsFor=/var/lib/shorewallnf`) so the state filesystem
 is mounted before it reads the saved ruleset.
 
+This restore unit is one half of a two-unit boot model: it re-applies the persisted ruleset
+pre-network, and a second unit, `shorewallnf.service`, brings up the **current** config once
+the system reaches `multi-user.target`, ordered `After=` this one. See [Operations → Running as
+a systemd service](operations.md#running-as-a-systemd-service) for the main service, the
+ordering contract, and the `systemctl enable --now` / `stop` operator flow.
+
 ### Fail-closed
 
 Boot-time restore is fail-closed: a missing, corrupt, or nft-rejected saved ruleset makes
@@ -92,13 +98,19 @@ journal.
 
 ## Other init systems
 
-Only systemd is packaged today. On other init systems, run `shorewallnf restore` from an
-equivalent early boot hook that executes **before** network interfaces are brought up and
-treats a non-zero exit as fatal (do not bring the network up if restore fails). Packaging for
-non-systemd init systems is documented future work (epic #202).
+Only systemd is packaged today — both `shorewallnf-restore.service` (this page) and the main
+`shorewallnf.service` ([Operations → Running as a systemd
+service](operations.md#running-as-a-systemd-service)). On other init systems, run `shorewallnf
+restore` from an equivalent early boot hook that executes **before** network interfaces are
+brought up and treats a non-zero exit as fatal (do not bring the network up if restore fails).
+Packaging for non-systemd init systems is documented future work (epic #202).
 
 ## See also
 
 - [ADR-0030](adr/0030-reboot-persistence-model.md) — the persistence model (state location,
   save-on-apply default, round-trip guarantee, restore-at-boot contract).
+- [ADR-0064](adr/0064-systemd-service-model-and-install-seam.md) — the two-unit boot model,
+  install seam, and ordering contract.
+- [Operations → Running as a systemd service](operations.md#running-as-a-systemd-service) —
+  the operator flow: `systemctl enable --now` / `stop`.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the compiler pipeline and the Applier stage.

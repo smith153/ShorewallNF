@@ -110,21 +110,70 @@ re-load it after a reboot.
 
 ### Boot-time restore
 
-To protect the host across reboots, run `shorewallnf restore` from an early-boot hook that
-executes **before** network interfaces are brought up, and that treats a non-zero exit as fatal
-(do not bring the network up if the restore fails) — this closes any window where the host is
-reachable without its firewall.
+To protect the host across reboots, `shorewallnf restore` needs to run from an early-boot hook
+that executes **before** network interfaces are brought up, and that treats a non-zero exit as
+fatal (do not bring the network up if the restore fails) — this closes any window where the
+host is reachable without its firewall. On systemd hosts, the packaged
+`shorewallnf-restore.service` is exactly that hook — see [Running as a systemd
+service](#running-as-a-systemd-service) below. On another init system, wire `shorewallnf
+restore` into its equivalent early-boot path yourself, with the same before-the-network,
+fail-fatal contract.
 
-!!! note "systemd integration is forthcoming"
-    A packaged systemd unit and an install/packaging seam that wires boot-time restore in for you
-    are **forthcoming** — tracked by the [systemd service + packaging epic (#308)](https://github.com/smith153/ShorewallNF/issues/308).
-    The intended unit orders itself before `network-pre.target` (so restore runs ahead of any
-    network-management service) and fails loudly on a bad ruleset. Until that install seam lands,
-    wire `shorewallnf restore` into your init system's early-boot path yourself, as above.
+## Running as a systemd service
+
+ShorewallNF ships two systemd units — install location(s), the `/etc/shorewallnf` default
+config dir, and the non-hardcoded binary path are all fixed by
+[ADR-0064](adr/0064-systemd-service-model-and-install-seam.md); see [Getting started →
+Install](getting-started.md#install) to get them onto the host.
+
+| Unit | Runs | Does |
+|------|------|------|
+| `shorewallnf-restore.service` | Before `network-pre.target`, at every boot | `shorewallnf restore` — re-applies the last [persisted ruleset](#persistence-and-boot-restore), fail-closed. |
+| `shorewallnf.service` | At `multi-user.target`, `After=shorewallnf-restore.service` | `ExecStart=shorewallnf start /etc/shorewallnf` / `ExecStop=shorewallnf stop /etc/shorewallnf` — compiles and loads the **current** config, and drops to the [stopped safe state](#the-stopped-safe-state) on stop. |
+
+The two are ordered so they never race: the restore unit fully completes — it is `Type=oneshot`
+with `RemainAfterExit=yes` — before the main service starts, so a pre-network fail-closed
+restore is always followed by, never overlapped with, the multi-user load of the current
+config. See [ADR-0064 §4](adr/0064-systemd-service-model-and-install-seam.md) for the full
+ordering rationale, and [lifecycle.md](lifecycle.md#boot-time-restore-systemd) for the restore
+unit's own design detail.
+
+Bring the firewall up now and on every future boot:
+
+```bash
+sudo systemctl enable --now shorewallnf-restore.service shorewallnf.service
+```
+
+`shorewallnf.service` alone (`systemctl enable --now shorewallnf`) compiles and loads
+`/etc/shorewallnf` immediately, the same as a bare `shorewallnf start`; enabling
+`shorewallnf-restore.service` too is what closes the pre-network window on every *subsequent*
+reboot, since the main service itself only starts once `multi-user.target` is reached — well
+after the network is already up.
+
+Drop to the stopped safe state and stop the service:
+
+```bash
+sudo systemctl stop shorewallnf
+```
+
+This runs `ExecStop=shorewallnf stop /etc/shorewallnf` — the same [stopped safe
+state](#the-stopped-safe-state) as running the verb directly, still admitting declared
+`stoppedrules` access and dropping the rest.
+
+**Enable-on-boot replaces `STARTUP_ENABLED`.** Upstream Shorewall's `shorewall.conf` has a
+`STARTUP_ENABLED=Yes/No` setting gating whether an init script does anything on boot.
+ShorewallNF has no such config key — `shorewallnf.conf` rejects it as an unknown setting (see
+the [`shorewallnf.conf` reference](reference/shorewallnf-conf.md#unknown-keys-and-bad-values-fail-fast)).
+The equivalent is systemd's own enablement: `systemctl enable` (or `enable --now`) makes the
+unit start on every boot; leaving it disabled means the firewall only comes up when you run
+`shorewallnf start`/`apply` (or `systemctl start`) by hand. This is documented operator
+behaviour, not a config-file knob.
 
 ## See also
 
-- [Getting started](getting-started.md) — install ShorewallNF and compile your first config.
+- [Getting started](getting-started.md) — install ShorewallNF, the config dir, and the systemd units.
 - [Configuration files](reference/config-files.md) — the config directory the verbs read.
+- [Save/restore lifecycle](lifecycle.md) — the persistence model and the boot-time restore unit in detail.
 - [ADR-0021 — stopped safe-state ruleset](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0021-stopped-safe-state.md) — the no-lockout design.
 - [ADR-0030 — reboot-persistence model](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0030-reboot-persistence-model.md) — state location, save-on-apply, restore contract.
+- [ADR-0064 — systemd service model and install seam](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0064-systemd-service-model-and-install-seam.md) — config dir default, unit install locations, binary resolution, two-unit ordering.
