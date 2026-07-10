@@ -337,6 +337,24 @@ def _parse_sfilter(token: str, record: Record) -> tuple[str, ...]:
     return tuple(nets)
 
 
+def _parse_tcpflags(token: str, record: Record) -> bool:
+    """Parse a ``tcpflags={0|1}`` token into its on/off state (ADR-0004).
+
+    Shorewall accepts ``tcpflags`` bare (on) or with an explicit ``0`` (off) / ``1`` (on) value.
+    Any other value fails fast rather than being silently ignored.
+    """
+    _, _, value = token.partition("=")
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    raise ConfigError(
+        f"invalid tcpflags value {token!r} (expected tcpflags, tcpflags=0, or tcpflags=1)",
+        path=record.path,
+        line=record.line,
+    )
+
+
 def _parse_interface_options(raw: str, record: Record) -> _InterfaceOptions:
     """Interpret the OPTIONS column, lifting the protective-check options into typed fields.
 
@@ -355,6 +373,8 @@ def _parse_interface_options(raw: str, record: Record) -> _InterfaceOptions:
             rpfilter = True
         elif token == "tcpflags":
             tcpflags = True
+        elif token.startswith("tcpflags="):
+            tcpflags = _parse_tcpflags(token, record)
         elif token == "sfilter" or token.startswith("sfilter="):
             sfilter = _parse_sfilter(token, record)
         else:

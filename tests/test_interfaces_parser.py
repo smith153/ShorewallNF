@@ -44,6 +44,28 @@ def test_rpfilter_flag_recognized() -> None:
     assert iface.options == ()
 
 
+def test_tcpflags_value_one_enables() -> None:
+    # tcpflags=1 is Shorewall's explicit "on" form, equivalent to the bare flag.
+    result = parse_interfaces(_records("net eth0 detect tcpflags=1"), _ZONES)
+    iface = result.interfaces[0]
+    assert iface.tcpflags is True
+    assert iface.options == ()
+
+
+def test_tcpflags_value_zero_disables() -> None:
+    # tcpflags=0 explicitly turns the check off — and must not leak into the passthrough.
+    result = parse_interfaces(_records("net eth0 detect tcpflags=0,dhcp"), _ZONES)
+    iface = result.interfaces[0]
+    assert iface.tcpflags is False
+    assert iface.options == ("dhcp",)
+
+
+def test_tcpflags_invalid_value_raises() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_interfaces(_records("net eth0 detect tcpflags=2"), _ZONES)
+    assert "tcpflags" in str(exc.value)
+
+
 def test_sfilter_single_network() -> None:
     result = parse_interfaces(_records("net eth0 detect sfilter=192.0.2.0/24"), _ZONES)
     iface = result.interfaces[0]
