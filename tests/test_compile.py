@@ -146,6 +146,25 @@ def test_generated_ruleset_passes_nft_check() -> None:
 
 
 @pytest.mark.nft
+def test_every_golden_ruleset_passes_nft_check() -> None:
+    # Every checked-in nft ruleset must load on CI's nft (1.0.9), not just the author's local
+    # 1.1.x — this catches non-portable encodings that pure string-diff goldens never load (#391).
+    gh.require_nft()  # hard-fails under CI if nft can't run; skips locally
+    from shorewallnf.applier import check_ruleset
+
+    validated = 0
+    for path in sorted(gh.GOLDEN_DIR.glob("*.json")):
+        ruleset = json.loads(path.read_text())
+        # Routing fixtures (providers_*_routing) carry no top-level `nftables` key; only real
+        # nft rulesets can be dry-run validated, so a naive glob must filter them out.
+        if "nftables" not in ruleset:
+            continue
+        check_ruleset(ruleset)  # raises ConfigError if nft rejects the encoding
+        validated += 1
+    assert validated >= 10  # non-vacuous: the filter must not silently drop every fixture
+
+
+@pytest.mark.nft
 def test_check_ruleset_rejects_a_broken_ruleset() -> None:
     gh.require_nft()  # negative control needs a working nft to reject against
     from shorewallnf.applier import check_ruleset
