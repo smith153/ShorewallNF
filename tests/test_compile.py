@@ -10,8 +10,10 @@ from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate, generate_routing
 from shorewallnf.ir import (
     ConntrackHelper,
+    Disposition,
     Family,
     HelperCapabilities,
+    Interface,
     Nat,
     OnOffKeep,
     Policy,
@@ -281,6 +283,24 @@ def test_macro_compiled_ruleset_passes_nft_check() -> None:
     from shorewallnf.applier import check_ruleset
 
     check_ruleset(cli.compile_config(MACRO_FIXTURE))  # must not raise
+
+
+@pytest.mark.nft
+def test_tcpflags_ruleset_passes_nft_check() -> None:
+    # #381: the tcpflags flag-match encoding must actually load into `nft`. The symbolic
+    # `{"|": [<flag>...]}` JSON form loaded on nft 1.1.x but was rejected by the 1.0.9 CI runner,
+    # slipping past the string-compare goldens; drive the numeric encoding through real
+    # `nft --check` here so any regression fails fast in the hermetic nft tier, not only in netns.
+    gh.require_nft()  # hard-fails under CI if nft can't run; skips locally
+    from shorewallnf.applier import check_ruleset
+    from shorewallnf.generator import generate
+
+    for disposition, log_level in ((Disposition.DROP, None), (Disposition.REJECT, "info")):
+        ruleset = Ruleset(
+            interfaces=(Interface(name="eth0", tcpflags=True),),
+            settings=Settings(tcp_flags_disposition=disposition, tcp_flags_log_level=log_level),
+        )
+        check_ruleset(generate(ruleset))  # raises ConfigError if nft rejects the flag-match JSON
 
 
 def test_parse_config_parses_dnat_rules_into_nats() -> None:

@@ -448,6 +448,11 @@ class Settings:
     # set — so an rpfilter interface under default settings emits `... drop` with no `log`.
     rpfilter_disposition: Disposition = Disposition.DROP
     rpfilter_log_level: str | None = None
+    # TCP_FLAGS_DISPOSITION / TCP_FLAGS_LOG_LEVEL (ADR-0063 §2/§4, #381): the illegal-TCP-flags
+    # check's verdict and log level. Defaults mirror Shorewall — DROP, and no log line unless a
+    # level is set — so a tcpflags interface under default settings emits `... drop` with no `log`.
+    tcp_flags_disposition: Disposition = Disposition.DROP
+    tcp_flags_log_level: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
