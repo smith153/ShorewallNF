@@ -1,0 +1,37 @@
+# ShorewallNF main firewall lifecycle service (task #393, epic #308, ADR-0064).
+#
+# Compiles the current configuration (default /etc/shorewallnf) and atomically loads it at
+# multi-user.target on `start`, and drops to the stopped safe state on `stop`. See
+# docs/lifecycle.md for the start/stop lifecycle.
+#
+# Ordered After=shorewallnf-restore.service: the restore unit re-applies the persisted ruleset
+# before the network comes up (fail-closed, pre-network), then this service brings up the freshly
+# compiled config at multi-user. The two run sequentially (oneshot + RemainAfterExit), so there
+# is no double-apply race and no unprotected window — each apply/restore is an atomic
+# whole-ruleset replace (ADR-0010). See docs/adr/0064-systemd-service-model-and-install-seam.md §4.
+#
+# Enable with:  systemctl enable --now shorewallnf.service
+# ExecStart/ExecStop name the `shorewallnf` binary without a directory: systemd resolves it
+# against its executable search path (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin), so the
+# shipped unit carries no pinned install path (ADR-0064 §3).
+
+[Unit]
+Description=ShorewallNF: compile and apply the current firewall configuration
+Documentation=https://github.com/smith153/ShorewallNF/blob/master/docs/lifecycle.md
+
+# The restore unit establishes a protected pre-network state first; bring up the current config
+# only once it has fully completed, so the two never apply concurrently (ADR-0064 §4).
+After=shorewallnf-restore.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# start compiles + dry-run checks + atomically loads the ruleset; stop drops to the stopped
+# safe state. Both take the config directory positional; /etc/shorewallnf is the documented
+# default (ADR-0064 §1).
+ExecStart=shorewallnf start /etc/shorewallnf
+ExecStop=shorewallnf stop /etc/shorewallnf
+
+[Install]
+WantedBy=multi-user.target
