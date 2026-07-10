@@ -5,7 +5,9 @@
 # See docs/lifecycle.md for the save -> persist -> restore-at-boot lifecycle.
 #
 # Enable with:  systemctl enable shorewallnf-restore.service
-# Packagers may need to adjust the ExecStart path to where `shorewallnf` is installed.
+# ExecStart names the `shorewallnf` binary without a directory: systemd resolves it against its
+# executable search path (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin), so the shipped
+# unit carries no pinned install path. See docs/adr/0064-systemd-service-model-and-install-seam.md.
 
 [Unit]
 Description=ShorewallNF: restore the persisted firewall ruleset before the network comes up
@@ -34,7 +36,7 @@ RemainAfterExit=yes
 # by nft, which fails the unit loudly. There is no `ExecStart=-` prefix to swallow the error,
 # and the restore verb is atomic and never flushes to an empty ruleset — so a failed boot
 # leaves the prior state, never a wide-open host.
-ExecStart=/usr/bin/shorewallnf restore
+ExecStart=shorewallnf restore
 
 [Install]
 WantedBy=multi-user.target

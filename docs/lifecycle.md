@@ -55,7 +55,12 @@ systemctl daemon-reload
 systemctl enable shorewallnf-restore.service
 ```
 
-(Adjust the unit's `ExecStart=` path if `shorewallnf` is not installed at `/usr/bin`.)
+The unit's `ExecStart=` names the `shorewallnf` binary without a directory, so systemd resolves
+it against its executable search path (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`) — it
+works whether the binary is installed at `/usr/bin` (distro package) or `/usr/local/bin`
+(`pip install`), no edit required. The install seam (config dir, unit location, binary
+resolution, and the two-unit ordering) is fixed in
+[ADR-0064](adr/0064-systemd-service-model-and-install-seam.md).
 
 ### Ordering rationale: no unprotected boot window
 

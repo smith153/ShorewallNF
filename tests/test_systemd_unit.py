@@ -63,6 +63,16 @@ def test_unit_invokes_the_restore_verb() -> None:
     assert "restore" in _NO_CONFIG_VERBS
 
 
+def test_unit_does_not_pin_a_hardcoded_binary_path() -> None:
+    """ExecStart carries no absolute install path — the binary resolves via systemd's
+    executable search path, so a shipped unit is not tied to ``/usr/bin`` (ADR-0064)."""
+    service = _directives(UNIT.read_text())["Service"]
+    (command,) = _values(service, "ExecStart")
+    binary = command.split()[0]
+    assert not binary.startswith("/"), f"ExecStart pins an absolute binary path: {command!r}"
+    assert binary == "shorewallnf", command
+
+
 def test_unit_is_fail_closed() -> None:
     """A oneshot that does not swallow errors: a failed restore fails the unit (no ExecStart=-)."""
     service = _directives(UNIT.read_text())["Service"]
