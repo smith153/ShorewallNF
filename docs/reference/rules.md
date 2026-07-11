@@ -42,6 +42,25 @@ address match — a source host narrows on `saddr`, a destination host on `daddr
 IPv4/IPv6 address or a CIDR (`192.0.2.0/24`, `2001:db8::5`). The literal's family determines the
 match (`ip` vs `ip6`) and is itself the family guard — no extra family match is added.
 
+### `+setname` — named-set matching
+
+A `SOURCE` or `DEST` column may be a **named-set reference** instead of a zone: `+setname` matches
+any host in the declared set `setname`, and `!+setname` matches any host **not** in it. The set
+must be declared in the `sets` file, which fixes its address family (`ipv4`/`ipv6`/`both`):
+
+```
+#ACTION   SOURCE       DEST   PROTO   DEST PORT
+ACCEPT    +goodguys    fw     tcp     22
+DROP      !+goodguys   fw
+ACCEPT    net          +web   tcp     443
+```
+
+The set's declared family scopes the rule the same way an address literal does: a `ipv4`-only set
+narrows the rule to IPv4, an `ipv6`-only set to IPv6, and a `both` set leaves it dual-stack. A set
+referenced against a conflicting family — an `ipv4` set with `ipv6-icmp`, or against a
+`2001:db8::/32` host on the other side — is a hard error, as is a reference to a set that was never
+declared.
+
 ### `PROTO` and ports
 
 `PROTO` is stored in nftables' canonical lowercase. A port column **requires** a protocol; a port

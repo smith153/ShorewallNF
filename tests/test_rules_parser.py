@@ -1,7 +1,7 @@
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import ConnLimit, Family, Nat, RateLimit, Rule, Zone
+from shorewallnf.ir import ConnLimit, Family, Nat, RateLimit, Rule, SetDef, SetRef, SetType, Zone
 from shorewallnf.parser import Record, parse, parse_rules
 from shorewallnf.preprocessor import SourceLine
 
@@ -12,6 +12,13 @@ _ZONES = (
     Zone(name="fw", is_firewall=True),
 )
 
+# A declared-set registry covering the three families a `+setname` reference resolves against.
+_SETS = {
+    "goodguys": SetDef(name="goodguys", family=Family.BOTH, set_type=SetType.ADDRESS),
+    "v4hosts": SetDef(name="v4hosts", family=Family.IPV4, set_type=SetType.ADDRESS),
+    "v6hosts": SetDef(name="v6hosts", family=Family.IPV6, set_type=SetType.ADDRESS),
+}
+
 
 def _records(*texts: str, path: str = "rules") -> list[Record]:
     lines = [SourceLine(text=t, path=path, line=i) for i, t in enumerate(texts, 1)]
@@ -20,6 +27,11 @@ def _records(*texts: str, path: str = "rules") -> list[Record]:
 
 def _one(text: str) -> Rule:
     (rule,) = parse_rules(_records(text), _ZONES).rules
+    return rule
+
+
+def _one_with_sets(text: str) -> Rule:
+    (rule,) = parse_rules(_records(text), _ZONES, _SETS).rules
     return rule
 
 
@@ -179,8 +191,66 @@ def test_unsupported_trailing_columns_fail_fast() -> None:
 
 
 def test_unsupported_host_form_fails_fast() -> None:
+    # A `zone:host` whose host is neither an address/CIDR nor a `+setname` reference is still
+    # unsupported; a `+setname` term is now a valid host form (see the named-set tests below).
     with pytest.raises(ConfigError, match="host"):
         _one("ACCEPT loc:not-an-address net")
+
+
+# --- named-set (+setname) references in SOURCE/DEST (ADR-0066, #418) -----------
+
+
+def test_plus_setname_source_parses_to_setref() -> None:
+    rule = _one_with_sets("ACCEPT +goodguys net")
+    assert rule.source == SetRef(name="goodguys", negated=False, family=Family.BOTH)
+    assert rule.dest == "net"
+
+
+def test_plus_setname_dest_parses_to_setref() -> None:
+    rule = _one_with_sets("ACCEPT net +goodguys")
+    assert rule.dest == SetRef(name="goodguys", negated=False, family=Family.BOTH)
+    assert rule.source == "net"
+
+
+def test_negated_setname_captured_distinctly() -> None:
+    negated = _one_with_sets("ACCEPT !+goodguys net").source
+    plain = _one_with_sets("ACCEPT +goodguys net").source
+    assert negated == SetRef(name="goodguys", negated=True, family=Family.BOTH)
+    assert negated != plain
+
+
+def test_both_family_set_leaves_rule_both() -> None:
+    rule = _one_with_sets("ACCEPT +goodguys net")
+    assert rule.family is Family.BOTH
+    assert isinstance(rule.source, SetRef) and rule.source.family is Family.BOTH
+
+
+def test_v4_set_narrows_rule_to_ipv4() -> None:
+    rule = _one_with_sets("ACCEPT +v4hosts net")
+    assert rule.family is Family.IPV4
+    assert isinstance(rule.source, SetRef) and rule.source.family is Family.IPV4
+
+
+def test_v6_set_narrows_rule_to_ipv6() -> None:
+    rule = _one_with_sets("ACCEPT net +v6hosts")
+    assert rule.family is Family.IPV6
+    assert isinstance(rule.dest, SetRef) and rule.dest.family is Family.IPV6
+
+
+def test_undeclared_set_fails_fast_with_location() -> None:
+    with pytest.raises(ConfigError, match="undeclared set") as exc:
+        parse_rules(_records("ACCEPT loc net", "ACCEPT +nosuch net"), _ZONES, _SETS)
+    assert exc.value.line == 2
+
+
+def test_v4_set_against_v6_literal_is_a_family_conflict() -> None:
+    with pytest.raises(ConfigError, match="famil"):
+        _one_with_sets("ACCEPT +v4hosts net:2001:db8::1")
+
+
+def test_v6_set_against_v4_proto_is_a_family_conflict() -> None:
+    with pytest.raises(ConfigError, match="famil"):
+        _one_with_sets("ACCEPT +v6hosts net icmp")
 
 
 def test_error_carries_source_location() -> None:
