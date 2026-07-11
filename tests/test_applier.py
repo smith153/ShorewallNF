@@ -715,3 +715,65 @@ def test_list_ruleset_raises_configerror_when_nft_fails(
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(ConfigError, match="command not found"):
         applier.list_ruleset()
+
+
+# --- read-only conntrack live-query seam (task #412, ADR-0065) -----------------------------
+
+
+def test_list_connections_invokes_conntrack_list_and_returns_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    output = "tcp 6 431999 ESTABLISHED src=192.0.2.2 dst=203.0.113.9 sport=1 dport=443\n"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = applier.list_connections()
+
+    assert result == output  # the raw conntrack text is returned verbatim for the pure renderer
+    assert seen["cmd"] == ["conntrack", "-L"]
+
+
+def test_list_connections_is_read_only_by_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The query argv must be a `-L` list and can never carry a mutating conntrack form.
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        # A read-only query streams nothing on stdin — there is no state to load.
+        assert kwargs.get("input") is None
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    applier.list_connections()
+
+    assert "-L" in seen["cmd"]
+    for mutating in ("-D", "-F", "-U", "--delete", "--flush", "--update"):
+        assert mutating not in seen["cmd"]
+
+
+def test_list_connections_missing_binary_raises_shorewallnferror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A missing `conntrack` binary raises FileNotFoundError (an OSError, not a non-zero rc);
+    # the seam translates it to one actionable ShorewallNFError (ADR-0004), never a traceback.
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(2, "No such file or directory", "conntrack")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ShorewallNFError, match="conntrack"):
+        applier.list_connections()
+
+
+def test_list_connections_raises_configerror_when_conntrack_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "conntrack v1.4: Operation not supported")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ConfigError, match="Operation not supported"):
+        applier.list_connections()

@@ -32,6 +32,7 @@ from .ir import (
 NFT = "nft"
 IP = "ip"
 SYSCTL = "sysctl"
+CONNTRACK = "conntrack"
 
 # The ``ip`` family flag per artifact family (ADR-0002): a provider routing table + fwmark rule is
 # scoped to one family (v4 or v6, never both), so every ``ip`` invocation carries -4 or -6.
@@ -153,6 +154,34 @@ def list_ruleset() -> dict[str, Any]:
         raise ConfigError(f"nft list failed: {result.stderr.strip()}")
     parsed: dict[str, Any] = json.loads(result.stdout)
     return parsed
+
+
+def list_connections() -> str:
+    """Read-only live query: return raw ``conntrack -L`` output (task #412, ADR-0065).
+
+    The conntrack sibling of :func:`list_ruleset`, beside it in the shell (ADR-0003): it shells
+    the ``conntrack`` list form only and hands the raw text to the pure renderer. Read-only is
+    structural — ``-L`` is a list, never a mutating form (``-D``/``-F``/``-U``), and nothing is
+    streamed on stdin. A missing ``conntrack`` binary makes ``subprocess.run`` raise
+    ``FileNotFoundError`` (an ``OSError``, not a non-zero rc), which is translated to one
+    actionable :class:`~shorewallnf.errors.ShorewallNFError` (fail-fast, ADR-0004) rather than a
+    traceback. ``conntrack -L`` exits 0 tracking nothing (including a stopped firewall), so the
+    zero-connection case degrades to an empty-but-valid render, not an error. Any other non-zero
+    rc raises :class:`~shorewallnf.errors.ConfigError`, caught once in the CLI shell.
+    """
+    try:
+        result = subprocess.run(
+            [CONNTRACK, "-L"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as err:
+        raise ShorewallNFError(
+            "conntrack utility not found; install conntrack-tools to show connections"
+        ) from err
+    if result.returncode != 0:
+        raise ConfigError(f"conntrack list failed: {result.stderr.strip()}")
+    return result.stdout
 
 
 def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
