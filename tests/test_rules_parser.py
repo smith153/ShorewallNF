@@ -1,7 +1,7 @@
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Family, Nat, RateLimit, Rule, Zone
+from shorewallnf.ir import ConnLimit, Family, Nat, RateLimit, Rule, Zone
 from shorewallnf.parser import Record, parse, parse_rules
 from shorewallnf.preprocessor import SourceLine
 
@@ -246,6 +246,66 @@ def test_named_or_shared_limiter_rejected_as_unsupported(spec: str) -> None:
     # A `:` before the first `/` is Shorewall's extended/named form (out of scope, YAGNI).
     with pytest.raises(ConfigError, match="named/shared limiters"):
         _one(f"ACCEPT loc net tcp 22 - - {spec}")
+
+
+# --- CONNLIMIT column (#407) --------------------------------------------------
+#
+# Columns: ACTION SOURCE DEST PROTO DPORT SPORT ORIGDEST RATE USER MARK CONNLIMIT
+# indices:   0      1     2     3    4     5      6      7    8    9     10
+
+
+def test_connlimit_bare_count_parses() -> None:
+    rule = _one("ACCEPT loc net tcp 22 - - - - - 4")
+    assert rule.connlimit == ConnLimit(count=4)
+
+
+@pytest.mark.parametrize(
+    "text", ["ACCEPT loc net tcp 22", "ACCEPT loc net tcp 22 - - - - - -"]
+)
+def test_connlimit_absent_leaves_connlimit_none(text: str) -> None:
+    assert _one(text).connlimit is None
+
+
+def test_rate_and_connlimit_parse_together() -> None:
+    rule = _one("ACCEPT loc net tcp 22 - - 10/min - - 4")
+    assert rule.rate == RateLimit(rate=10, interval="minute", burst=None)
+    assert rule.connlimit == ConnLimit(count=4)
+
+
+@pytest.mark.parametrize("column,index", [("USER", 8), ("MARK", 9)])
+def test_out_of_scope_intervening_column_non_dash_fails_fast(column: str, index: int) -> None:
+    # Reaching CONNLIMIT (index 10) needs the intervening USER/GROUP (8) and MARK (9) columns to
+    # be `-`; a non-`-` value in one of those unsupported columns fails fast (ADR-0004).
+    fields = ["ACCEPT", "loc", "net", "tcp", "22", "-", "-", "-", "-", "-", "4"]
+    fields[index] = "x"
+    with pytest.raises(ConfigError, match="unsupported"):
+        _one(" ".join(fields))
+
+
+def test_masked_connlimit_rejected_as_unsupported() -> None:
+    # The masked/grouped <count>:<mask> per-source form is deferred to #416 (fail fast, ADR-0004).
+    with pytest.raises(ConfigError, match="connlimit"):
+        _one("ACCEPT loc net tcp 22 - - - - - 4:32")
+
+
+@pytest.mark.parametrize("spec", ["0", "-4", "abc", "4x"])
+def test_malformed_connlimit_fails_fast(spec: str) -> None:
+    with pytest.raises(ConfigError, match="connlimit"):
+        _one(f"ACCEPT loc net tcp 22 - - - - - {spec}")
+
+
+def test_malformed_connlimit_carries_location() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_rules(
+            _records("ACCEPT loc net", "ACCEPT loc net tcp 22 - - - - - 0"), _ZONES
+        )
+    assert exc.value.line == 2
+
+
+def test_columns_past_connlimit_fail_fast() -> None:
+    # TIME and beyond (index 11+) are not supported yet.
+    with pytest.raises(ConfigError, match="unsupported trailing"):
+        _one("ACCEPT loc net tcp 22 - - - - - 4 timeval")
 
 
 # --- DNAT rows build Nat entries (task #142, epic #75) ------------------------

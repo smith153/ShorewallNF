@@ -23,6 +23,7 @@ from .ir import (
     TPROXY_MARK,
     TPROXY_TABLE_ID,
     ClampMss,
+    ConnLimit,
     ConntrackHelper,
     Disposition,
     Family,
@@ -561,13 +562,13 @@ def _feature_rule(
     prefix += _host_matches(rule.source, rule.dest)
     prefix += _ct_matches(rule)
     verdict = _verdict(rule.action)
-    limit = _rate_limit(rule.rate)
+    gate = _rate_limit(rule.rate) + _connlimit(rule.connlimit)
     if rule.proto in _ICMP_PROTOS:
         return [
-            _rule(chain, [*prefix, match, *limit, verdict])
+            _rule(chain, [*prefix, match, *gate, verdict])
             for match in _icmp_matches(rule, ctx)
         ]
-    return [_rule(chain, [*prefix, *_l4_matches(rule, ctx), *limit, verdict])]
+    return [_rule(chain, [*prefix, *_l4_matches(rule, ctx), *gate, verdict])]
 
 
 def _rate_limit(rate: RateLimit | None) -> list[_Command]:
@@ -583,6 +584,20 @@ def _rate_limit(rate: RateLimit | None) -> list[_Command]:
     if rate.burst is not None:
         limit["burst"] = rate.burst
     return [{"limit": limit}]
+
+
+def _connlimit(connlimit: ConnLimit | None) -> list[_Command]:
+    """The nft ``ct count over <count>`` statement for a rule's CONNLIMIT column, or none.
+
+    Placed in the same statement-before-verdict slot as the rate limiter (ADR-0007 fixed match
+    order), after it: it gates the verdict on the simultaneous-connection cap. Emitted as the
+    numeric ``{"ct count": {"val": <count>, "inv": true}}`` form (``inv`` is nft's ``over``
+    keyword) — the portable JSON the CI nft tier (1.0.9) accepts, mirroring the rate limiter (#407).
+    The bare (ungrouped) count is a per-rule global connection cap; the masked/grouped per-source
+    form is out of scope here (#416)."""
+    if connlimit is None:
+        return []
+    return [{"ct count": {"val": connlimit.count, "inv": True}}]
 
 
 # ?SECTION connection-state gating & ordering (ADR-0007). ESTABLISHED/RELATED/INVALID gate on

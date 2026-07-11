@@ -27,6 +27,7 @@ from .conntrack import BUILTIN_HELPERS
 from .errors import ConfigError
 from .ir import (
     ClampMss,
+    ConnLimit,
     ConntrackHelper,
     Disposition,
     Family,
@@ -504,10 +505,22 @@ def _build_rule(record: Record, section: str | None) -> Rule:
             path=record.path,
             line=record.line,
         )
-    if len(record.fields) > 8:
+    # CONNLIMIT (index 10) is supported, but the intervening USER/GROUP (8) and MARK (9) columns
+    # are not: a non-`-` value in one of them fails fast rather than being silently dropped (the
+    # same fail-fast precedent as ORIGINAL DEST above, ADR-0004).
+    for index, column in ((8, "USER/GROUP"), (9, "MARK")):
+        value = _optional(record, index)
+        if value is not None:
+            raise ConfigError(
+                f"unsupported {column} value {value!r} (that column is not supported yet; "
+                "use `-` to reach the CONNLIMIT column)",
+                path=record.path,
+                line=record.line,
+            )
+    if len(record.fields) > 11:
         raise ConfigError(
-            f"unsupported trailing rule columns {record.fields[8:]!r} "
-            "(only action, source, dest, proto, dest-port, source-port, rate-limit are supported)",
+            f"unsupported trailing rule columns {record.fields[11:]!r} (only action, source, "
+            "dest, proto, dest-port, source-port, rate-limit, connlimit are supported)",
             path=record.path,
             line=record.line,
         )
@@ -515,6 +528,7 @@ def _build_rule(record: Record, section: str | None) -> Rule:
     if proto is not None:
         proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase (#134)
     rate_spec = _optional(record, 7)
+    connlimit_spec = _optional(record, 10)
     return Rule(
         action=action,
         source=source,
@@ -524,6 +538,9 @@ def _build_rule(record: Record, section: str | None) -> Rule:
         sport=_optional(record, 5),
         section=section,
         rate=parse_rate_limit(rate_spec, record) if rate_spec is not None else None,
+        connlimit=(
+            parse_connlimit(connlimit_spec, record) if connlimit_spec is not None else None
+        ),
         family=_infer_family(source, dest, proto, record),
         path=record.path,
         line=record.line,
@@ -572,6 +589,28 @@ def parse_rate_limit(spec: str, record: Record) -> RateLimit:
             )
         burst = int(burst_s)
     return RateLimit(rate=int(rate_s), interval=interval, burst=burst)
+
+
+def parse_connlimit(spec: str, record: Record) -> ConnLimit:
+    """Parse a ``rules`` CONNLIMIT spec ``<count>`` into a :class:`ConnLimit` (#407, ADR-0007).
+
+    ``4`` → ``ConnLimit(4)``. Only the bare positive-integer count is supported: the
+    masked/grouped ``<count>:<mask>`` per-source form is out of scope (deferred to #416) and fails
+    fast, as does a zero/negative/non-integer count. One located :class:`ConfigError` (ADR-0004)."""
+    if ":" in spec:
+        raise ConfigError(
+            f"connlimit {spec!r}: the masked/grouped <count>:<mask> form is unsupported "
+            "(only a bare <count> is supported)",
+            path=record.path,
+            line=record.line,
+        )
+    if not spec.isdigit() or int(spec) < 1:
+        raise ConfigError(
+            f"connlimit {spec!r}: expected a positive integer connection count",
+            path=record.path,
+            line=record.line,
+        )
+    return ConnLimit(count=int(spec))
 
 
 def _build_nat(record: Record, zone_names: set[str]) -> Nat:

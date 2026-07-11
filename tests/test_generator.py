@@ -8,6 +8,7 @@ from shorewallnf.errors import ConfigError
 from shorewallnf.generator import generate, generate_stopped
 from shorewallnf.ir import (
     ClampMss,
+    ConnLimit,
     ConntrackHelper,
     Disposition,
     Family,
@@ -1485,6 +1486,84 @@ def test_rate_limit_matches_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "rule_rate_limit")
+
+
+# ---- CONNLIMIT column emits an nft ct count statement (#407, ADR-0007) -------
+
+
+def _ct_count(count: int) -> dict[str, Any]:
+    return {"ct count": {"val": count, "inv": True}}
+
+
+def test_connlimit_emitted_before_verdict() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22",
+                connlimit=ConnLimit(count=4),
+            ),
+        ),
+    )
+    (added,) = _added_rules(rs, _LN)
+    assert added["expr"][-2:] == [_ct_count(4), {"accept": None}]
+
+
+def test_no_connlimit_emits_no_ct_count_statement() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22"),),
+    )
+    (added,) = _added_rules(rs, _LN)
+    assert not any("ct count" in expr for expr in added["expr"])
+
+
+def test_rate_and_connlimit_both_emitted_before_verdict() -> None:
+    # Rate limit then connlimit, both in the statement-before-verdict slot (ADR-0007 fixed order).
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22",
+                rate=RateLimit(rate=10, interval="minute", burst=20),
+                connlimit=ConnLimit(count=4),
+            ),
+        ),
+    )
+    (added,) = _added_rules(rs, _LN)
+    assert added["expr"][-3:] == [_limit(10, "minute", 20), _ct_count(4), {"accept": None}]
+
+
+def test_both_family_icmp_connlimits_each_family() -> None:
+    # A both-family ICMP rule splits into one nft rule per family; each carries its own ct count,
+    # placed after the ICMP match and before the verdict.
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="net", dest="fw", proto="icmp",
+                connlimit=ConnLimit(count=2),
+            ),
+        ),
+    )
+    added = _added_rules(rs, _LN)
+    assert len(added) == 2
+    for rule in added:
+        assert rule["expr"][-2:] == [_ct_count(2), {"accept": None}]
+
+
+def test_connlimit_matches_golden() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        rules=(
+            Rule(
+                action="DROP", source="net", dest="loc:192.0.2.0/24", proto="tcp", dport="80",
+                connlimit=ConnLimit(count=8),
+            ),
+        ),
+        policies=(Policy(source="all", dest="all", action="ACCEPT"),),
+    )
+    assert_golden(rs, "rule_connlimit")
 
 
 # ---- IPv4 DNAT: nat prerouting + forward accept (task #143, ADR-0008) --------------------
