@@ -321,6 +321,81 @@ def test_policy_default_rules_match_golden() -> None:
     assert generate(rs) == json.loads(POLICY_GOLDEN.read_text())
 
 
+# ---- policy LIMIT:BURST rate (#408, ADR-0006/0007) --------------------------------------
+
+
+def test_policy_rate_emitted_before_verdict() -> None:
+    # The limiter sits immediately before the verdict: under-limit traffic takes the policy
+    # action, over-limit traffic falls through past it to the base-chain drop.
+    rs = Ruleset(
+        zones=_LN,
+        policies=(
+            Policy(
+                source="loc", dest="net", action="ACCEPT",
+                rate=RateLimit(rate=10, interval="minute", burst=20),
+            ),
+        ),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert forward[-1]["expr"][-2:] == [_limit(10, "minute", 20), {"accept": None}]
+
+
+def test_policy_rate_with_log_level_orders_limit_before_log() -> None:
+    # A logged policy emits limit → log → verdict, so only under-limit traffic is logged+actioned.
+    rs = Ruleset(
+        zones=_LN,
+        policies=(
+            Policy(
+                source="net", dest="all", action="DROP", log_level="info",
+                rate=RateLimit(rate=5, interval="second"),
+            ),
+        ),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert forward[-1]["expr"][-3:] == [
+        _limit(5, "second"),
+        {"log": {"level": "info", "prefix": "Shorewall:forward:DROP:"}},
+        {"drop": None},
+    ]
+
+
+def test_policy_without_rate_emits_no_limit_statement() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        policies=(Policy(source="loc", dest="net", action="ACCEPT"),),
+    )
+    forward = [r for r in _rules(rs) if r["chain"] == "forward"]
+    assert not any("limit" in expr for expr in forward[-1]["expr"])
+
+
+def test_policy_default_goldens_unchanged_without_rate() -> None:
+    # No-regression: with rate=None the emitted policy rules are byte-for-byte the existing golden.
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        policies=(
+            Policy(source="loc", dest="net", action="ACCEPT"),
+            Policy(source="fw", dest="net", action="ACCEPT"),
+            Policy(source="net", dest="all", action="DROP", log_level="info"),
+            Policy(source="all", dest="all", action="REJECT", log_level="info"),
+        ),
+    )
+    assert generate(rs) == json.loads(POLICY_GOLDEN.read_text())
+
+
+def test_policy_rate_matches_golden() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        policies=(
+            Policy(
+                source="loc", dest="net", action="ACCEPT",
+                rate=RateLimit(rate=10, interval="minute", burst=20),
+            ),
+            Policy(source="all", dest="all", action="DROP"),
+        ),
+    )
+    assert_golden(rs, "policy_rate_limit")
+
+
 # ---- rpfilter reverse-path check (ADR-0063, #380) ---------------------------------------
 
 _FIB_MISSING = {

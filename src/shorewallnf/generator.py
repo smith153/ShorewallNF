@@ -462,6 +462,10 @@ def _policy_rule(
     chain, expr = _chain_and_zone_matches(
         policy.source, policy.dest, interfaces, firewalls, ctx
     )
+    # A LIMIT:BURST column emits an nft `limit rate` immediately before the verdict/log tail, so
+    # under-limit traffic takes the policy action and over-limit traffic falls through past it to
+    # the next-less-specific policy / base-chain drop (ADR-0006/0007, #408).
+    expr += _rate_limit(policy.rate)
     # A policy logs only when it carries an explicit LEVEL column, and that per-policy level is
     # the emitted syslog level (#321 decision) — Settings.LOG_LEVEL is only a fallback for logging
     # rules with no explicit level, a no-op here. The verdict/log tail is the shared ADR-0063 §4
