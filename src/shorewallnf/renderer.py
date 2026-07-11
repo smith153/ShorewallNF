@@ -13,6 +13,7 @@ without root (ADR-0003 functional core). ``show rules`` is its first consumer; t
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -42,6 +43,14 @@ _COLUMNS = ("NUM", "TARGET", "PROTO", "SOURCE", "DESTINATION", "DETAIL")
 #: declarations from the ``Ruleset`` IR — zones/policies are not recoverable from live nft state.
 _ZONE_COLUMNS = ("INTERFACE", "HOST", "FAMILY")
 _POLICY_COLUMNS = ("SOURCE", "DEST", "ACTION", "LOG")
+
+#: Columns for live kernel-tracked connections (task #412). A different shape from nft rules —
+#: curated from ``conntrack -L`` original-direction tuples, not the NUM/TARGET rule grid.
+_CONNECTION_COLUMNS = ("PROTO", "STATE", "SOURCE", "DESTINATION", "PORTS")
+
+#: A conntrack connection state is an all-caps word (``ESTABLISHED``, ``TIME_WAIT``, …). Flag
+#: tokens like ``[ASSURED]``/``[UNREPLIED]`` carry brackets and so never match.
+_STATE_RE = re.compile(r"[A-Z][A-Z_]*")
 
 
 def render_rules(
@@ -108,6 +117,48 @@ def render_policies(policies: tuple[Policy, ...]) -> str:
     lines = ["Policies", ""]
     lines.extend(_columnar(_POLICY_COLUMNS, rows))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_connections(output: str) -> str:
+    """Render ``conntrack -L`` text as the columnar connection report (ADR-0065 Option B).
+
+    Pure: parses the raw conntrack list output (no I/O, no ``conntrack``) into a fixed-column
+    table — protocol, TCP state (``-`` when the protocol is stateless), and the *original*
+    direction's source, destination, and ``sport->dport`` ports (``any`` when a field is absent).
+    Only the original-direction tuple is shown; the reply tuple and bookkeeping (``mark``, ``use``,
+    flag brackets) are dropped for a migrator-readable view. Zero tracked connections — including a
+    stopped/cleared firewall the kernel is tracking nothing for — renders an empty-but-valid
+    section, not a crash (the ADR-0065 empty-section contract).
+    """
+    rows = [_connection_row(line) for line in output.splitlines() if line.strip()]
+    if not rows:
+        return "Connections\n\n  (no tracked connections)\n"
+    lines = ["Connections", ""]
+    lines.extend(_columnar(_CONNECTION_COLUMNS, rows))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _connection_row(line: str) -> tuple[str, str, str, str, str]:
+    """Fold one ``conntrack -L`` line into the connection columns (original direction only)."""
+    tokens = line.split()
+    proto = tokens[0] if tokens else "-"
+    state = next((tok for tok in tokens if _STATE_RE.fullmatch(tok)), "-")
+    fields: dict[str, str] = {}
+    for tok in tokens:
+        key, sep, value = tok.partition("=")
+        if sep:
+            fields.setdefault(key, value)  # first occurrence is the original-direction tuple
+    return (proto, state, fields.get("src", "any"), fields.get("dst", "any"), _ports(fields))
+
+
+def _ports(fields: dict[str, str]) -> str:
+    """The ``sport->dport`` ports cell, ``any`` when the protocol carries no ports (e.g. icmp)."""
+    sport, dport = fields.get("sport"), fields.get("dport")
+    if sport and dport:
+        return f"{sport}->{dport}"
+    if dport:
+        return f"->{dport}"
+    return "any"
 
 
 def _columnar(columns: tuple[str, ...], rows: Sequence[Sequence[str]]) -> list[str]:

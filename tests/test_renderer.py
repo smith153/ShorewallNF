@@ -149,3 +149,30 @@ def test_render_policies_empty_is_valid_not_a_crash() -> None:
     text = renderer.render_policies(())
     assert text  # non-empty, no exception
     _assert_golden_in(text, _GOLD_POLICIES, "empty")
+
+
+# ---- show connections: pure conntrack-text renderer (task #412, ADR-0065) ------------------
+
+_FIX_CONN = Path(__file__).parent / "fixtures" / "show_connections"
+_GOLD_CONN = Path(__file__).parent / "golden" / "show_connections"
+
+
+def _load_conn(name: str) -> str:
+    return (_FIX_CONN / name).read_text()
+
+
+def test_render_connections_columnar() -> None:
+    text = renderer.render_connections(_load_conn("tracked.txt"))
+    _assert_golden_in(text, _GOLD_CONN, "connections")
+    # Original-direction tuple, per-family, RFC 5737/3849 doc ranges only.
+    assert "ESTABLISHED" in text and "TIME_WAIT" in text  # TCP states surfaced
+    assert "192.0.2.2" in text and "2001:db8::2" in text  # v4 and v6 sources
+    assert "54321->443" in text  # sport->dport ports column
+    assert "203.0.113.9" not in text.split("\n")[0]  # header first, not raw conntrack echo
+
+
+def test_render_connections_empty_is_valid_not_a_crash() -> None:
+    text = renderer.render_connections(_load_conn("empty.txt"))
+    assert text  # non-empty banner, no exception
+    assert "(no tracked connections)" in text
+    _assert_golden_in(text, _GOLD_CONN, "empty")

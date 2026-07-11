@@ -71,9 +71,10 @@ kernel through a `list`-only seam that has no mutating form (read-only by constr
 | Verb | Privileged | What it does |
 |------|:----------:|--------------|
 | `show rules [-t {filter\|nat\|mangle\|raw}] [chain…]` | reads the live ruleset | Print the live rules of the named chains (all chains of the `filter` table by default), rendered as an annotated, columnar report. |
+| `show connections` | reads live conntrack | Print the connections the kernel is currently tracking (via the `conntrack` utility), rendered as a columnar report. |
 
-The output is grouped by chain, with rules numbered within each chain and human `TARGET` labels
-(`ACCEPT`/`DROP`/`DNAT`/…) — not raw `nft list` output:
+The `show rules` output is grouped by chain, with rules numbered within each chain and human
+`TARGET` labels (`ACCEPT`/`DROP`/`DNAT`/…) — not raw `nft list` output:
 
 ```
 Table: inet filter
@@ -87,6 +88,22 @@ Chain input (policy drop)
 When the firewall is stopped or cleared, `show rules` prints an empty-but-valid report and exits 0
 rather than erroring; a chain name that does not exist in a running table fails fast with one clear
 error.
+
+`show connections` renders each tracked flow's original direction — protocol, TCP state
+(`-` when the protocol is stateless), source, destination, and `sport->dport` ports:
+
+```
+Connections
+
+  PROTO  STATE        SOURCE         DESTINATION   PORTS
+  tcp    ESTABLISHED  192.0.2.2      203.0.113.9   54321->443
+  udp    -            192.0.2.5      198.51.100.4  1234->53
+```
+
+When the kernel is tracking nothing — including while the firewall is stopped or cleared —
+`show connections` prints an empty-but-valid report and exits 0. If the `conntrack` utility is
+not installed it fails fast with one actionable error (install `conntrack-tools`), not a stack
+trace.
 
 ## The stopped safe state
 

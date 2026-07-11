@@ -566,3 +566,67 @@ def test_show_zones_malformed_config_fails_fast_one_error(
 def test_show_zones_missing_config_dir_fails_fast(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["show", "zones", "no-such-config-dir"]) == 1
     assert "error:" in capsys.readouterr().err
+
+
+# ---- show connections: live conntrack, read-only (task #412, ADR-0065) ---------------------
+
+_CONN_FIXTURE = (
+    "tcp 6 431999 ESTABLISHED src=192.0.2.2 dst=203.0.113.9 sport=54321 dport=443 "
+    "src=203.0.113.9 dst=192.0.2.2 sport=443 dport=54321 [ASSURED] mark=0 use=1\n"
+)
+
+
+@pytest.mark.parametrize("verb", ["show", "list", "ls"])
+def test_show_connections_renders_live_conntrack(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_connections", lambda: _CONN_FIXTURE)
+    assert cli.main([verb, "connections"]) == 0
+    out = capsys.readouterr().out
+    assert "Connections" in out
+    assert "ESTABLISHED" in out
+    assert "192.0.2.2" in out
+
+
+def test_show_connections_list_ls_dispatch_identically(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_connections", lambda: _CONN_FIXTURE)
+    outs = []
+    for verb in ("show", "list", "ls"):
+        assert cli.main([verb, "connections"]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1] == outs[2]  # exact same output — same code path
+
+
+def test_show_connections_takes_no_config_dir_positional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Like `show rules`, connections reads live kernel state — a config dir is not accepted.
+    monkeypatch.setattr(cli, "list_connections", lambda: _CONN_FIXTURE)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["show", "connections", "some-dir"])
+    assert exc.value.code == 2  # unexpected positional -> argparse usage error
+
+
+def test_show_connections_empty_degrades_gracefully(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_connections", lambda: "")
+    assert cli.main(["show", "connections"]) == 0  # empty-but-valid, exit 0
+    out = capsys.readouterr().out
+    assert "Connections" in out
+    assert "(no tracked connections)" in out
+
+
+def test_show_connections_missing_binary_fails_fast_one_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom() -> str:
+        raise ShorewallNFError("conntrack utility not found; install conntrack-tools")
+
+    monkeypatch.setattr(cli, "list_connections", boom)
+    assert cli.main(["show", "connections"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "Traceback" not in err  # a clean ADR-0004 message, not a stack trace

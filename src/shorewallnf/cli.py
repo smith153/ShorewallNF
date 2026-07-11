@@ -22,6 +22,7 @@ from .applier import (
     apply_sysctls,
     check_ruleset,
     clear_ruleset,
+    list_connections,
     list_ruleset,
     restore_ruleset,
     save_ruleset,
@@ -31,7 +32,7 @@ from .generator import generate, generate_stopped
 from .ir import Settings
 from .parser import parse_config, parse_settings
 from .preprocessor import SourceLine, parse_params, preprocess_file
-from .renderer import render_policies, render_rules, render_zones
+from .renderer import render_connections, render_policies, render_rules, render_zones
 from .resolver import resolve
 from .validator import validate
 
@@ -137,10 +138,11 @@ def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
     """Add a read-only visibility verb group (``show``/``list``/``ls``, ADR-0065).
 
     A *nested* subparser (verb -> object -> options), unlike the flat config verbs. Objects differ
-    in their source: ``rules`` reads the live ruleset and takes no ``config_dir``, while ``zones``
-    and ``policies`` are compile-time declarations not recoverable from live nft state — they render
-    the config IR and so take a ``config_dir`` positional. ``_dispatch`` routes by ``show_object``;
-    the remaining siblings (#412-#415) add more objects under this same group.
+    in their source: ``rules`` reads the live ruleset and ``connections`` reads live conntrack
+    state (both take no ``config_dir``), while ``zones`` and ``policies`` are compile-time
+    declarations not recoverable from live kernel state — they render the config IR, taking a
+    ``config_dir`` positional. ``_dispatch`` routes by ``show_object``; the remaining siblings
+    (#413-#415) add more objects under this same group.
     """
     show_parser = sub.add_parser(verb, help="display firewall state (read-only)")
     objects = show_parser.add_subparsers(dest="show_object", required=True)
@@ -149,6 +151,9 @@ def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
         "-t", "--table", choices=_SHOW_TABLES, default="filter", help="table to show"
     )
     rules.add_argument("chains", nargs="*", help="chains to show (default: all in the table)")
+    objects.add_parser(
+        "connections", help="show currently kernel-tracked connections (live, read-only)"
+    )
     zones = objects.add_parser("zones", help="show declared zones and their members (from config)")
     zones.add_argument("config_dir", help="path to the Shorewall-style config directory")
     policies = objects.add_parser(
@@ -160,12 +165,16 @@ def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
 def _dispatch_show(args: argparse.Namespace) -> int:
     """Route a read-only ``show``/``list``/``ls`` object (ADR-0065); ``list``/``ls`` are synonyms.
 
-    ``rules`` renders the live ruleset; ``zones``/``policies`` render the compiled config IR reached
-    through the pipeline seam (compile-time declarations, not recoverable from live nft state).
+    ``rules`` renders the live ruleset and ``connections`` the live conntrack table (both live,
+    read-only); ``zones``/``policies`` render the compiled config IR reached through the pipeline
+    seam (compile-time declarations, not recoverable from live kernel state).
     """
     if args.show_object == "rules":
         chains = tuple(args.chains) or None
         print(render_rules(list_ruleset(), table=args.table, chains=chains))
+        return 0
+    if args.show_object == "connections":
+        print(render_connections(list_connections()))
         return 0
     ruleset = parse_config(preprocess(args.config_dir), _read_settings(args.config_dir))
     if args.show_object == "zones":
