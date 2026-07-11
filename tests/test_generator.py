@@ -15,6 +15,7 @@ from shorewallnf.ir import (
     Interface,
     Nat,
     Policy,
+    RateLimit,
     Rule,
     Ruleset,
     Settings,
@@ -1326,6 +1327,89 @@ def test_icmp_rules_match_golden() -> None:
         policies=(Policy(source="all", dest="all", action="DROP"),),
     )
     assert_golden(rs, "rule_icmp")
+
+
+# ---- RATE LIMIT column emits an nft limit statement (#406, ADR-0007) ---------
+
+
+def _limit(rate: int, per: str, burst: int | None = None) -> dict[str, Any]:
+    stmt: dict[str, Any] = {"rate": rate, "per": per}
+    if burst is not None:
+        stmt["burst"] = burst
+    return {"limit": stmt}
+
+
+def test_rate_limit_emitted_before_verdict() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22",
+                rate=RateLimit(rate=10, interval="minute", burst=20),
+            ),
+        ),
+    )
+    (added,) = _added_rules(rs, _LN)
+    assert added["expr"][-2:] == [_limit(10, "minute", 20), {"accept": None}]
+
+
+def test_rate_limit_without_burst_omits_burst_key() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22",
+                rate=RateLimit(rate=5, interval="second"),
+            ),
+        ),
+    )
+    (added,) = _added_rules(rs, _LN)
+    assert added["expr"][-2:] == [_limit(5, "second"), {"accept": None}]
+
+
+def test_no_rate_emits_no_limit_statement() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22"),),
+    )
+    (added,) = _added_rules(rs, _LN)
+    assert not any("limit" in expr for expr in added["expr"])
+
+
+def test_both_family_icmp_rate_limits_each_family() -> None:
+    # A both-family ICMP rule splits into one nft rule per family; each carries its own limiter,
+    # placed after the ICMP match and before the verdict.
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(
+                action="ACCEPT", source="net", dest="fw", proto="icmp",
+                rate=RateLimit(rate=1, interval="second", burst=1),
+            ),
+        ),
+    )
+    added = _added_rules(rs, _LN)
+    assert len(added) == 2
+    for rule in added:
+        assert rule["expr"][-2:] == [_limit(1, "second", 1), {"accept": None}]
+
+
+def test_rate_limit_matches_golden() -> None:
+    rs = Ruleset(
+        zones=(_FW, _zone("loc", "eth1"), _zone("net", "eth0")),
+        rules=(
+            Rule(
+                action="ACCEPT", source="loc", dest="net:192.0.2.0/24", proto="tcp", dport="22",
+                rate=RateLimit(rate=10, interval="minute", burst=20),
+            ),
+            Rule(
+                action="ACCEPT", source="loc", dest="net", proto="udp", dport="53",
+                rate=RateLimit(rate=5, interval="second"),
+            ),
+        ),
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "rule_rate_limit")
 
 
 # ---- IPv4 DNAT: nat prerouting + forward accept (task #143, ADR-0008) --------------------

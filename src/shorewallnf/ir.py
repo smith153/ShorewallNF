@@ -125,6 +125,20 @@ class Policy:
 
 
 @dataclass(frozen=True, slots=True)
+class RateLimit:
+    """A parsed ``rules`` RATE LIMIT spec ``<rate>/<interval>[:<burst>]`` (#406, ADR-0007).
+
+    ``interval`` is the nft time keyword (``second``/``minute``/``hour``/``day``); the parser
+    maps Shorewall's ``sec``/``min``/``hour``/``day`` onto it. ``burst`` is the packet burst
+    allowance, ``None`` when the column omits it. A frozen value: two equal specs compare equal.
+    """
+
+    rate: int
+    interval: str
+    burst: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Rule:
     """A single firewall rule, carrying the family it scopes to (ADR-0002).
 
@@ -134,7 +148,9 @@ class Rule:
 
     ``source``/``dest`` are the raw ``zone`` or ``zone:host`` tokens; the generator splits the
     ``zone:host`` narrowing. ``sport`` is the SOURCE PORT column and ``section`` the enclosing
-    ``?SECTION`` name (``None`` for rules before any section marker), both verbatim.
+    ``?SECTION`` name (``None`` for rules before any section marker), both verbatim. ``rate`` is
+    the parsed RATE LIMIT column (``None`` when absent), emitted as an nft ``limit rate`` before
+    the verdict so over-limit traffic falls through (#406, ADR-0007).
 
     ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
     can cite the source. They are ``compare=False`` metadata: location does not participate in
@@ -148,6 +164,7 @@ class Rule:
     dport: str | None = None
     sport: str | None = None
     section: str | None = None
+    rate: RateLimit | None = None
     family: Family = Family.BOTH
     path: str | None = field(default=None, compare=False)
     line: int | None = field(default=None, compare=False)
