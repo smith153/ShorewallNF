@@ -15,6 +15,9 @@ from shorewallnf.ir import (
     RateLimit,
     Rule,
     Ruleset,
+    SetDef,
+    SetRef,
+    SetType,
 )
 
 # --- reserved tproxy constants (ADR-0051 Part A) -----------------------------
@@ -218,6 +221,44 @@ def test_conntrack_helper_can_be_scoped_to_a_single_family() -> None:
     assert ConntrackHelper(name="pptp", family=Family.IPV4).family is Family.IPV4
 
 
+# --- SetDef / SetRef (named-set modeling, ADR-0066) --------------------------
+
+
+def test_set_def_shape() -> None:
+    sdef = SetDef(name="admins", family=Family.IPV4, set_type=SetType.ADDRESS)
+    assert (sdef.name, sdef.family, sdef.set_type) == (
+        "admins",
+        Family.IPV4,
+        SetType.ADDRESS,
+    )
+
+
+def test_set_def_address_port_type() -> None:
+    sdef = SetDef(name="services", family=Family.IPV6, set_type=SetType.ADDRESS_PORT)
+    assert sdef.set_type is SetType.ADDRESS_PORT
+
+
+def test_set_def_location_stays_out_of_equality() -> None:
+    a = SetDef(name="s", family=Family.BOTH, set_type=SetType.ADDRESS, path="sets", line=1)
+    b = SetDef(name="s", family=Family.BOTH, set_type=SetType.ADDRESS, path="x", line=9)
+    assert a == b
+
+
+def test_set_ref_shape_and_defaults() -> None:
+    ref = SetRef(name="admins")
+    assert (ref.name, ref.negated, ref.family) == ("admins", False, Family.BOTH)
+
+
+def test_set_ref_can_be_negated_and_scoped() -> None:
+    ref = SetRef(name="admins", negated=True, family=Family.IPV4)
+    assert (ref.negated, ref.family) == (True, Family.IPV4)
+
+
+def test_set_ref_is_a_value() -> None:
+    assert SetRef(name="a", negated=True) == SetRef(name="a", negated=True)
+    assert SetRef(name="a") != SetRef(name="b")
+
+
 # --- Rule.action carries a macro/action name (ADR-0020) ----------------------
 
 
@@ -246,6 +287,8 @@ def test_rule_action_can_carry_a_macro_or_action_name() -> None:
         (MacroRule(action="ACCEPT"), "action"),
         (MacroDef(name="Ping"), "name"),
         (ConntrackHelper(name="ftp"), "name"),
+        (SetDef(name="s", family=Family.BOTH, set_type=SetType.ADDRESS), "name"),
+        (SetRef(name="s"), "name"),
     ],
 )
 def test_datatypes_are_frozen(instance: object, field: str) -> None:
@@ -269,6 +312,22 @@ def test_ruleset_holds_all_collections_immutably() -> None:
 
 def test_ruleset_conntrack_helpers_default_empty() -> None:
     assert Ruleset().conntrack_helpers == ()
+
+
+def test_ruleset_sets_default_empty() -> None:
+    # Back-compat: an existing construction with no sets is unchanged (empty registry).
+    assert Ruleset().sets == {}
+
+
+def test_ruleset_round_trips_sets_registry() -> None:
+    sets = {
+        "admins": SetDef(name="admins", family=Family.IPV4, set_type=SetType.ADDRESS),
+        "admins6": SetDef(name="admins6", family=Family.IPV6, set_type=SetType.ADDRESS),
+    }
+    ruleset = Ruleset(sets=sets)
+    assert ruleset.sets == sets
+    assert ruleset.sets["admins"].family is Family.IPV4
+    assert ruleset.sets["admins6"].family is Family.IPV6
 
 
 def test_ruleset_round_trips_conntrack_helpers() -> None:

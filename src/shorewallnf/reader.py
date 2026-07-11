@@ -29,6 +29,9 @@ KNOWN_CONFIG_FILES: tuple[str, ...] = (
     # `providers` follows the interface-defining `interfaces` so its interface references can be
     # cross-checked (validation task #233); policy routing is otherwise independent of filtering.
     "providers",
+    # `sets` declares named sets (name + family + type, ADR-0066); discovered after the
+    # interface/provider declarations and before the rule files that reference them (#418).
+    "sets",
     "policy",
     "rules",
     "snat",

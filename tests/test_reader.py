@@ -69,6 +69,14 @@ def test_discover_finds_mangle_file(tmp_path: Path) -> None:
     assert discover(tmp_path) == ("conntrack", "mangle")
 
 
+def test_discover_finds_sets_file(tmp_path: Path) -> None:
+    # The sets declaration file (named-set registry, epic #401) is a known config file; it
+    # follows the interface/provider declarations and precedes the rule files that reference it.
+    (tmp_path / "providers").write_text("wan 1 1 eth0 192.0.2.1\n")
+    (tmp_path / "sets").write_text("admins ipv4 address\n")
+    assert discover(tmp_path) == ("providers", "sets")
+
+
 def test_discover_finds_shorewallnf_conf(tmp_path: Path) -> None:
     # The global-settings file (ADR-0061, #315) is a known config file; it is not tabular but
     # is still discovered so the settings parser can pick it up.
