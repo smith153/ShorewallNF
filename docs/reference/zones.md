@@ -69,3 +69,32 @@ The `ipv4`/`ipv6` keyword does not fix the zone's family: `guest ipv4` and `gues
 the *same* zone, and whether `guest` carries IPv4, IPv6, or both is decided by the interfaces
 bound to it. (A zone name may appear only once — declaring `guest` twice is a duplicate-zone
 error, not a way to add both families.)
+
+## Inspecting compiled zones
+
+`shorewallnf show zones <config_dir>` renders the declared zone graph — each zone with its
+interface members, any host/CIDR narrowing, and the per-member address family (`BOTH`, `IPV4`,
+or `IPV6` per [ADR-0002](../adr/0002-unified-inet-dual-stack.md)). Because zones are a
+compile-time declaration and not recoverable from live nft state, this verb reads the **config
+directory** (unlike `show rules`, which reads the running kernel). `list`/`ls` are exact
+synonyms; it is read-only.
+
+```
+$ shorewallnf show zones /etc/shorewallnf
+Zones
+
+Zone fw (firewall)
+  (no members)
+
+Zone loc
+  INTERFACE  HOST          FAMILY
+  eth1       any           BOTH
+  eth2       192.0.2.0/24  IPV4
+
+Zone net
+  INTERFACE  HOST           FAMILY
+  eth0       2001:db8::/32  IPV6
+```
+
+The firewall zone renders with no interface members; a bare interface (dual-stack) shows `any`
+in the `HOST` column. A valid config that declares no zones renders an empty-but-valid section.

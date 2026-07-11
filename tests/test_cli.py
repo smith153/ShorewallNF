@@ -494,3 +494,75 @@ def test_show_requires_an_object() -> None:
     with pytest.raises(SystemExit) as exc:
         cli.main(["show"])
     assert exc.value.code == 2  # nested subparser required
+
+
+# ---- show zones / show policies: rendered from the compiled config IR (task #411) ----------
+
+_POLICY_DIR = str(Path(__file__).parent / "fixtures" / "policy_compile_dir")
+
+
+@pytest.mark.parametrize("obj", ["zones", "policies"])
+def test_show_config_object_requires_config_dir(obj: str) -> None:
+    # Unlike `show rules`, zones/policies render the config IR — config_dir is required.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["show", obj])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("verb", ["show", "list", "ls"])
+def test_show_zones_renders_from_config(verb: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main([verb, "zones", _POLICY_DIR]) == 0
+    out = capsys.readouterr().out
+    assert "Zones" in out
+    assert "Zone fw (firewall)" in out  # the memberless firewall zone
+    assert "Zone net" in out
+
+
+@pytest.mark.parametrize("verb", ["show", "list", "ls"])
+def test_show_policies_renders_from_config(verb: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main([verb, "policies", _POLICY_DIR]) == 0
+    out = capsys.readouterr().out
+    assert "Policies" in out
+    assert "REJECT" in out
+    assert "info" in out  # a policy carrying a log level
+
+
+def test_show_zones_dispatch_identically(capsys: pytest.CaptureFixture[str]) -> None:
+    outs = []
+    for verb in ("show", "list", "ls"):
+        assert cli.main([verb, "zones", _POLICY_DIR]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1] == outs[2]  # show/list/ls take the same code path
+
+
+def test_show_policies_dispatch_identically(capsys: pytest.CaptureFixture[str]) -> None:
+    outs = []
+    for verb in ("show", "list", "ls"):
+        assert cli.main([verb, "policies", _POLICY_DIR]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1] == outs[2]
+
+
+def test_show_policies_empty_config_renders_empty_section(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A valid config declaring no policies renders an empty-but-valid section, not a crash.
+    assert cli.main(["show", "policies", _COMPILE_DIR]) == 0
+    out = capsys.readouterr().out
+    assert "Policies" in out
+    assert "(no policies" in out
+
+
+def test_show_zones_malformed_config_fails_fast_one_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "zones").write_text("badzone notatype\n")
+    assert cli.main(["show", "zones", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "Traceback" not in err  # a clean ADR-0004 message, not a stack trace
+
+
+def test_show_zones_missing_config_dir_fails_fast(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["show", "zones", "no-such-config-dir"]) == 1
+    assert "error:" in capsys.readouterr().err

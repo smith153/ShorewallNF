@@ -13,9 +13,11 @@ without root (ADR-0003 functional core). ``show rules`` is its first consumer; t
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from .errors import ConfigError
+from .ir import Policy, Zone
 
 #: The nftables family every ShorewallNF-owned table lives in (ADR-0002 unified dual-stack).
 _FAMILY = "inet"
@@ -35,6 +37,11 @@ _VERDICT_LABEL = {
 }
 
 _COLUMNS = ("NUM", "TARGET", "PROTO", "SOURCE", "DESTINATION", "DETAIL")
+
+#: Columns for the config-IR objects (task #411). Unlike ``show rules`` these render compile-time
+#: declarations from the ``Ruleset`` IR — zones/policies are not recoverable from live nft state.
+_ZONE_COLUMNS = ("INTERFACE", "HOST", "FAMILY")
+_POLICY_COLUMNS = ("SOURCE", "DEST", "ACTION", "LOG")
 
 
 def render_rules(
@@ -60,6 +67,59 @@ def render_rules(
     for chain in selected:
         sections.append(_render_chain(chain, rules_by_chain.get(chain["name"], [])))
     return "\n".join(sections).rstrip() + "\n"
+
+
+def render_zones(zones: tuple[Zone, ...]) -> str:
+    """Render the declared zones and their members from the config IR (ADR-0065 Option B).
+
+    One section per zone, headed ``Zone <name>`` (``(firewall)`` for the ``$FW`` zone), followed by
+    a fixed-column table of its members — interface, host/CIDR (``any`` for a bare interface), and
+    the per-member family (``BOTH``/``IPV4``/``IPV6``, ADR-0002). The firewall zone has no interface
+    members and renders ``(no members)``. A config declaring no zones is empty-but-valid, not a
+    crash.
+    """
+    if not zones:
+        return "Zones\n\n  (no zones declared)\n"
+    sections = ["Zones", ""]
+    sections.extend(_render_zone(zone) for zone in zones)
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def _render_zone(zone: Zone) -> str:
+    suffix = " (firewall)" if zone.is_firewall else ""
+    lines = [f"Zone {zone.name}{suffix}"]
+    if not zone.members:
+        lines.append("  (no members)")
+        return "\n".join(lines) + "\n"
+    rows = [(m.interface, m.host or "any", m.family.name) for m in zone.members]
+    lines.extend(_columnar(_ZONE_COLUMNS, rows))
+    return "\n".join(lines) + "\n"
+
+
+def render_policies(policies: tuple[Policy, ...]) -> str:
+    """Render the inter-zone default-policy matrix from the config IR (ADR-0065 Option B).
+
+    A single fixed-column table: source -> dest -> action, plus the log level when set (``-`` when
+    not). A config declaring no policies is empty-but-valid, not a crash.
+    """
+    if not policies:
+        return "Policies\n\n  (no policies declared)\n"
+    rows = [(p.source, p.dest, p.action, p.log_level or "-") for p in policies]
+    lines = ["Policies", ""]
+    lines.extend(_columnar(_POLICY_COLUMNS, rows))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _columnar(columns: tuple[str, ...], rows: Sequence[Sequence[str]]) -> list[str]:
+    """A left-justified header + rows table (2-space indent, 2-space gutter), trailing space cut."""
+    widths = [
+        max(len(col), *(len(row[i]) for row in rows)) for i, col in enumerate(columns)
+    ]
+
+    def fmt(cells: Sequence[str]) -> str:
+        return ("  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))).rstrip()
+
+    return [fmt(columns), *(fmt(row) for row in rows)]
 
 
 def _chains_in_table(objects: list[dict[str, Any]], table: str) -> list[dict[str, Any]]:

@@ -1,0 +1,13 @@
+Zones
+
+Zone fw (firewall)
+  (no members)
+
+Zone loc
+  INTERFACE  HOST          FAMILY
+  eth1       any           BOTH
+  eth2       192.0.2.0/24  IPV4
+
+Zone net
+  INTERFACE  HOST           FAMILY
+  eth0       2001:db8::/32  IPV6

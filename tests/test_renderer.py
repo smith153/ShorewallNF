@@ -76,3 +76,76 @@ def test_render_unknown_chain_on_stopped_firewall_degrades() -> None:
     # No table present at all -> can't validate names against a down firewall; degrade gracefully.
     text = renderer.render_rules(_load("stopped.json"), table="filter", chains=("input",))
     assert text  # empty-but-valid, no exception
+
+
+# ---- show zones / show policies: pure IR renderers (task #411, ADR-0065) ----------
+
+from shorewallnf import ir  # noqa: E402
+
+_GOLD_ZONES = Path(__file__).parent / "golden" / "show_zones"
+_GOLD_POLICIES = Path(__file__).parent / "golden" / "show_policies"
+
+
+def _assert_golden_in(text: str, gold_dir: Path, name: str) -> None:
+    path = gold_dir / f"{name}.txt"
+    if os.environ.get("UPDATE_GOLDEN") == "1":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+    assert path.exists(), f"missing golden {path} (run with UPDATE_GOLDEN=1)"
+    assert text == path.read_text(), f"render drift vs {path.name}"
+
+
+def _sample_zones() -> tuple[ir.Zone, ...]:
+    # A memberless firewall zone, a zone mixing a dual-stack interface with an IPv4 host member,
+    # and a zone with an IPv6 host member — RFC 5737/3849 doc ranges only.
+    return (
+        ir.Zone(name="fw", is_firewall=True),
+        ir.Zone(
+            name="loc",
+            members=(
+                ir.ZoneMember(interface="eth1", family=ir.Family.BOTH),
+                ir.ZoneMember(interface="eth2", family=ir.Family.IPV4, host="192.0.2.0/24"),
+            ),
+        ),
+        ir.Zone(
+            name="net",
+            members=(
+                ir.ZoneMember(interface="eth0", family=ir.Family.IPV6, host="2001:db8::/32"),
+            ),
+        ),
+    )
+
+
+def test_render_zones_members_and_families() -> None:
+    text = renderer.render_zones(_sample_zones())
+    _assert_golden_in(text, _GOLD_ZONES, "zones")
+    assert "Zone fw (firewall)" in text  # firewall zone renders with no interface members
+    assert "BOTH" in text and "IPV4" in text and "IPV6" in text  # per-member family (ADR-0002)
+    assert "192.0.2.0/24" in text and "2001:db8::/32" in text  # host/CIDR members shown
+
+
+def test_render_zones_empty_is_valid_not_a_crash() -> None:
+    text = renderer.render_zones(())
+    assert text  # non-empty, no exception
+    _assert_golden_in(text, _GOLD_ZONES, "empty")
+
+
+def _sample_policies() -> tuple[ir.Policy, ...]:
+    return (
+        ir.Policy(source="loc", dest="net", action="ACCEPT"),
+        ir.Policy(source="net", dest="all", action="DROP", log_level="info"),
+        ir.Policy(source="all", dest="all", action="REJECT"),
+    )
+
+
+def test_render_policies_matrix_with_log_level() -> None:
+    text = renderer.render_policies(_sample_policies())
+    _assert_golden_in(text, _GOLD_POLICIES, "policies")
+    assert "info" in text  # a policy carrying a log level
+
+
+def test_render_policies_empty_is_valid_not_a_crash() -> None:
+    text = renderer.render_policies(())
+    assert text  # non-empty, no exception
+    _assert_golden_in(text, _GOLD_POLICIES, "empty")
