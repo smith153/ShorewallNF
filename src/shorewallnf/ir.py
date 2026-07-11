@@ -139,6 +139,19 @@ class RateLimit:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnLimit:
+    """A parsed ``rules`` CONNLIMIT spec ``<count>`` (#407, epic #400, ADR-0007).
+
+    ``count`` is the positive cap on simultaneous connections the rule's verdict is gated on; the
+    generator emits it as an nft ``ct count over <count>``. The masked/grouped ``<count>:<mask>``
+    form is out of scope here (#416), so this value carries only the bare count. A frozen value:
+    two equal specs compare equal.
+    """
+
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Rule:
     """A single firewall rule, carrying the family it scopes to (ADR-0002).
 
@@ -150,7 +163,9 @@ class Rule:
     ``zone:host`` narrowing. ``sport`` is the SOURCE PORT column and ``section`` the enclosing
     ``?SECTION`` name (``None`` for rules before any section marker), both verbatim. ``rate`` is
     the parsed RATE LIMIT column (``None`` when absent), emitted as an nft ``limit rate`` before
-    the verdict so over-limit traffic falls through (#406, ADR-0007).
+    the verdict so over-limit traffic falls through (#406, ADR-0007). ``connlimit`` is the parsed
+    CONNLIMIT column (``None`` when absent), emitted as an nft ``ct count over <count>`` gating the
+    verdict on the simultaneous-connection cap (#407, ADR-0007).
 
     ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
     can cite the source. They are ``compare=False`` metadata: location does not participate in
@@ -165,6 +180,7 @@ class Rule:
     sport: str | None = None
     section: str | None = None
     rate: RateLimit | None = None
+    connlimit: ConnLimit | None = None
     family: Family = Family.BOTH
     path: str | None = field(default=None, compare=False)
     line: int | None = field(default=None, compare=False)

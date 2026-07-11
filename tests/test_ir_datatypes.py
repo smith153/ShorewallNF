@@ -5,6 +5,7 @@ import pytest
 from shorewallnf.ir import (
     TPROXY_MARK,
     TPROXY_TABLE_ID,
+    ConnLimit,
     ConntrackHelper,
     Family,
     Interface,
@@ -131,6 +132,36 @@ def test_rule_location_stays_out_of_equality_with_rate() -> None:
     rate = RateLimit(rate=10, interval="minute")
     a = Rule(action="ACCEPT", source="loc", dest="net", rate=rate, path="rules", line=1)
     b = Rule(action="ACCEPT", source="loc", dest="net", rate=rate, path="other", line=9)
+    assert a == b
+
+
+# --- ConnLimit (rules CONNLIMIT column, #407) --------------------------------
+
+
+def test_connlimit_shape() -> None:
+    assert ConnLimit(count=4).count == 4
+
+
+def test_connlimit_is_a_value() -> None:
+    assert ConnLimit(4) == ConnLimit(4)
+
+
+def test_rule_carries_connlimit_defaulting_none() -> None:
+    assert Rule(action="ACCEPT", source="loc", dest="net").connlimit is None
+    cap = ConnLimit(count=4)
+    assert Rule(action="ACCEPT", source="loc", dest="net", connlimit=cap).connlimit is cap
+
+
+def test_rules_differing_only_in_connlimit_compare_unequal() -> None:
+    base = Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22")
+    capped = dataclasses.replace(base, connlimit=ConnLimit(count=4))
+    assert base != capped
+
+
+def test_rule_location_stays_out_of_equality_with_connlimit() -> None:
+    cap = ConnLimit(count=4)
+    a = Rule(action="ACCEPT", source="loc", dest="net", connlimit=cap, path="rules", line=1)
+    b = Rule(action="ACCEPT", source="loc", dest="net", connlimit=cap, path="other", line=9)
     assert a == b
 
 
