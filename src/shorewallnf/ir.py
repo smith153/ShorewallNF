@@ -7,8 +7,9 @@ family-aware model; family is data on the IR, scoped as ``both``/``ipv4``/``ipv6
 This module holds the datatypes — the :class:`Family` scoping enum, :class:`Zone` (with its
 :class:`ZoneMember` records), the :class:`Interface`, :class:`Policy`, :class:`Rule` and
 :class:`Nat` records the Generator consumes, the :class:`MacroDef`/:class:`MacroRule`
-records a rule's ``action`` name resolves to (ADR-0020), and the conntrack-helper types
-(:class:`ConntrackHelper`, :class:`HelperDef`, :class:`HelperCapabilities`; ADR-0040).
+records a rule's ``action`` name resolves to (ADR-0020), the conntrack-helper types
+(:class:`ConntrackHelper`, :class:`HelperDef`, :class:`HelperCapabilities`; ADR-0040), and the
+named-set types (:class:`SetDef`, :class:`SetRef`, :class:`SetType`; ADR-0066).
 These are datatype **shapes**; each
 feature epic owns the deep per-file semantics (which options/actions are valid, how fields are
 populated).
@@ -315,6 +316,57 @@ class HelperCapabilities:
         return name in self.available
 
 
+class SetType(Enum):
+    """The element type of a declared named set (ADR-0066).
+
+    ``ADDRESS`` is a set of host addresses (nft ``ipv4_addr``/``ipv6_addr``); ``ADDRESS_PORT``
+    is a set of address+port pairs (an ``addr . inet_service`` concatenation). The generator's
+    concrete nft type derivation is a later task; this only fixes the two declared kinds.
+    """
+
+    ADDRESS = "address"
+    ADDRESS_PORT = "address:port"
+
+
+@dataclass(frozen=True, slots=True)
+class SetDef:
+    """A declared named set: its name, address family, and element type (ADR-0066).
+
+    The declared-set registry entry, keyed by ``name`` in :attr:`Ruleset.sets` (mirroring
+    :attr:`Ruleset.actions`). ``family`` is the declared family per ADR-0002 —
+    :data:`Family.IPV4`/:data:`Family.IPV6` for a single-stack set, :data:`Family.BOTH` for a
+    dual-stack one — and ``set_type`` the element kind. Set *population* at runtime is out of
+    scope (epic #402); only this name+family+type metadata is modeled. A ``+setname`` reference
+    to such a set is a :class:`SetRef`.
+
+    ``path``/``line`` are the originating ``file:line`` (set by the parser) so later stages can
+    cite the source; they are ``compare=False`` metadata and do not participate in equality
+    (ADR-0001).
+    """
+
+    name: str
+    family: Family
+    set_type: SetType
+    path: str | None = field(default=None, compare=False)
+    line: int | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SetRef:
+    """A reference to a named set used as a host term, family-aware (ADR-0066).
+
+    The typed IR for a ``+setname`` token in a SOURCE/DEST column — distinct from a literal
+    CIDR so the generator emits an nft set membership match rather than an address match.
+    ``negated`` records a leading ``!`` (``!+setname``). ``family`` scopes the reference per
+    ADR-0002, defaulting to :data:`Family.BOTH`. The ``+setname`` parsing and attachment onto
+    rules is a sibling task (#418); this type fixes the shape the ADR settles.
+    """
+
+    name: str
+    negated: bool = False
+    family: Family = Family.BOTH
+
+
 @dataclass(frozen=True, slots=True)
 class Provider:
     """A policy-routing provider (the ``providers`` file), family-aware (epic #204, ADR-0002).
@@ -520,6 +572,10 @@ class Ruleset:
     # Site-defined ``action.<Name>`` definitions, keyed by ``<Name>`` in deterministic
     # (name-sorted) order — the registry the resolver (ADR-0020, #184) consumes.
     actions: Mapping[str, MacroDef] = field(default_factory=dict)
+    # Declared named sets from the ``sets`` file, keyed by name (ADR-0066) — mirrors ``actions``.
+    # Empty by default, so every existing construction is unchanged. Rules referencing these sets
+    # (``+setname``) land in #418; the generator's set-object emission in #419/#402.
+    sets: Mapping[str, SetDef] = field(default_factory=dict)
     # Global settings from ``shorewallnf.conf`` (ADR-0061); the all-defaults instance when the
     # file is absent, so every existing construction keeps today's behaviour.
     settings: Settings = field(default_factory=Settings)

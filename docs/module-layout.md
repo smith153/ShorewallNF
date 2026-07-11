@@ -17,7 +17,7 @@ config dir ─► Reader ─► Preprocessor ─► Parser ─► IR ─► Reso
 |-------|--------|-------|--------|
 | Reader | `shorewallnf/reader.py` | shell (reads the config dir) | **present** (discovers the known config files in `KNOWN_CONFIG_FILES`, reads their text) |
 | Preprocessor | `shorewallnf/preprocessor.py` | core (pure: text → text) | **present** (`params` substitution, `?if` conditionals, `?FORMAT`/`?SECTION`) |
-| Parser | `shorewallnf/parser.py` | core (pure: text → IR) | **present** (per-file parsers for `zones`/`interfaces`/`policy`/`rules`/`snat`/`conntrack`/`providers`/`mangle`/`stoppedrules`) |
+| Parser | `shorewallnf/parser.py` | core (pure: text → IR) | **present** (per-file parsers for `zones`/`interfaces`/`policy`/`rules`/`snat`/`conntrack`/`providers`/`mangle`/`stoppedrules`/`sets`) |
 | IR / model | `shorewallnf/ir.py` | core (immutable data) | **present** |
 | Resolver | `shorewallnf/resolver.py` | core (pure: IR → IR) | **present** (expands macro/action call sites into narrowed verdict rules between Parser and Validator, [ADR-0020](adr/0020-macro-and-action-resolution.md)) |
 | Validator | `shorewallnf/validator.py` | core (pure: IR → IR, or raises) | **present** (semantic checks; e.g. the ESTABLISHED/RELATED base-accept shadow, [ADR-0005](adr/0005-nftables-base-chain-layout.md)) |

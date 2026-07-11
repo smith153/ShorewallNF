@@ -43,7 +43,9 @@ from .ir import (
     RateLimit,
     Rule,
     Ruleset,
+    SetDef,
     Settings,
+    SetType,
     YesNoKeep,
     Zone,
     ZoneMember,
@@ -1019,6 +1021,59 @@ def _int_or_fail(token: str, name: str, record: Record) -> int:
         ) from None
 
 
+# --- sets (declared named-set registry, ADR-0066) ----------------------------
+
+# The family column maps 1:1 onto the Family enum values (``ipv4``/``ipv6``/``both``); the type
+# column onto SetType (``address``/``address:port``). Both are looked up by value, so an unknown
+# token fails fast (ADR-0004) rather than being coerced.
+_SET_FAMILIES = {f.value: f for f in Family}
+_SET_TYPES = {t.value: t for t in SetType}
+
+
+def parse_sets(records: Iterable[Record]) -> dict[str, SetDef]:
+    """Parse ``sets``-file rows (``<name> <family> <type>``) into a name-keyed
+    :class:`~shorewallnf.ir.SetDef` registry (ADR-0066), mirroring the ``actions`` registry.
+
+    ``family`` is one of ``ipv4``/``ipv6``/``both`` (ADR-0002) and ``type`` one of
+    ``address``/``address:port``. A missing column, an unknown family or type, or a duplicate
+    set name fails fast with a located :class:`ConfigError` (ADR-0004). Set population is out of
+    scope (epic #402); only the name+family+type metadata is modeled here.
+    """
+    sets: dict[str, SetDef] = {}
+    for record in records:
+        sdef = _build_set_def(record)
+        if sdef.name in sets:
+            raise ConfigError(
+                f"duplicate set {sdef.name!r}", path=record.path, line=record.line
+            )
+        sets[sdef.name] = sdef
+    return sets
+
+
+def _build_set_def(record: Record) -> SetDef:
+    name = require_field(record, 0, "set name")
+    family_token = require_field(record, 1, "set family")
+    family = _SET_FAMILIES.get(family_token)
+    if family is None:
+        raise ConfigError(
+            f"unknown set family {family_token!r} (expected one of "
+            f"{sorted(_SET_FAMILIES)})",
+            path=record.path,
+            line=record.line,
+        )
+    type_token = require_field(record, 2, "set type")
+    set_type = _SET_TYPES.get(type_token)
+    if set_type is None:
+        raise ConfigError(
+            f"unknown set type {type_token!r} (expected one of {sorted(_SET_TYPES)})",
+            path=record.path,
+            line=record.line,
+        )
+    return SetDef(
+        name=name, family=family, set_type=set_type, path=record.path, line=record.line
+    )
+
+
 # --- action.<Name> (site-defined macro/custom-action) parser -----------------
 
 
@@ -1180,6 +1235,9 @@ def parse_config(
     stopped_rules: tuple[Rule, ...] = ()
     if "stoppedrules" in streams:
         stopped_rules = parse_stopped_rules(parse(streams["stoppedrules"]), zones)
+    sets: Mapping[str, SetDef] = {}
+    if "sets" in streams:
+        sets = parse_sets(parse(streams["sets"]))
     # Site-defined action.<Name> files → a name-keyed MacroDef registry (ADR-0020, #182),
     # built in name-sorted order so the registry is deterministic. The `actions` index file
     # is discovered by the reader but not a MacroDef, so it is not parsed here.
@@ -1199,6 +1257,7 @@ def parse_config(
         providers=providers,
         mangle_rules=mangle_rules,
         actions=actions,
+        sets=sets,
         settings=settings,
     )
 
