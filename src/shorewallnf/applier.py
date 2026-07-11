@@ -133,6 +133,28 @@ def apply_ruleset(ruleset: dict[str, Any]) -> None:
         raise ConfigError(f"ruleset rejected by nft: {result.stderr.strip()}")
 
 
+def list_ruleset() -> dict[str, Any]:
+    """Read-only live query: return the parsed ``nft --json list ruleset`` output (task #410).
+
+    The read-only twin of :func:`apply_ruleset`, beside it in the shell (ADR-0003): it shells
+    ``nft --json list ruleset`` and parses the live ruleset to JSON for the renderer. Read-only is
+    structural — ``nft list`` has no mutating form and nothing is streamed on stdin, so the query
+    can never alter the ruleset (ADR-0065). ``list ruleset`` succeeds on a stopped/cleared firewall
+    (an empty ruleset), so graceful degradation needs no special-casing here — the renderer emits an
+    empty-but-valid section. A non-zero rc (e.g. ``nft`` missing) raises
+    :class:`~shorewallnf.errors.ConfigError`, caught once in the CLI shell (ADR-0004).
+    """
+    result = subprocess.run(
+        [NFT, "--json", "list", "ruleset"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(f"nft list failed: {result.stderr.strip()}")
+    parsed: dict[str, Any] = json.loads(result.stdout)
+    return parsed
+
+
 def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
     """Load the persisted ruleset from ``path`` live, fail-closed (task #206, ADR-0030).
 

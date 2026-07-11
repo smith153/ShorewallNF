@@ -1,0 +1,3 @@
+Table: inet filter
+
+  (no chains — firewall stopped or cleared)
