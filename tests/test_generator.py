@@ -19,7 +19,10 @@ from shorewallnf.ir import (
     RateLimit,
     Rule,
     Ruleset,
+    SetDef,
+    SetRef,
     Settings,
+    SetType,
     Zone,
     ZoneMember,
 )
@@ -2643,3 +2646,224 @@ def test_clampmss_clamp_precedes_forward_stateful_accept() -> None:
     assert clamp in forward
     assert stateful in forward
     assert forward.index(clamp) < forward.index(stateful)
+
+
+# ---- named-set (@setname) membership matching (task #419, epic #401, ADR-0066) -----------
+
+_A4 = SetDef(name="allow4", family=Family.IPV4, set_type=SetType.ADDRESS)
+_A6 = SetDef(name="allow6", family=Family.IPV6, set_type=SetType.ADDRESS)
+_BOTH_SET = SetDef(name="blk", family=Family.BOTH, set_type=SetType.ADDRESS)
+
+
+def _set_match(field: str, proto: str, name: str, *, negated: bool = False) -> dict[str, Any]:
+    op = "!=" if negated else "=="
+    return {"match": {"op": op, "left": {"payload": {"protocol": proto, "field": field}},
+                      "right": f"@{name}"}}
+
+
+def _set_cmds(rs: Ruleset) -> list[dict[str, Any]]:
+    return [c["add"]["set"] for c in generate(rs)["nftables"] if "set" in c["add"]]
+
+
+def test_setref_no_longer_fails_fast() -> None:
+    # #418 raised "not supported yet (#419)"; #419 replaces that branch with real emission.
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4), dest="net",
+                 family=Family.IPV4),),
+        sets={"allow4": _A4},
+    )
+    generate(rs)  # must not raise
+
+
+def test_source_setref_v4_emits_ip_saddr_membership() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4), dest="net",
+                 family=Family.IPV4),),
+        sets={"allow4": _A4},
+    )
+    added = _added_rules(rs, _LN)
+    assert len(added) == 1
+    assert added[0]["chain"] == "forward"
+    # a +setname SOURCE is a bare host term (no zone) — like "all", so no iifname, oifname for net.
+    assert added[0]["expr"] == [_oif("eth0"), _set_match("saddr", "ip", "allow4"), {"accept": None}]
+
+
+def test_dest_setref_v4_emits_ip_daddr_membership() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source="loc", dest=SetRef(name="allow4", family=Family.IPV4),
+                 family=Family.IPV4),),
+        sets={"allow4": _A4},
+    )
+    added = _added_rules(rs, _LN)
+    assert added[0]["expr"] == [_iif("eth1"), _set_match("daddr", "ip", "allow4"), {"accept": None}]
+
+
+def test_setref_v6_uses_ip6_payload() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="allow6", family=Family.IPV6), dest="net",
+                 family=Family.IPV6),),
+        sets={"allow6": _A6},
+    )
+    assert _set_match("saddr", "ip6", "allow6") in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_negated_setref_emits_not_equal_op() -> None:
+    # The first `!=` match in the generator (everything else is `==`).
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="DROP", source=SetRef(name="allow4", negated=True, family=Family.IPV4),
+                 dest="net", family=Family.IPV4),
+        ),
+        sets={"allow4": _A4},
+    )
+    assert _set_match("saddr", "ip", "allow4", negated=True) in _added_rules(rs, _LN)[0]["expr"]
+
+
+def test_both_family_setref_splits_into_v4_and_v6_arms() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="blk", family=Family.BOTH), dest="net"),),
+        sets={"blk": _BOTH_SET},
+    )
+    added = _added_rules(rs, _LN)
+    assert len(added) == 2
+    # each arm carries the rule's oifname + verdict, referencing the family-matching set object.
+    assert added[0]["expr"] == [
+        _oif("eth0"), _set_match("saddr", "ip", "blk_v4"), {"accept": None}
+    ]
+    assert added[1]["expr"] == [
+        _oif("eth0"), _set_match("saddr", "ip6", "blk_v6"), {"accept": None}
+    ]
+
+
+def test_set_match_carries_l4_and_verdict() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4),
+                 dest="net", proto="tcp", dport="22", family=Family.IPV4),
+        ),
+        sets={"allow4": _A4},
+    )
+    assert _added_rules(rs, _LN)[0]["expr"] == [
+        _oif("eth0"), _set_match("saddr", "ip", "allow4"), _dport("tcp", 22), {"accept": None}
+    ]
+
+
+def test_referenced_set_emits_single_object_deduped() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4), dest="net",
+                 family=Family.IPV4),
+            Rule(action="DROP", source=SetRef(name="allow4", family=Family.IPV4), dest="loc",
+                 family=Family.IPV4),
+        ),
+        sets={"allow4": _A4},
+    )
+    assert _set_cmds(rs) == [
+        {"family": "inet", "table": "filter", "name": "allow4", "type": "ipv4_addr"}
+    ]
+
+
+def test_v6_set_object_is_ipv6_addr() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="allow6", family=Family.IPV6), dest="net",
+                 family=Family.IPV6),),
+        sets={"allow6": _A6},
+    )
+    assert _set_cmds(rs) == [
+        {"family": "inet", "table": "filter", "name": "allow6", "type": "ipv6_addr"}
+    ]
+
+
+def test_both_family_set_emits_two_objects() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="blk", family=Family.BOTH), dest="net"),),
+        sets={"blk": _BOTH_SET},
+    )
+    assert _set_cmds(rs) == [
+        {"family": "inet", "table": "filter", "name": "blk_v4", "type": "ipv4_addr"},
+        {"family": "inet", "table": "filter", "name": "blk_v6", "type": "ipv6_addr"},
+    ]
+
+
+def test_unreferenced_declared_set_emits_no_object() -> None:
+    rs = Ruleset(zones=_LN, rules=(), sets={"allow4": _A4})
+    assert _set_cmds(rs) == []
+
+
+def test_address_port_set_as_host_fails_fast() -> None:
+    ap = SetDef(name="svc", family=Family.IPV4, set_type=SetType.ADDRESS_PORT)
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="svc", family=Family.IPV4), dest="net"),),
+        sets={"svc": ap},
+    )
+    with pytest.raises(ConfigError) as exc:
+        generate(rs)
+    assert "svc" in str(exc.value)
+
+
+def test_set_object_precedes_referencing_rule() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4), dest="net",
+                 family=Family.IPV4),),
+        sets={"allow4": _A4},
+    )
+    cmds = generate(rs)["nftables"]
+    obj_idx = next(i for i, c in enumerate(cmds) if "set" in c.get("add", {}))
+    rule_idx = next(
+        i for i, c in enumerate(cmds)
+        if "rule" in c.get("add", {})
+        and any(e.get("match", {}).get("right") == "@allow4" for e in c["add"]["rule"]["expr"])
+    )
+    assert obj_idx < rule_idx
+
+
+def test_set_rule_lands_after_base_accept_not_hoisted() -> None:
+    # ADR-0005 ordering: a NEW set-match rule is a normal feature rule; it lands after the
+    # established/related base-accept and is never hoisted into the base skeleton.
+    rs = Ruleset(
+        zones=_LN,
+        rules=(Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4), dest="net",
+                 family=Family.IPV4),),
+        sets={"allow4": _A4},
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    forward = _chain_rules(rs, "forward")
+    base_idx = next(
+        i for i, r in enumerate(forward) if r["expr"] == [_ESTABLISHED_RELATED, {"accept": None}]
+    )
+    set_idx = next(
+        i for i, r in enumerate(forward) if _set_match("saddr", "ip", "allow4") in r["expr"]
+    )
+    assert base_idx < set_idx
+
+
+def test_set_match_matches_golden() -> None:
+    rs = Ruleset(
+        zones=_LN,
+        rules=(
+            Rule(action="ACCEPT", source=SetRef(name="allow4", family=Family.IPV4), dest="net",
+                 family=Family.IPV4),
+            Rule(action="DROP", source=SetRef(name="block4", negated=True, family=Family.IPV4),
+                 dest="net", family=Family.IPV4),
+            Rule(action="ACCEPT", source=SetRef(name="blk", family=Family.BOTH), dest="net"),
+        ),
+        sets={
+            "allow4": _A4,
+            "block4": SetDef(name="block4", family=Family.IPV4, set_type=SetType.ADDRESS),
+            "blk": _BOTH_SET,
+        },
+        policies=(Policy(source="all", dest="all", action="DROP"),),
+    )
+    assert_golden(rs, "set_match")
