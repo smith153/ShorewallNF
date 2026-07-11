@@ -12,6 +12,7 @@ from shorewallnf.ir import (
     MacroRule,
     Nat,
     Policy,
+    RateLimit,
     Rule,
     Ruleset,
 )
@@ -96,6 +97,41 @@ def test_rule_can_be_scoped_to_a_single_family() -> None:
 def test_rule_optional_proto_and_dport() -> None:
     rule = Rule(action="DROP", source="net", dest="fw")
     assert (rule.proto, rule.dport) == (None, None)
+
+
+# --- RateLimit (rules RATE LIMIT column, #406) -------------------------------
+
+
+def test_rate_limit_shape() -> None:
+    rate = RateLimit(rate=10, interval="minute", burst=20)
+    assert (rate.rate, rate.interval, rate.burst) == (10, "minute", 20)
+
+
+def test_rate_limit_burst_optional() -> None:
+    assert RateLimit(rate=10, interval="second").burst is None
+
+
+def test_rate_limit_is_a_value() -> None:
+    assert RateLimit(10, "minute", 20) == RateLimit(10, "minute", 20)
+
+
+def test_rule_carries_rate_defaulting_none() -> None:
+    assert Rule(action="ACCEPT", source="loc", dest="net").rate is None
+    rate = RateLimit(rate=10, interval="minute", burst=20)
+    assert Rule(action="ACCEPT", source="loc", dest="net", rate=rate).rate is rate
+
+
+def test_rules_differing_only_in_rate_compare_unequal() -> None:
+    base = Rule(action="ACCEPT", source="loc", dest="net", proto="tcp", dport="22")
+    limited = dataclasses.replace(base, rate=RateLimit(rate=10, interval="minute"))
+    assert base != limited
+
+
+def test_rule_location_stays_out_of_equality_with_rate() -> None:
+    rate = RateLimit(rate=10, interval="minute")
+    a = Rule(action="ACCEPT", source="loc", dest="net", rate=rate, path="rules", line=1)
+    b = Rule(action="ACCEPT", source="loc", dest="net", rate=rate, path="other", line=9)
+    assert a == b
 
 
 # --- Nat (ipv4 by construction, ADR-0002) ------------------------------------

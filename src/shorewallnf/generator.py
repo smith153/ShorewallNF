@@ -33,6 +33,7 @@ from .ir import (
     Nat,
     Policy,
     Provider,
+    RateLimit,
     RoutingArtifact,
     Rule,
     Ruleset,
@@ -556,9 +557,28 @@ def _feature_rule(
     prefix += _host_matches(rule.source, rule.dest)
     prefix += _ct_matches(rule)
     verdict = _verdict(rule.action)
+    limit = _rate_limit(rule.rate)
     if rule.proto in _ICMP_PROTOS:
-        return [_rule(chain, [*prefix, match, verdict]) for match in _icmp_matches(rule, ctx)]
-    return [_rule(chain, [*prefix, *_l4_matches(rule, ctx), verdict])]
+        return [
+            _rule(chain, [*prefix, match, *limit, verdict])
+            for match in _icmp_matches(rule, ctx)
+        ]
+    return [_rule(chain, [*prefix, *_l4_matches(rule, ctx), *limit, verdict])]
+
+
+def _rate_limit(rate: RateLimit | None) -> list[_Command]:
+    """The nft ``limit rate`` statement for a rule's RATE LIMIT column, or none (ADR-0007).
+
+    Placed immediately before the verdict so traffic under the limit takes the verdict and
+    over-limit traffic falls through per nft limit-statement semantics. The burst clause is
+    emitted only when the column specified one (nft defaults the burst otherwise). The numeric
+    ``rate``/``per`` encoding is the portable form the CI nft tier (1.0.9) accepts (#406)."""
+    if rate is None:
+        return []
+    limit: dict[str, Any] = {"rate": rate.rate, "per": rate.interval}
+    if rate.burst is not None:
+        limit["burst"] = rate.burst
+    return [{"limit": limit}]
 
 
 # ?SECTION connection-state gating & ordering (ADR-0007). ESTABLISHED/RELATED/INVALID gate on

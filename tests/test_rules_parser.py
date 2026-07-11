@@ -1,7 +1,7 @@
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Family, Nat, Rule, Zone
+from shorewallnf.ir import Family, Nat, RateLimit, Rule, Zone
 from shorewallnf.parser import Record, parse, parse_rules
 from shorewallnf.preprocessor import SourceLine
 
@@ -173,9 +173,9 @@ def test_missing_dest_fails_fast_with_location() -> None:
 
 
 def test_unsupported_trailing_columns_fail_fast() -> None:
-    # A 7th column (ORIGINAL DEST / RATE LIMIT / USER / MARK ...) is not supported yet.
+    # Columns past RATE LIMIT (USER/GROUP, MARK, CONNLIMIT, ...) are not supported yet.
     with pytest.raises(ConfigError, match="unsupported"):
-        _one("ACCEPT loc net tcp 22 - 192.0.2.9")
+        _one("ACCEPT loc net tcp 22 - - 10/min someuser")
 
 
 def test_unsupported_host_form_fails_fast() -> None:
@@ -189,6 +189,63 @@ def test_error_carries_source_location() -> None:
     with pytest.raises(ConfigError) as exc:
         parse_rules(_records("ACCEPT loc net", "ACCEPT loc:not-an-address net"), _ZONES)
     assert exc.value.line == 2
+
+
+# --- RATE LIMIT column (#406) -------------------------------------------------
+
+
+def test_rate_limit_with_burst() -> None:
+    rule = _one("ACCEPT loc net tcp 22 - - 10/min:20")
+    assert rule.rate == RateLimit(rate=10, interval="minute", burst=20)
+
+
+def test_rate_limit_without_burst() -> None:
+    rule = _one("ACCEPT loc net tcp 22 - - 10/sec")
+    assert rule.rate == RateLimit(rate=10, interval="second", burst=None)
+
+
+@pytest.mark.parametrize(
+    "shorewall,nft",
+    [("sec", "second"), ("min", "minute"), ("hour", "hour"), ("day", "day")],
+)
+def test_rate_limit_interval_mapping(shorewall: str, nft: str) -> None:
+    rule = _one(f"ACCEPT loc net tcp 22 - - 5/{shorewall}")
+    assert rule.rate == RateLimit(rate=5, interval=nft, burst=None)
+
+
+@pytest.mark.parametrize("text", ["ACCEPT loc net tcp 22", "ACCEPT loc net tcp 22 - - -"])
+def test_rate_absent_leaves_rate_none(text: str) -> None:
+    assert _one(text).rate is None
+
+
+def test_out_of_scope_origdest_non_dash_still_fails_fast() -> None:
+    # The reject keys on ORIGINAL DEST (index 6) being non-`-`, not on field count: a RATE LIMIT
+    # value in index 7 is fine, but a value in the intervening out-of-scope column is not.
+    # ORIGDEST at index 6 (ACTION SOURCE DEST PROTO DPORT SPORT ORIGDEST RATE); non-`-` there is
+    # rejected even though field count is within range and the RATE column (index 7) is valid.
+    with pytest.raises(ConfigError, match="ORIGINAL DEST"):
+        _one("ACCEPT loc net tcp 22 - 192.0.2.9 10/min")
+
+
+@pytest.mark.parametrize(
+    "spec", ["10min", "abc/min", "10/fortnight", "10/", "10/min:", "10/min:xx"]
+)
+def test_malformed_rate_spec_fails_fast(spec: str) -> None:
+    with pytest.raises(ConfigError, match="rate limit"):
+        _one(f"ACCEPT loc net tcp 22 - - {spec}")
+
+
+def test_malformed_rate_spec_carries_location() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_rules(_records("ACCEPT loc net", "ACCEPT loc net tcp 22 - - 10/fortnight"), _ZONES)
+    assert exc.value.line == 2
+
+
+@pytest.mark.parametrize("spec", ["weblimit:10/min", "s:10/min", "d:10/min"])
+def test_named_or_shared_limiter_rejected_as_unsupported(spec: str) -> None:
+    # A `:` before the first `/` is Shorewall's extended/named form (out of scope, YAGNI).
+    with pytest.raises(ConfigError, match="named/shared limiters"):
+        _one(f"ACCEPT loc net tcp 22 - - {spec}")
 
 
 # --- DNAT rows build Nat entries (task #142, epic #75) ------------------------

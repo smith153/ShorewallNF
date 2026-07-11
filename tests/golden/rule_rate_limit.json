@@ -1,0 +1,289 @@
+{
+  "nftables": [
+    {
+      "add": {
+        "table": {
+          "family": "inet",
+          "name": "filter"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "input",
+          "type": "filter",
+          "hook": "input",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "forward",
+          "type": "filter",
+          "hook": "forward",
+          "prio": 0,
+          "policy": "drop"
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "output",
+          "type": "filter",
+          "hook": "output",
+          "prio": 0,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "input",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "lo"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "in",
+                "left": {
+                  "ct": {
+                    "key": "state"
+                  }
+                },
+                "right": {
+                  "set": [
+                    "established",
+                    "related"
+                  ]
+                }
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "chain": {
+          "family": "inet",
+          "table": "filter",
+          "name": "prerouting_raw",
+          "type": "filter",
+          "hook": "prerouting",
+          "prio": -300,
+          "policy": "accept"
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth1"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "ip",
+                    "field": "daddr"
+                  }
+                },
+                "right": {
+                  "prefix": {
+                    "addr": "192.0.2.0",
+                    "len": 24
+                  }
+                }
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "tcp",
+                    "field": "dport"
+                  }
+                },
+                "right": 22
+              }
+            },
+            {
+              "limit": {
+                "rate": 10,
+                "per": "minute",
+                "burst": 20
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "iifname"
+                  }
+                },
+                "right": "eth1"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "meta": {
+                    "key": "oifname"
+                  }
+                },
+                "right": "eth0"
+              }
+            },
+            {
+              "match": {
+                "op": "==",
+                "left": {
+                  "payload": {
+                    "protocol": "udp",
+                    "field": "dport"
+                  }
+                },
+                "right": 53
+              }
+            },
+            {
+              "limit": {
+                "rate": 5,
+                "per": "second"
+              }
+            },
+            {
+              "accept": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "add": {
+        "rule": {
+          "family": "inet",
+          "table": "filter",
+          "chain": "forward",
+          "expr": [
+            {
+              "drop": null
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

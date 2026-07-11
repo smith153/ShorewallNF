@@ -39,6 +39,7 @@ from .ir import (
     OnOffKeep,
     Policy,
     Provider,
+    RateLimit,
     Rule,
     Ruleset,
     Settings,
@@ -491,18 +492,27 @@ def _build_rule(record: Record, section: str | None) -> Rule:
     action = require_field(record, 0, "rule action")
     source = require_field(record, 1, "source")
     dest = require_field(record, 2, "dest")
-    if len(record.fields) > 6:
-        # ORIGINAL DEST / RATE LIMIT / USER-GROUP / MARK columns aren't supported yet — reject
-        # rather than silently drop them (fail-fast, ADR-0004).
+    origdest = _optional(record, 6)  # ORIGINAL DEST — out of scope; only a `-` placeholder is ok
+    if origdest is not None:
+        # RATE LIMIT (index 7) is supported, but the intervening ORIGINAL DEST column is not: a
+        # non-`-` value there fails fast rather than being silently dropped (ADR-0004).
         raise ConfigError(
-            f"unsupported trailing rule columns {record.fields[6:]!r} "
-            "(only action, source, dest, proto, dest-port, source-port are supported)",
+            f"unsupported ORIGINAL DEST value {origdest!r} (that column is not supported yet; "
+            "use `-` to reach the RATE LIMIT column)",
+            path=record.path,
+            line=record.line,
+        )
+    if len(record.fields) > 8:
+        raise ConfigError(
+            f"unsupported trailing rule columns {record.fields[8:]!r} "
+            "(only action, source, dest, proto, dest-port, source-port, rate-limit are supported)",
             path=record.path,
             line=record.line,
         )
     proto = _optional(record, 3)
     if proto is not None:
         proto = proto.lower()  # PROTO is case-insensitive; store nft's canonical lowercase (#134)
+    rate_spec = _optional(record, 7)
     return Rule(
         action=action,
         source=source,
@@ -511,10 +521,55 @@ def _build_rule(record: Record, section: str | None) -> Rule:
         dport=_optional(record, 4),
         sport=_optional(record, 5),
         section=section,
+        rate=parse_rate_limit(rate_spec, record) if rate_spec is not None else None,
         family=_infer_family(source, dest, proto, record),
         path=record.path,
         line=record.line,
     )
+
+
+# Shorewall RATE LIMIT interval → nft time keyword. The scoped-in subset (#406).
+_RATE_INTERVALS = {"sec": "second", "min": "minute", "hour": "hour", "day": "day"}
+
+
+def parse_rate_limit(spec: str, record: Record) -> RateLimit:
+    """Parse a ``rules`` RATE LIMIT spec ``<rate>/<interval>[:<burst>]`` into a :class:`RateLimit`.
+
+    ``10/min:20`` → ``RateLimit(10, "minute", 20)``. Intervals map ``sec/min/hour/day`` →
+    ``second/minute/hour/day``. A ``:`` before the first ``/`` is Shorewall's extended/named form
+    (``<name>:…`` or the ``s:``/``d:`` per-source/dest selectors) — named/shared limiters are out
+    of scope (YAGNI), rejected as unsupported. Any other malformed spec fails fast with one
+    located :class:`ConfigError` (ADR-0004). Shared with policy ``LIMIT:BURST`` (#400 follow-on).
+    """
+    slash = spec.find("/")
+    colon = spec.find(":")
+    if colon != -1 and (slash == -1 or colon < slash):
+        raise ConfigError(
+            f"rate limit {spec!r}: named/shared limiters (a name or s:/d: selector before the "
+            "rate) are unsupported",
+            path=record.path,
+            line=record.line,
+        )
+    rate_s, sep, rest = spec.partition("/")
+    interval_s, colon_sep, burst_s = rest.partition(":")
+    interval = _RATE_INTERVALS.get(interval_s)
+    if not sep or not rate_s.isdigit() or interval is None:
+        raise ConfigError(
+            f"rate limit {spec!r}: expected <rate>/<interval>[:<burst>], interval one of "
+            f"{'/'.join(_RATE_INTERVALS)}",
+            path=record.path,
+            line=record.line,
+        )
+    burst: int | None = None
+    if colon_sep:
+        if not burst_s.isdigit():
+            raise ConfigError(
+                f"rate limit {spec!r}: burst must be a positive integer",
+                path=record.path,
+                line=record.line,
+            )
+        burst = int(burst_s)
+    return RateLimit(rate=int(rate_s), interval=interval, burst=burst)
 
 
 def _build_nat(record: Record, zone_names: set[str]) -> Nat:
