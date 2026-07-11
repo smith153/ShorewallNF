@@ -1,0 +1,17 @@
+Table: inet filter
+
+Chain input (policy drop)
+  NUM  TARGET  PROTO  SOURCE         DESTINATION  DETAIL
+    1  ACCEPT  all    any            any          ct state {established,related}
+    2  ACCEPT  all    any            any          in lo
+    3  ACCEPT  tcp    any            any          in eth1 dport 22
+    4  ACCEPT  tcp    192.0.2.0/24   any          dport {80,443}
+    5  ACCEPT  icmp   any            any          icmp type echo-request
+    6  DROP    all    2001:db8::/32  any
+
+Chain forward (policy drop)
+  (no rules)
+
+Chain output (policy accept)
+  NUM  TARGET  PROTO  SOURCE  DESTINATION  DETAIL
+    1  ACCEPT  all    any     any

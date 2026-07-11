@@ -61,6 +61,33 @@ sudo shorewallnf reload /etc/shorewallnf   # note: reload does not persist; use 
 sudo shorewallnf stop /etc/shorewallnf
 ```
 
+## Visibility verbs (read-only)
+
+`show` inspects the **live** firewall — it reads the running ruleset and never changes it. `list`
+and `ls` are exact synonyms of `show`. These verbs take **no config directory**; they query the
+kernel through a `list`-only seam that has no mutating form (read-only by construction, see
+[ADR-0065](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0065-operational-visibility-output-format.md)).
+
+| Verb | Privileged | What it does |
+|------|:----------:|--------------|
+| `show rules [-t {filter\|nat\|mangle\|raw}] [chain…]` | reads the live ruleset | Print the live rules of the named chains (all chains of the `filter` table by default), rendered as an annotated, columnar report. |
+
+The output is grouped by chain, with rules numbered within each chain and human `TARGET` labels
+(`ACCEPT`/`DROP`/`DNAT`/…) — not raw `nft list` output:
+
+```
+Table: inet filter
+
+Chain input (policy drop)
+  NUM  TARGET  PROTO  SOURCE         DESTINATION  DETAIL
+    1  ACCEPT  all    any            any          ct state {established,related}
+    2  ACCEPT  tcp    192.0.2.0/24   any          dport {80,443}
+```
+
+When the firewall is stopped or cleared, `show rules` prints an empty-but-valid report and exits 0
+rather than erroring; a chain name that does not exist in a running table fails fast with one clear
+error.
+
 ## The stopped safe state
 
 `stop` does **not** open the firewall wide, and it does **not** slam it fully shut. Both are

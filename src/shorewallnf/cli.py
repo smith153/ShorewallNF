@@ -22,6 +22,7 @@ from .applier import (
     apply_sysctls,
     check_ruleset,
     clear_ruleset,
+    list_ruleset,
     restore_ruleset,
     save_ruleset,
 )
@@ -30,6 +31,7 @@ from .generator import generate, generate_stopped
 from .ir import Settings
 from .parser import parse_config, parse_settings
 from .preprocessor import SourceLine, parse_params, preprocess_file
+from .renderer import render_rules
 from .resolver import resolve
 from .validator import validate
 
@@ -47,6 +49,11 @@ _VERB_HELP = {
 
 # Verbs that operate on persisted/live state, not a config directory, take no positional.
 _NO_CONFIG_VERBS = frozenset({"restore"})
+
+# Read-only visibility verbs (ADR-0065). `show`/`list`/`ls` are exact synonyms dispatching
+# identically; each is a *nested* verb group (verb -> object -> options) taking no config_dir.
+_SHOW_VERBS = ("show", "list", "ls")
+_SHOW_TABLES = ("filter", "nat", "mangle", "raw")
 
 # start/reload/restart share apply's compile->check->apply mechanism (incremental diff
 # deferred, #175); they differ only in the confirmation line the operator sees.
@@ -121,10 +128,33 @@ def _build_parser() -> argparse.ArgumentParser:
             verb_parser.add_argument(
                 "config_dir", help="path to the Shorewall-style config directory"
             )
+    for verb in _SHOW_VERBS:
+        _add_show_group(sub, verb)
     return parser
 
 
+def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
+    """Add a read-only visibility verb group (``show``/``list``/``ls``, ADR-0065).
+
+    A *nested* subparser (verb -> object -> options), unlike the flat config verbs: its objects
+    read the live ruleset, so they take no ``config_dir``. First object is ``rules``; the siblings
+    (#411-#415) add more objects under this same group.
+    """
+    show_parser = sub.add_parser(verb, help="display live firewall state (read-only)")
+    objects = show_parser.add_subparsers(dest="show_object", required=True)
+    rules = objects.add_parser("rules", help="show the live packet-filter rules")
+    rules.add_argument(
+        "-t", "--table", choices=_SHOW_TABLES, default="filter", help="table to show"
+    )
+    rules.add_argument("chains", nargs="*", help="chains to show (default: all in the table)")
+
+
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.verb in _SHOW_VERBS:
+        # Read-only live query -> pure renderer (ADR-0065). list/ls dispatch identically to show.
+        chains = tuple(args.chains) or None
+        print(render_rules(list_ruleset(), table=args.table, chains=chains))
+        return 0
     if args.verb == "check":
         streams = preprocess(args.config_dir)
         lines = sum(len(s) for s in streams.values())

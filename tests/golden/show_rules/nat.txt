@@ -1,0 +1,8 @@
+Table: inet nat
+
+Chain prerouting (policy accept)
+  NUM  TARGET  PROTO  SOURCE  DESTINATION  DETAIL
+    1  DNAT    tcp    any     any          in eth0 dport 8080 to 192.0.2.10:80
+
+Chain postrouting (policy accept)
+  (no rules)

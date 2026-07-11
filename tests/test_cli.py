@@ -396,3 +396,101 @@ def test_console_script_entry_point_declared() -> None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
     assert data["project"]["scripts"]["shorewallnf"] == "shorewallnf.cli:main"
+
+
+# ---- read-only visibility: show / list / ls + `show rules` (task #410, ADR-0065) ----------
+
+import json as _json  # noqa: E402
+
+
+def _running_fixture() -> dict[str, object]:
+    path = Path(__file__).parent / "fixtures" / "show_rules" / "running.json"
+    data: dict[str, object] = _json.loads(path.read_text())
+    return data
+
+
+@pytest.mark.parametrize("verb", ["show", "list", "ls"])
+def test_show_group_in_help(verb: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert verb in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["show", "list", "ls"])
+def test_show_rules_renders_live_ruleset(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    assert cli.main([verb, "rules"]) == 0
+    out = capsys.readouterr().out
+    assert "Table: inet filter" in out
+    assert "Chain input (policy drop)" in out
+    assert "ACCEPT" in out
+
+
+def test_show_list_ls_dispatch_identically(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    outs = []
+    for verb in ("show", "list", "ls"):
+        assert cli.main([verb, "rules"]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1] == outs[2]  # exact same output — same code path
+
+
+def test_show_rules_takes_no_config_dir_positional(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unlike every config verb, `show rules` reads the live ruleset — a config dir is not accepted
+    # as the first token; positionals are chain names.
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+
+    def fake_render(ruleset: object, *, table: str, chains: object) -> str:
+        seen["table"] = table
+        seen["chains"] = chains
+        return "ok"
+
+    monkeypatch.setattr(cli, "render_rules", fake_render)
+    assert cli.main(["show", "rules", "input", "forward"]) == 0
+    assert seen["chains"] == ("input", "forward")
+    assert seen["table"] == "filter"  # default table
+
+
+def test_show_rules_table_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    monkeypatch.setattr(
+        cli, "render_rules", lambda r, *, table, chains: seen.setdefault("table", table) or "ok"
+    )
+    assert cli.main(["show", "rules", "-t", "nat"]) == 0
+    assert seen["table"] == "nat"
+
+
+def test_show_rules_rejects_unknown_table() -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["show", "rules", "-t", "bogus"])
+    assert exc.value.code == 2  # argparse choices usage error
+
+
+def test_show_rules_bad_chain_fails_fast_one_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    assert cli.main(["show", "rules", "no-such-chain"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "Traceback" not in err  # a clean message, not a stack trace
+
+
+def test_show_rules_degrades_gracefully_when_firewall_stopped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", lambda: {"nftables": []})
+    assert cli.main(["show", "rules"]) == 0  # empty-but-valid, exit 0
+    assert "Table: inet filter" in capsys.readouterr().out
+
+
+def test_show_requires_an_object() -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["show"])
+    assert exc.value.code == 2  # nested subparser required

@@ -666,3 +666,52 @@ def test_apply_sysctls_restores_snapshot_and_raises_on_write_failure(
     ]
     # Fail-closed: the rp_filter keys after the failure point are never written.
     assert not any("rp_filter" in c[-1] for c in writes)
+
+
+# --- read-only live-query seam (task #410, ADR-0065) --------------------------------------
+
+
+def test_list_ruleset_invokes_nft_json_list_and_parses_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    payload = {"nftables": [{"metainfo": {"version": "1.0.9"}}]}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = applier.list_ruleset()
+
+    assert result == payload  # the parsed JSON is returned verbatim
+    assert seen["cmd"] == ["nft", "--json", "list", "ruleset"]
+
+
+def test_list_ruleset_is_read_only_by_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The query argv must be a `list` and can never carry a mutating form.
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        # A read-only query streams nothing on stdin — there is no ruleset to load.
+        assert kwargs.get("input") is None
+        return subprocess.CompletedProcess(cmd, 0, '{"nftables": []}', "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    applier.list_ruleset()
+
+    assert "list" in seen["cmd"]
+    for mutating in ("--file", "add", "delete", "flush", "--check", "-f"):
+        assert mutating not in seen["cmd"]
+
+
+def test_list_ruleset_raises_configerror_when_nft_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "nft: command not found")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ConfigError, match="command not found"):
+        applier.list_ruleset()
