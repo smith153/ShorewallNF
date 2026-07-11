@@ -7,7 +7,7 @@ fail-closed backstop of the filtering core.
 Each non-comment line is one policy:
 
 ```text
-#SOURCE  DEST  ACTION  [LOG LEVEL]
+#SOURCE  DEST  ACTION  [LOG LEVEL]  [LIMIT:BURST]
 ```
 
 Columns are whitespace-separated. Blank lines and `#` comments (whole-line or trailing) are
@@ -16,17 +16,18 @@ substitution and `?if`/`?FORMAT` directives apply.
 
 ## Columns
 
-| Column | Required | Value |
-|--------|----------|-------|
-| `SOURCE` | yes | A declared zone, the firewall zone, or the wildcard `all`. |
-| `DEST` | yes | A declared zone, the firewall zone, or the wildcard `all`. |
-| `ACTION` | yes | `ACCEPT`, `DROP`, or `REJECT`. |
-| `LOG LEVEL` | no | An nftables log level — logs the connection before applying the verdict. |
+| Column | Index | Required | Value |
+|--------|-------|----------|-------|
+| `SOURCE` | 0 | yes | A declared zone, the firewall zone, or the wildcard `all`. |
+| `DEST` | 1 | yes | A declared zone, the firewall zone, or the wildcard `all`. |
+| `ACTION` | 2 | yes | `ACCEPT`, `DROP`, or `REJECT`. |
+| `LOG LEVEL` | 3 | no | An nftables log level — logs the connection before applying the verdict. |
+| `LIMIT:BURST` | 4 | no | `<rate>/<interval>[:<burst>]` — rate-limits *new* connections the policy defaults (see [`LIMIT:BURST`](#limitburst) below). |
 
 A line with fewer than three columns, an unknown zone, an unknown action, an unsupported log
-level, or **any fifth column** is a hard error: the compiler stops with a `file:line` message
-rather than guess. Shorewall's `LIMIT:BURST` / `CONNLIMIT` columns are not implemented yet, so
-they are rejected rather than silently dropped.
+level, or **any sixth column** is a hard error: the compiler stops with a `file:line` message
+rather than guess. Shorewall's `CONNLIMIT` column is not implemented, so it is rejected rather
+than silently dropped.
 
 ### `SOURCE` / `DEST`
 
@@ -60,6 +61,25 @@ emerg  alert  crit  err  warn  notice  info  debug  audit
 Shorewall's alternate syslog spellings (`warning`, `error`, `panic`), numeric levels, and
 `NFLOG`/`ULOG` targets are **not** accepted — an unsupported level is a hard error. No log
 prefix is emitted, and `REJECT` logging is not distinguished from `DROP`/`ACCEPT` logging.
+
+### `LIMIT:BURST`
+
+`<rate>/<interval>[:<burst>]` — the same rate-spec grammar as the `rules` file's
+[`RATE LIMIT`](rules.md#rate-limit-and-connlimit) column:
+
+| Field | Value |
+|-------|-------|
+| `rate` | A positive integer. |
+| `interval` | One of `sec`, `min`, `hour`, `day` (maps to nftables' `second`/`minute`/`hour`/`day`). |
+| `burst` | Optional positive integer packet-burst allowance; nftables' default applies when omitted. |
+
+When present, the compiler emits an nftables `limit rate` statement on the policy rule itself,
+immediately before the verdict — rate-limiting the *new* connections that reach the policy
+fall-through (traffic a `rules`-file entry hasn't already matched). Over-rate new connections
+fall through past the policy to the chain's built-in default (see
+[Implicit defaults](#implicit-defaults)). Shorewall's named/shared limiters (a name or `s:`/`d:`
+selector before the rate) are **not implemented** and are rejected. The policy `CONNLIMIT`
+column is **not implemented**.
 
 ## How policies compile
 
@@ -105,18 +125,18 @@ is fail-closed inbound and forwarded traffic with outbound allowed.
 A small three-zone setup — a WAN zone `net`, a LAN zone `loc`, and the firewall zone `fw`:
 
 ```text
-#SOURCE  DEST  ACTION  LOG LEVEL
-loc      net   ACCEPT
+#SOURCE  DEST  ACTION  LOG LEVEL  LIMIT:BURST
+loc      net   ACCEPT  -          100/sec:20
 loc      fw    ACCEPT
 fw       net   ACCEPT
 net      all   DROP    info
 all      all   REJECT  info
 ```
 
-This allows the LAN out to the internet and to the firewall host, lets the firewall reach the
-internet, logs-and-drops everything arriving from `net`, and logs-and-rejects any remaining
-inter-zone traffic. More specific rows are evaluated before the `all` catch-alls regardless of
-the order written.
+This allows the LAN out to the internet, capped at 100 new connections/second (burst 20); lets
+the LAN reach the firewall host and the firewall reach the internet; logs-and-drops everything
+arriving from `net`; and logs-and-rejects any remaining inter-zone traffic. More specific rows
+are evaluated before the `all` catch-alls regardless of the order written.
 
 ## See also
 

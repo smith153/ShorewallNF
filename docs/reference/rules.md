@@ -14,21 +14,26 @@ column means "unspecified".
 ## Filter rules
 
 ```text
-#ACTION  SOURCE  DEST  [PROTO]  [DEST PORT]  [SOURCE PORT]
+#ACTION  SOURCE  DEST  [PROTO]  [DEST PORT]  [SOURCE PORT]  [ORIGINAL DEST]  [RATE LIMIT]  [USER-GROUP]  [MARK]  [CONNLIMIT]
 ```
 
-| Column | Required | Value |
-|--------|----------|-------|
-| `ACTION` | yes | A built-in verdict (`ACCEPT`/`DROP`/`REJECT`) or a macro/action name (see [Actions](#actions-and-macros)). |
-| `SOURCE` | yes | `zone` or `zone:host` — the originating zone, optionally narrowed to a host/CIDR. |
-| `DEST` | yes | `zone` or `zone:host` — the destination zone, optionally narrowed to a host/CIDR. |
-| `PROTO` | no | `tcp`, `udp`, `icmp`, or `ipv6-icmp` (case-insensitive). |
-| `DEST PORT` | no | Destination port(s). Requires a `PROTO`. |
-| `SOURCE PORT` | no | Source port(s). Requires a `PROTO`. |
+| Column | Index | Required | Value |
+|--------|-------|----------|-------|
+| `ACTION` | 0 | yes | A built-in verdict (`ACCEPT`/`DROP`/`REJECT`) or a macro/action name (see [Actions](#actions-and-macros)). |
+| `SOURCE` | 1 | yes | `zone` or `zone:host` — the originating zone, optionally narrowed to a host/CIDR. |
+| `DEST` | 2 | yes | `zone` or `zone:host` — the destination zone, optionally narrowed to a host/CIDR. |
+| `PROTO` | 3 | no | `tcp`, `udp`, `icmp`, or `ipv6-icmp` (case-insensitive). |
+| `DEST PORT` | 4 | no | Destination port(s). Requires a `PROTO`. |
+| `SOURCE PORT` | 5 | no | Source port(s). Requires a `PROTO`. |
+| `ORIGINAL DEST` | 6 | no | **Not implemented.** Must be `-` if a later column is used. |
+| `RATE LIMIT` | 7 | no | `<rate>/<interval>[:<burst>]` — rate-limits *new* connections (see [RATE LIMIT and CONNLIMIT](#rate-limit-and-connlimit) below). |
+| `USER-GROUP` | 8 | no | **Not implemented.** Must be `-` if a later column is used. |
+| `MARK` | 9 | no | **Not implemented.** Must be `-` if a later column is used. |
+| `CONNLIMIT` | 10 | no | `<count>` — caps simultaneous connections (see [RATE LIMIT and CONNLIMIT](#rate-limit-and-connlimit) below). |
 
-Any **seventh column** is a hard error — Shorewall's `ORIGINAL DEST` / `RATE LIMIT` /
-`USER-GROUP` / `MARK` columns are not implemented yet and are rejected rather than silently
-dropped.
+Columns are positional: to reach `RATE LIMIT` or `CONNLIMIT`, every intervening unimplemented
+column must be `-`. A non-`-` value in `ORIGINAL DEST`, `USER-GROUP`, or `MARK` is a hard error,
+and any **twelfth column** is a hard error too — nothing past `CONNLIMIT` is recognized.
 
 Filter rules are placed **ahead of** the policy defaults in the same base chain, so an explicit
 verdict wins over the zone-pair default. Chain selection and interface-based zone matching are
@@ -61,6 +66,40 @@ back in on load.
 `icmp` pins a rule to IPv4 and `ipv6-icmp` to IPv6 (with an ICMP type such as `echo-request` in
 the `DEST PORT` column). A rule that mixes IPv4 and IPv6 hints — say an IPv4 host on one side and
 `ipv6-icmp` — is a hard error.
+
+### `RATE LIMIT` and `CONNLIMIT`
+
+Both columns gate the rule's verdict: traffic under the limit takes the verdict, traffic over it
+falls through to whatever is evaluated next (a later rule, or the zone-pair policy).
+
+**`RATE LIMIT`** (column 7) is `<rate>/<interval>[:<burst>]`:
+
+| Field | Value |
+|-------|-------|
+| `rate` | A positive integer. |
+| `interval` | One of `sec`, `min`, `hour`, `day` (maps to nftables' `second`/`minute`/`hour`/`day`). |
+| `burst` | Optional positive integer packet-burst allowance; nftables' default applies when omitted. |
+
+`10/min:20` limits the rule to 10 new connections per minute with a burst allowance of 20. It
+rate-limits *new* connections only — established/related traffic is already fast-pathed ahead of
+this rule (see [`?SECTION`](#section-connection-state-ordering)), so packets 2+ of a flow never
+touch the limiter. It compiles to an nft `limit rate` statement placed immediately before the
+verdict. Shorewall's named/shared limiters (a name or `s:`/`d:` selector before the rate) are
+**not implemented** and are rejected.
+
+**`CONNLIMIT`** (column 10) is a bare `<count>` — a positive integer cap on the number of
+*simultaneous* connections matching the rule. It compiles to an nft `ct count over <count>`
+statement placed immediately before the verdict (after `RATE LIMIT` when both are present). The
+masked/grouped `<count>:<mask>` per-source form is **not implemented** and is rejected.
+
+```text
+#ACTION  SOURCE  DEST  PROTO  DEST PORT  SOURCE PORT  ORIGINAL DEST  RATE LIMIT  USER-GROUP  MARK  CONNLIMIT
+ACCEPT   loc     net   tcp    22         -            -              10/min:20   -           -     -
+ACCEPT   loc     net   tcp    22         -            -              -           -           -     4
+```
+
+The first rule accepts up to 10 new SSH connections per minute (burst 20); the second caps SSH to
+4 simultaneous connections.
 
 ### Actions and macros
 
