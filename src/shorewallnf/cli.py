@@ -31,7 +31,7 @@ from .generator import generate, generate_stopped
 from .ir import Settings
 from .parser import parse_config, parse_settings
 from .preprocessor import SourceLine, parse_params, preprocess_file
-from .renderer import render_rules
+from .renderer import render_policies, render_rules, render_zones
 from .resolver import resolve
 from .validator import validate
 
@@ -136,25 +136,49 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
     """Add a read-only visibility verb group (``show``/``list``/``ls``, ADR-0065).
 
-    A *nested* subparser (verb -> object -> options), unlike the flat config verbs: its objects
-    read the live ruleset, so they take no ``config_dir``. First object is ``rules``; the siblings
-    (#411-#415) add more objects under this same group.
+    A *nested* subparser (verb -> object -> options), unlike the flat config verbs. Objects differ
+    in their source: ``rules`` reads the live ruleset and takes no ``config_dir``, while ``zones``
+    and ``policies`` are compile-time declarations not recoverable from live nft state — they render
+    the config IR and so take a ``config_dir`` positional. ``_dispatch`` routes by ``show_object``;
+    the remaining siblings (#412-#415) add more objects under this same group.
     """
-    show_parser = sub.add_parser(verb, help="display live firewall state (read-only)")
+    show_parser = sub.add_parser(verb, help="display firewall state (read-only)")
     objects = show_parser.add_subparsers(dest="show_object", required=True)
     rules = objects.add_parser("rules", help="show the live packet-filter rules")
     rules.add_argument(
         "-t", "--table", choices=_SHOW_TABLES, default="filter", help="table to show"
     )
     rules.add_argument("chains", nargs="*", help="chains to show (default: all in the table)")
+    zones = objects.add_parser("zones", help="show declared zones and their members (from config)")
+    zones.add_argument("config_dir", help="path to the Shorewall-style config directory")
+    policies = objects.add_parser(
+        "policies", help="show the inter-zone default-policy matrix (from config)"
+    )
+    policies.add_argument("config_dir", help="path to the Shorewall-style config directory")
+
+
+def _dispatch_show(args: argparse.Namespace) -> int:
+    """Route a read-only ``show``/``list``/``ls`` object (ADR-0065); ``list``/``ls`` are synonyms.
+
+    ``rules`` renders the live ruleset; ``zones``/``policies`` render the compiled config IR reached
+    through the pipeline seam (compile-time declarations, not recoverable from live nft state).
+    """
+    if args.show_object == "rules":
+        chains = tuple(args.chains) or None
+        print(render_rules(list_ruleset(), table=args.table, chains=chains))
+        return 0
+    ruleset = parse_config(preprocess(args.config_dir), _read_settings(args.config_dir))
+    if args.show_object == "zones":
+        print(render_zones(ruleset.zones))
+        return 0
+    # policies
+    print(render_policies(ruleset.policies))
+    return 0
 
 
 def _dispatch(args: argparse.Namespace) -> int:
     if args.verb in _SHOW_VERBS:
-        # Read-only live query -> pure renderer (ADR-0065). list/ls dispatch identically to show.
-        chains = tuple(args.chains) or None
-        print(render_rules(list_ruleset(), table=args.table, chains=chains))
-        return 0
+        return _dispatch_show(args)
     if args.verb == "check":
         streams = preprocess(args.config_dir)
         lines = sum(len(s) for s in streams.values())

@@ -118,6 +118,27 @@ internet, logs-and-drops everything arriving from `net`, and logs-and-rejects an
 inter-zone traffic. More specific rows are evaluated before the `all` catch-alls regardless of
 the order written.
 
+## Inspecting compiled policies
+
+`shorewallnf show policies <config_dir>` renders the inter-zone default-policy matrix —
+`SOURCE -> DEST -> ACTION`, plus the log level when one is set (`-` when not). Because policies
+are a compile-time declaration and not recoverable from live nft state, this verb reads the
+**config directory** (unlike `show rules`, which reads the running kernel). `list`/`ls` are exact
+synonyms; it is read-only.
+
+```
+$ shorewallnf show policies /etc/shorewallnf
+Policies
+
+  SOURCE  DEST  ACTION  LOG
+  loc     net   ACCEPT  -
+  net     all   DROP    info
+  all     all   REJECT  -
+```
+
+Rows are shown in file order (the specificity re-ordering above is a compile-time concern). A
+valid config that declares no policies renders an empty-but-valid section.
+
 ## See also
 
 - [`rules`](rules.md) — per-connection rules and DNAT, evaluated **before** these defaults.
