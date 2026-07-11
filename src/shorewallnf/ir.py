@@ -165,8 +165,10 @@ class Rule:
     table with no family guard. A literal address or family-specific protocol narrows it to
     ``ipv4``/``ipv6`` (inferred by the parser, not here).
 
-    ``source``/``dest`` are the raw ``zone`` or ``zone:host`` tokens; the generator splits the
-    ``zone:host`` narrowing. ``sport`` is the SOURCE PORT column and ``section`` the enclosing
+    ``source``/``dest`` are the raw ``zone`` or ``zone:host`` tokens, or a :class:`SetRef` when
+    the column is a ``+setname``/``!+setname`` named-set reference (ADR-0066, #418); the generator
+    splits the ``zone:host`` narrowing. ``sport`` is the SOURCE PORT column and ``section`` the
+    enclosing
     ``?SECTION`` name (``None`` for rules before any section marker), both verbatim. ``rate`` is
     the parsed RATE LIMIT column (``None`` when absent), emitted as an nft ``limit rate`` before
     the verdict so over-limit traffic falls through (#406, ADR-0007). ``connlimit`` is the parsed
@@ -179,8 +181,8 @@ class Rule:
     """
 
     action: str
-    source: str
-    dest: str
+    source: str | SetRef
+    dest: str | SetRef
     proto: str | None = None
     dport: str | None = None
     sport: str | None = None

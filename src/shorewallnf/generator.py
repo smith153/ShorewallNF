@@ -38,6 +38,7 @@ from .ir import (
     RoutingArtifact,
     Rule,
     Ruleset,
+    SetRef,
     Settings,
     TproxyRoutingArtifact,
     Zone,
@@ -556,10 +557,19 @@ def _feature_rule(
 ) -> list[_Command]:
     """The nft rule(s) for one ``Rule``; a both-family ICMP rule splits into one per family."""
     ctx = f"rule {rule.action} {rule.source!r} {rule.dest!r}"
+    source, dest = rule.source, rule.dest
+    if isinstance(source, SetRef) or isinstance(dest, SetRef):
+        # Named-set (@setname) membership matching is not emitted yet — that is #419. Fail fast
+        # rather than silently dropping the set constraint (ADR-0004).
+        raise ConfigError(
+            f"{ctx}: named-set (+setname) matching is not supported yet (#419)",
+            path=rule.path,
+            line=rule.line,
+        )
     chain, prefix = _chain_and_zone_matches(
-        _zone_of(rule.source), _zone_of(rule.dest), interfaces, firewalls, ctx
+        _zone_of(source), _zone_of(dest), interfaces, firewalls, ctx
     )
-    prefix += _host_matches(rule.source, rule.dest)
+    prefix += _host_matches(source, dest)
     prefix += _ct_matches(rule)
     verdict = _verdict(rule.action)
     gate = _rate_limit(rule.rate) + _connlimit(rule.connlimit)

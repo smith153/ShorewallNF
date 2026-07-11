@@ -21,6 +21,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, NamedTuple, TypeVar
 
 from .conntrack import BUILTIN_HELPERS
@@ -44,6 +45,7 @@ from .ir import (
     Rule,
     Ruleset,
     SetDef,
+    SetRef,
     Settings,
     SetType,
     YesNoKeep,
@@ -56,6 +58,10 @@ _T = TypeVar("_T")
 
 # All-defaults settings: an absent ``shorewallnf.conf`` yields this immutable singleton.
 _DEFAULT_SETTINGS = Settings()
+
+# An empty declared-set registry: the default when no ``sets`` file was parsed (immutable so it
+# is a safe shared default). A ``+setname`` reference against it always fails as undeclared.
+_NO_SETS: Mapping[str, SetDef] = MappingProxyType({})
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,7 +466,11 @@ class ParsedRules(NamedTuple):
     nats: tuple[Nat, ...]
 
 
-def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRules:
+def parse_rules(
+    records: Iterable[Record],
+    zones: tuple[Zone, ...],
+    sets: Mapping[str, SetDef] = _NO_SETS,
+) -> ParsedRules:
     """Parse ``rules``-file records into filter :class:`~shorewallnf.ir.Rule`s and ``DNAT``
     :class:`~shorewallnf.ir.Nat`s (epic #74 / #75).
 
@@ -473,6 +483,10 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
     trailing (unsupported) columns fail fast with a located :class:`ConfigError`. Zone-reference
     integrity (every named zone is declared) is a cross-file check the Validator owns (#323); the
     ``zones`` here only drive the DNAT target-zone check retained for ``snat``-adjacent NAT.
+
+    ``sets`` is the declared-set registry (:attr:`Ruleset.sets`): a ``+setname``/``!+setname`` term
+    in a filter row's SOURCE/DEST is resolved against it into a :class:`~shorewallnf.ir.SetRef`
+    (ADR-0066, #418), failing fast on an undeclared name.
     """
     zone_names = {zone.name for zone in zones}
     rules: list[Rule] = []
@@ -486,17 +500,17 @@ def parse_rules(records: Iterable[Record], zones: tuple[Zone, ...]) -> ParsedRul
         if record.fields[0] in _NAT_ACTIONS:
             nats.append(_build_nat(record, zone_names))
         else:
-            rules.append(_build_rule(record, section))
+            rules.append(_build_rule(record, section, sets))
     return ParsedRules(tuple(rules), tuple(nats))
 
 
-def _build_rule(record: Record, section: str | None) -> Rule:
+def _build_rule(record: Record, section: str | None, sets: Mapping[str, SetDef]) -> Rule:
     # The ACTION column is a plain str: a built-in verdict or a macro/action name (ADR-0020 §2).
     # The parser stays purely syntactic and macro-unaware — the resolver (#184) tells them apart
     # by registry lookup and fails fast on an unknown name, so no verdict check happens here.
     action = require_field(record, 0, "rule action")
-    source = require_field(record, 1, "source")
-    dest = require_field(record, 2, "dest")
+    source = _parse_host_term(require_field(record, 1, "source"), sets, record)
+    dest = _parse_host_term(require_field(record, 2, "dest"), sets, record)
     origdest = _optional(record, 6)  # ORIGINAL DEST — out of scope; only a `-` placeholder is ok
     if origdest is not None:
         # RATE LIMIT (index 7) is supported, but the intervening ORIGINAL DEST column is not: a
@@ -1157,10 +1171,52 @@ def _optional(record: Record, index: int) -> str | None:
     return None if value == _UNSET else value
 
 
-def _infer_family(source: str, dest: str, proto: str | None, record: Record) -> Family:
-    """Infer a rule's family (ADR-0002); mixed IPv4/IPv6 hints fail fast."""
+def _parse_host_term(
+    token: str, sets: Mapping[str, SetDef], record: Record
+) -> str | SetRef:
+    """Interpret a ``rules`` SOURCE/DEST column (ADR-0066, #418).
+
+    A ``+setname`` (or negated ``!+setname``) column is a named-set reference: it resolves against
+    the declared-set ``sets`` registry into a :class:`~shorewallnf.ir.SetRef` carrying the set's
+    declared family, failing fast (ADR-0004) on an undeclared name. Any other token — a bare
+    ``zone`` or a ``zone:host`` literal — is returned verbatim for the existing host handling.
+    """
+    negated = token.startswith("!")
+    body = token[1:] if negated else token
+    if not body.startswith("+"):
+        return token  # a zone / zone:host literal (a stray leading '!' is left verbatim too)
+    name = body[1:]
+    if not name:
+        raise ConfigError(
+            f"empty set reference {token!r} (expected +setname)",
+            path=record.path,
+            line=record.line,
+        )
+    setdef = sets.get(name)
+    if setdef is None:
+        raise ConfigError(
+            f"undeclared set '+{name}' — declare it in the sets file or fix the reference",
+            path=record.path,
+            line=record.line,
+        )
+    return SetRef(name=name, negated=negated, family=setdef.family)
+
+
+def _infer_family(
+    source: str | SetRef, dest: str | SetRef, proto: str | None, record: Record
+) -> Family:
+    """Infer a rule's family (ADR-0002); mixed IPv4/IPv6 hints fail fast.
+
+    A :class:`~shorewallnf.ir.SetRef` host term contributes its declared family (a ``BOTH`` set is
+    unconstrained, like a bare zone); a set narrowed to one family that meets an opposite-family
+    literal/proto is a conflict, failing fast the same as two mixed literals.
+    """
     families: set[Family] = set()
     for token in (source, dest):
+        if isinstance(token, SetRef):
+            if token.family is not Family.BOTH:
+                families.add(token.family)
+            continue
         _, sep, host = token.partition(":")
         if sep:
             families.add(_family_of_literal(host, record))
@@ -1217,9 +1273,14 @@ def parse_config(
         zones, interfaces = parsed.zones, parsed.interfaces
     if "policy" in streams:
         policies = parse_policies(parse(streams["policy"]))
+    # ``sets`` is parsed before ``rules`` so a rule's ``+setname`` term resolves against the
+    # declared-set registry (ADR-0066, #418).
+    sets: Mapping[str, SetDef] = {}
+    if "sets" in streams:
+        sets = parse_sets(parse(streams["sets"]))
     nats: tuple[Nat, ...] = ()
     if "rules" in streams:
-        parsed_rules = parse_rules(parse(streams["rules"]), zones)
+        parsed_rules = parse_rules(parse(streams["rules"]), zones, sets)
         rules, nats = parsed_rules.rules, parsed_rules.nats
     if "snat" in streams:
         nats += parse_snat(parse(streams["snat"]))
@@ -1235,9 +1296,6 @@ def parse_config(
     stopped_rules: tuple[Rule, ...] = ()
     if "stoppedrules" in streams:
         stopped_rules = parse_stopped_rules(parse(streams["stoppedrules"]), zones)
-    sets: Mapping[str, SetDef] = {}
-    if "sets" in streams:
-        sets = parse_sets(parse(streams["sets"]))
     # Site-defined action.<Name> files → a name-keyed MacroDef registry (ADR-0020, #182),
     # built in name-sorted order so the registry is deterministic. The `actions` index file
     # is discovered by the reader but not a MacroDef, so it is not parsed here.

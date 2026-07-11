@@ -45,7 +45,7 @@ Checks so far:
 from __future__ import annotations
 
 from .errors import ConfigError
-from .ir import Family, Nat, Policy, Provider, Rule, Ruleset, Zone
+from .ir import Family, Nat, Policy, Provider, Rule, Ruleset, SetRef, Zone
 
 # ESTABLISHED/RELATED are accepted by the ADR-0005 base chain before any feature rule; INVALID
 # and NEW are not, so a DROP/REJECT there is reachable and unaffected.
@@ -254,9 +254,18 @@ def _validate_zone_references(ruleset: Ruleset) -> None:
     """
     zones = {zone.name: zone for zone in ruleset.zones}
 
-    def check(source: str, dest: str, kind: str, path: str | None, line: int | None) -> None:
-        _resolve_zone(source, zones, context=f"{kind} source", path=path, line=line)
-        _resolve_zone(dest, zones, context=f"{kind} dest", path=path, line=line)
+    def check(
+        source: str | SetRef,
+        dest: str | SetRef,
+        kind: str,
+        path: str | None,
+        line: int | None,
+    ) -> None:
+        # A `+setname` host term (SetRef) names no zone — only literal zone/zone:host tokens do.
+        if not isinstance(source, SetRef):
+            _resolve_zone(source, zones, context=f"{kind} source", path=path, line=line)
+        if not isinstance(dest, SetRef):
+            _resolve_zone(dest, zones, context=f"{kind} dest", path=path, line=line)
 
     for policy in ruleset.policies:
         check(policy.source, policy.dest, "policy", policy.path, policy.line)
@@ -283,7 +292,7 @@ def _zone_family(zone: Zone) -> Family:
 def _reject_cross_family(
     prefix: str,
     family: Family,
-    tokens: tuple[str, ...],
+    tokens: tuple[str | SetRef, ...],
     zones: dict[str, Zone],
     path: str | None,
     line: int | None,
@@ -299,6 +308,8 @@ def _reject_cross_family(
     if family is Family.BOTH:
         return
     for token in tokens:
+        if isinstance(token, SetRef):  # a set host term names no zone; its family is already scoped
+            continue
         zone = zones.get(_zone_name(token))
         if zone is None:  # the `all` wildcard or an unresolved token — not this check's concern
             continue

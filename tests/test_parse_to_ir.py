@@ -48,7 +48,9 @@ def _build_rule(record: Record) -> Rule:
 _V4 = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$")
 
 
-def _literal_family(token: str) -> Family | None:
+def _literal_family(token: str | object) -> Family | None:
+    if not isinstance(token, str):  # a SetRef host term carries its own family (ADR-0066)
+        return None
     if _V4.match(token):
         return Family.IPV4
     if ":" in token:  # a bare IPv6 literal (demo scope: bare literals, no zone:host)
