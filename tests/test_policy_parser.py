@@ -1,7 +1,7 @@
 import pytest
 
 from shorewallnf.errors import ConfigError
-from shorewallnf.ir import Policy
+from shorewallnf.ir import Policy, RateLimit
 from shorewallnf.parser import Record, parse, parse_policies
 from shorewallnf.preprocessor import SourceLine
 
@@ -62,16 +62,56 @@ def test_missing_action_raises() -> None:
 
 
 def test_unsupported_trailing_columns_rejected() -> None:
-    # Shorewall's policy file has further columns (LIMIT:BURST, CONNLIMIT); rather than
-    # silently drop them, reject until supported (#94, fail-fast).
+    # LIMIT:BURST (column 4) is supported; CONNLIMIT (column 5) is not yet (#407) — rather than
+    # silently drop it, reject until supported (#94, fail-fast).
     with pytest.raises(ConfigError) as exc:
-        parse_policies(_records("net all DROP info 10/sec:20"))
+        parse_policies(_records("net all DROP info 10/sec:20 4"))
     assert exc.value.line == 1
 
 
 def test_four_columns_still_accepted() -> None:
     (policy,) = parse_policies(_records("net all DROP info"))
     assert policy.log_level == "info"
+
+
+# --- LIMIT:BURST rate column (#408) ------------------------------------------
+
+
+def test_policy_rate_with_burst() -> None:
+    # Column 4 (after the `-` log-level placeholder) parses via the shared helper (#406).
+    (policy,) = parse_policies(_records("net all DROP - 10/min:20"))
+    assert policy.rate == RateLimit(10, "minute", 20)
+
+
+def test_policy_rate_without_burst_with_log_level() -> None:
+    (policy,) = parse_policies(_records("net all DROP info 10/min"))
+    assert policy.log_level == "info"
+    assert policy.rate == RateLimit(10, "minute", None)
+
+
+def test_policy_absent_rate_column_is_none() -> None:
+    (policy,) = parse_policies(_records("net all DROP"))
+    assert policy.rate is None
+
+
+def test_policy_dash_rate_column_is_none() -> None:
+    # An explicit `-` in the LIMIT column is the "unspecified" placeholder, not a rate.
+    (policy,) = parse_policies(_records("net all DROP - -"))
+    assert policy.rate is None
+
+
+@pytest.mark.parametrize(
+    "spec", ["10/fortnight", "abc", "10/min:xyz"]
+)
+def test_policy_malformed_rate_fails_fast(spec: str) -> None:
+    with pytest.raises(ConfigError, match="rate limit"):
+        parse_policies(_records(f"net all DROP - {spec}"))
+
+
+def test_policy_malformed_rate_error_is_located() -> None:
+    with pytest.raises(ConfigError) as exc:
+        parse_policies(_records("loc net ACCEPT", "net all DROP - 10/fortnight"))
+    assert exc.value.line == 2
 
 
 # --- log-level validation (#117) ---------------------------------------------

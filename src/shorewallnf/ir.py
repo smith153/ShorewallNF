@@ -111,6 +111,10 @@ class Interface:
 class Policy:
     """A default policy for traffic from one zone to another (the ``policy`` file).
 
+    ``rate`` is the parsed LIMIT:BURST column (``None`` when absent), emitted as an nft ``limit
+    rate`` on the policy fall-through before the verdict so over-limit traffic falls through
+    (#408, ADR-0006/0007).
+
     ``path``/``line`` are the originating ``file:line`` (set by the parser) so IR-stage errors
     can cite the source; they are ``compare=False`` metadata and do not participate in equality
     (ADR-0001, #316).
@@ -120,6 +124,7 @@ class Policy:
     dest: str
     action: str
     log_level: str | None = None
+    rate: RateLimit | None = None
     path: str | None = field(default=None, compare=False)
     line: int | None = field(default=None, compare=False)
 
