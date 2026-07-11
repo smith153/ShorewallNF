@@ -38,8 +38,10 @@ from .ir import (
     RoutingArtifact,
     Rule,
     Ruleset,
+    SetDef,
     SetRef,
     Settings,
+    SetType,
     TproxyRoutingArtifact,
     Zone,
 )
@@ -86,6 +88,7 @@ def generate(
     commands += _mangle_rules(ruleset)
     commands += _nat_base(ruleset)
     commands += _ct_helpers(ruleset, capabilities)
+    commands += _set_objects(ruleset)
     commands += _feature_rules(ruleset)
     commands += _nat_rules(ruleset)
     commands += _policy_rules(ruleset)
@@ -555,30 +558,81 @@ def _translate_rules(
 def _feature_rule(
     rule: Rule, interfaces: dict[str, tuple[str, ...]], firewalls: set[str]
 ) -> list[_Command]:
-    """The nft rule(s) for one ``Rule``; a both-family ICMP rule splits into one per family."""
+    """The nft rule(s) for one ``Rule``; a both-family ICMP or named-set rule splits per family.
+
+    A ``+setname`` SOURCE/DEST (:class:`SetRef`) is a bare host term (no zone) lowered to a
+    ``{ip|ip6} {saddr|daddr} @setname`` membership match (``!=`` when negated), family-correct in
+    the ``inet`` ruleset. A ``both``-family set has two single-typed nft objects (``@name_v4`` /
+    ``@name_v6``), so a both-family set rule splits into a v4 and a v6 arm — the same per-family
+    emission ICMP already does (ADR-0002/ADR-0066 §4).
+    """
     ctx = f"rule {rule.action} {rule.source!r} {rule.dest!r}"
     source, dest = rule.source, rule.dest
-    if isinstance(source, SetRef) or isinstance(dest, SetRef):
-        # Named-set (@setname) membership matching is not emitted yet — that is #419. Fail fast
-        # rather than silently dropping the set constraint (ADR-0004).
-        raise ConfigError(
-            f"{ctx}: named-set (+setname) matching is not supported yet (#419)",
-            path=rule.path,
-            line=rule.line,
-        )
     chain, prefix = _chain_and_zone_matches(
-        _zone_of(source), _zone_of(dest), interfaces, firewalls, ctx
+        _zone_of_term(source), _zone_of_term(dest), interfaces, firewalls, ctx
     )
-    prefix += _host_matches(source, dest)
-    prefix += _ct_matches(rule)
-    verdict = _verdict(rule.action)
+    ct = _ct_matches(rule)
     gate = _rate_limit(rule.rate) + _connlimit(rule.connlimit)
-    if rule.proto in _ICMP_PROTOS:
-        return [
-            _rule(chain, [*prefix, match, *gate, verdict])
-            for match in _icmp_matches(rule, ctx)
-        ]
-    return [_rule(chain, [*prefix, *_l4_matches(rule, ctx), *gate, verdict])]
+    verdict = _verdict(rule.action)
+    icmp = rule.proto in _ICMP_PROTOS
+    has_set = isinstance(source, SetRef) or isinstance(dest, SetRef)
+    if not icmp and not has_set:
+        addr = _arm_addr_matches(source, dest, False)  # str hosts pick their own family (no split)
+        return [_rule(chain, [*prefix, *addr, *ct, *_l4_matches(rule, ctx), *gate, verdict])]
+    if icmp and rule.sport is not None:
+        raise ConfigError(f"{ctx}: an ICMP rule has no source port")
+    rules: list[_Command] = []
+    for v6 in _arm_v6_flags(rule.family):
+        addr = _arm_addr_matches(source, dest, v6)
+        l4 = [_icmp_match(v6, rule.dport)] if icmp else _l4_matches(rule, ctx)
+        rules.append(_rule(chain, [*prefix, *addr, *ct, *l4, *gate, verdict]))
+    return rules
+
+
+def _zone_of_term(term: str | SetRef) -> str:
+    """The zone of a host term; a bare ``+setname`` :class:`SetRef` carries none, so it matches
+    like ``all`` (no interface narrowing) — the set membership is the whole constraint."""
+    return "all" if isinstance(term, SetRef) else _zone_of(term)
+
+
+def _arm_v6_flags(family: Family) -> tuple[bool, ...]:
+    """The per-family arms to emit: a ``both`` rule splits into v4 then v6, a pinned rule is one
+    arm (ADR-0002). Shared by the ICMP and named-set family splits."""
+    if family is Family.BOTH:
+        return (False, True)
+    return (family is Family.IPV6,)
+
+
+def _arm_addr_matches(source: str | SetRef, dest: str | SetRef, v6: bool) -> list[_Command]:
+    """The saddr/daddr matches for one family arm: a ``zone:host`` literal narrows as before, a
+    :class:`SetRef` becomes a ``@setname`` membership match for this arm's family."""
+    return _term_addr_match("saddr", source, v6) + _term_addr_match("daddr", dest, v6)
+
+
+def _term_addr_match(field: str, term: str | SetRef, v6: bool) -> list[_Command]:
+    if isinstance(term, SetRef):
+        return [_set_match(field, term, v6)]
+    host = _host_of(term)
+    return [_addr_match(field, host)] if host is not None else []
+
+
+def _set_match(field: str, ref: SetRef, v6: bool) -> _Command:
+    """A ``{ip|ip6} {saddr|daddr} @setname`` set-membership match, ``!=`` when the ref is negated
+    (the first ``!=`` in the generator). The right-hand ``@name`` string is libnftables' named-set
+    reference form (verified against ``nft --check``)."""
+    proto = "ip6" if v6 else "ip"
+    op = "!=" if ref.negated else "=="
+    left = {"payload": {"protocol": proto, "field": field}}
+    return {"match": {"op": op, "left": left, "right": f"@{_set_object_name(ref, v6)}"}}
+
+
+def _set_object_name(ref: SetRef, v6: bool) -> str:
+    """The nft object name a reference resolves to for a family arm. A ``both`` set is two
+    single-typed objects (``name_v4`` / ``name_v6``, ADR-0066 §4); a single-family set is ``name``.
+    The naming contract is documented in ``docs/reference/sets.md`` (populated by epic #402)."""
+    if ref.family is Family.BOTH:
+        return f"{ref.name}_v6" if v6 else f"{ref.name}_v4"
+    return ref.name
 
 
 def _rate_limit(rate: RateLimit | None) -> list[_Command]:
@@ -644,21 +698,9 @@ def _ct_state(state: str) -> _Command:
 _ICMP_PROTOS = ("icmp", "ipv6-icmp")
 
 
-def _icmp_matches(rule: Rule, ctx: str) -> list[_Command]:
-    """One ICMP match per family the rule scopes to.
-
-    ICMP has no source port; the DEST PORT column carries an optional ICMP type. A both-family
-    rule yields a v4 ``icmp`` and a v6 ``icmpv6`` match; a family-pinned rule yields only its own.
-    """
-    if rule.sport is not None:
-        raise ConfigError(f"{ctx}: an ICMP rule has no source port")
-    v6_flags: tuple[bool, ...] = (
-        (False, True) if rule.family is Family.BOTH else (rule.family is Family.IPV6,)
-    )
-    return [_icmp_match(v6, rule.dport) for v6 in v6_flags]
-
-
 def _icmp_match(v6: bool, icmp_type: str | None) -> _Command:
+    """The ICMP l4proto/type match for one family arm (:func:`_arm_v6_flags`); the DEST PORT column
+    carries an optional ICMP type (no source port — the caller rejects a ``sport``)."""
     if icmp_type is None:
         return _l4proto("ipv6-icmp" if v6 else "icmp")
     left = {"payload": {"protocol": "icmpv6" if v6 else "icmp", "field": "type"}}
@@ -933,6 +975,65 @@ def _ct_helper_rule(
 
 def _nfproto_match(nfproto: str) -> _Command:
     return {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": nfproto}}
+
+
+# ---- named-set (@setname) objects (ADR-0066 §4) -----------------------------------------
+
+# The compiler owns one self-contained, empty, family-typed nft `set` object per referenced
+# declared set — the same "emit the object the rule references" pattern as the ct helper objects
+# (deduped, threaded into generate() before the feature rules). Runtime population is epic #402;
+# here the object is just declared so the `@setname` membership match resolves. An `inet` named set
+# is single-typed (`ipv4_addr` OR `ipv6_addr`, no union), so a `both`-family set becomes TWO
+# objects — `name_v4` + `name_v6` (the naming contract in docs/reference/sets.md, ADR-0002).
+_SET_TYPE = {Family.IPV4: "ipv4_addr", Family.IPV6: "ipv6_addr"}
+
+
+def _set_objects(ruleset: Ruleset) -> list[_Command]:
+    """One family-typed empty ``add set`` object per set referenced by a running rule, in
+    first-seen order, deduplicated — positioned before the referencing feature rules. A declared
+    set no rule references emits nothing; a ``both``-family set emits both objects."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for rule in ruleset.rules:
+        for term in (rule.source, rule.dest):
+            if isinstance(term, SetRef) and term.name not in seen:
+                seen.add(term.name)
+                names.append(term.name)
+    return [obj for name in names for obj in _set_object(_resolve_set(ruleset, name))]
+
+
+def _resolve_set(ruleset: Ruleset, name: str) -> SetDef:
+    """The :class:`SetDef` for a referenced set; the parser fails fast on an undeclared reference
+    (#418), so a missing entry here is malformed IR the generator cannot lower (ADR-0004)."""
+    setdef = ruleset.sets.get(name)
+    if setdef is None:
+        raise ConfigError(f"named set '+{name}': not declared in the sets registry (malformed IR)")
+    return setdef
+
+
+def _set_object(setdef: SetDef) -> list[_Command]:
+    """The ``add set`` object(s) for one declared set. Only an ``address`` set is an
+    ``ipv4_addr``/``ipv6_addr`` host-membership set; an ``address:port`` set in a bare SOURCE/DEST
+    host position would emit a mis-typed object, so fail fast (ADR-0004, out of scope for #419).
+    A ``both``-family set yields the two single-typed objects (ADR-0066 §4)."""
+    if setdef.set_type is not SetType.ADDRESS:
+        raise ConfigError(
+            f"named set {setdef.name!r}: only an 'address' set matches as a bare SOURCE/DEST host "
+            f"term; got {setdef.set_type.value} (address:port host matching is out of scope, #419)",
+            path=setdef.path,
+            line=setdef.line,
+        )
+    if setdef.family is Family.BOTH:
+        return [
+            _set_add(f"{setdef.name}_v4", "ipv4_addr"),
+            _set_add(f"{setdef.name}_v6", "ipv6_addr"),
+        ]
+    return [_set_add(setdef.name, _SET_TYPE[setdef.family])]
+
+
+def _set_add(name: str, set_type: str) -> _Command:
+    """A self-contained empty ``add set`` object, mirroring :func:`_ct_helper_object`."""
+    return {"add": {"set": {"family": _FAMILY, "table": _TABLE, "name": name, "type": set_type}}}
 
 
 # ---- mangle: prerouting mark / divert / tproxy rules (ADR-0042) -------------------------

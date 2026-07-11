@@ -15,6 +15,7 @@ only the files it knows about, in a fixed order; anything else in the directory 
 | `interfaces` | Interface-to-zone bindings and per-interface options. |
 | [`providers`](providers.md) | Policy-routing providers. |
 | [`policy`](policy.md) | Default inter-zone policies and their logging. |
+| [`sets`](sets.md) | Named address sets referenced as `+setname` in `rules`. |
 | [`rules`](rules.md) | Per-connection filter rules and DNAT/port-forwarding. |
 | `snat` | Source NAT / masquerading (IPv4). |
 | `conntrack` | Connection-tracking helper assignments (FTP, SIP, …). |
