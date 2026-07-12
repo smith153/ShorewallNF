@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,30 @@ OWNED_TABLES: tuple[dict[str, str], ...] = (
     {"family": "inet", "name": "filter"},
     {"family": "inet", "name": "nat"},
 )
+
+# Safe-apply timeout: a positive integer with an optional lowercase s/m/h unit (default seconds).
+_TIMEOUT_RE = re.compile(r"^(\d+)([smh]?)$")
+_TIMEOUT_UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
+
+
+def parse_timeout(value: str) -> int:
+    """Parse a safe-apply timeout argument into whole seconds (task #436).
+
+    Accepts a bare positive integer (seconds) or the ``Ns``/``Nm``/``Nh`` suffix forms, e.g.
+    ``45s`` → ``45``, ``5m`` → ``300``, ``2h`` → ``7200``. Anything else — empty, zero, negative,
+    non-numeric, fractional, or an unknown/uppercase suffix — fails fast with a single
+    :class:`~shorewallnf.errors.ShorewallNFError` (ADR-0004).
+    """
+    match = _TIMEOUT_RE.match(value)
+    if match is None:
+        raise ShorewallNFError(
+            f"invalid timeout {value!r}: expected a positive number of seconds, "
+            "optionally suffixed with s, m, or h (e.g. 30, 45s, 5m, 2h)"
+        )
+    number = int(match.group(1))
+    if number <= 0:
+        raise ShorewallNFError(f"invalid timeout {value!r}: must be a positive duration")
+    return number * _TIMEOUT_UNIT_SECONDS[match.group(2)]
 
 
 def clear_payload() -> dict[str, Any]:
