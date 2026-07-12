@@ -1,0 +1,12 @@
+Table: inet nat
+
+Chain prerouting (policy accept)
+  NUM  TARGET  PROTO  SOURCE  DESTINATION  DETAIL
+    1  DNAT    all    any     any          to 192.0.2.1-192.0.2.10
+    2  DNAT    all    any     any          to 192.0.2.1:4000-4100
+    3  DNAT    all    any     any          to {192.0.2.1,192.0.2.2}
+    4  DNAT    all    any     any          to 192.0.2.10:80 flags random
+
+Chain postrouting (policy accept)
+  NUM  TARGET  PROTO  SOURCE  DESTINATION  DETAIL
+    1  SNAT    all    any     any          to 203.0.113.5 flags random,persistent

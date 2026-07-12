@@ -1,0 +1,8 @@
+Table: inet filter
+
+Chain input (policy drop)
+  NUM  TARGET  PROTO  SOURCE  DESTINATION  DETAIL
+    1  REJECT  all    any     any          with icmpx admin-prohibited
+    2  REJECT  all    any     any          with tcp reset
+    3  REJECT  all    any     any
+    4  DROP    all    any     any          ip6 hoplimit 1
