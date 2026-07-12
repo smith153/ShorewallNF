@@ -17,6 +17,8 @@ import json
 import os
 import re
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -331,6 +333,55 @@ def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> 
             raise
     except OSError as err:
         raise ShorewallNFError(f"failed to save ruleset to {path}: {err}") from err
+
+
+# --- safe-apply: snapshot -> apply -> (timeout-)revert primitive (task #437, ADR-0067) -----
+
+#: Pre-``try`` snapshot path. Kept off :data:`DEFAULT_RULESET_PATH` so a ``try`` never mutates the
+#: persisted ruleset (ADR-0030/ADR-0067) — the running state is captured here, not to the saved one.
+SAFE_APPLY_SNAPSHOT_PATH = Path("/var/lib/shorewallnf/pre-try-snapshot.json")
+
+
+def safe_apply(
+    candidate: dict[str, Any],
+    stopped: dict[str, Any],
+    *,
+    timeout: int | None = None,
+    snapshot_path: Path = SAFE_APPLY_SNAPSHOT_PATH,
+    wait: Callable[[int], None] = time.sleep,
+) -> None:
+    """Apply ``candidate`` with auto-revert — the safe-apply primitive (task #437, ADR-0067).
+
+    One reusable helper wiring the shipped building blocks: capture the *running* ruleset
+    (:func:`list_ruleset`), dry-run check then atomically load ``candidate``
+    (:func:`check_ruleset`/:func:`apply_ruleset`), and — when ``timeout`` is given — wait the
+    window, then revert to the pre-``try`` state. A check/apply failure raises (fail-fast,
+    ADR-0004) before any revert is armed; the load is atomic, so a rejected ``candidate`` leaves the
+    running ruleset unchanged.
+
+    The revert target is the pre-``try`` state: the captured snapshot when a firewall was running
+    (:func:`firewall_loaded` true), or :func:`clear_ruleset` when nothing was. The snapshot is
+    written to its **own** ``snapshot_path`` — never :data:`DEFAULT_RULESET_PATH` — so a ``try``
+    does not touch the persisted ruleset. If the restore itself fails, the primitive falls closed to
+    the ``stopped`` safe-state ruleset (ADR-0021), never a wide-open firewall. ``wait`` is
+    injectable so the timeout window is unit-testable without sleeping.
+    """
+    running = list_ruleset()
+    was_running = firewall_loaded(running)
+    if timeout is not None and was_running:
+        save_ruleset(running, snapshot_path)
+    check_ruleset(candidate)
+    apply_ruleset(candidate)
+    if timeout is None:
+        return
+    wait(timeout)
+    if not was_running:
+        clear_ruleset()
+        return
+    try:
+        restore_ruleset(snapshot_path)
+    except ShorewallNFError:
+        apply_ruleset(stopped)  # fail-closed: stopped safe state, never wide open (ADR-0021/0004)
 
 
 # --- provider policy routing via iproute2 (task #235, ADR-0050) ----------------------------

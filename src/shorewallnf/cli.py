@@ -27,7 +27,9 @@ from .applier import (
     list_connections,
     list_log,
     list_ruleset,
+    parse_timeout,
     restore_ruleset,
+    safe_apply,
     save_ruleset,
 )
 from .errors import ShorewallNFError
@@ -143,7 +145,28 @@ def _build_parser() -> argparse.ArgumentParser:
         _add_show_group(sub, verb)
     _add_status_verb(sub)
     _add_dump_verb(sub)
+    _add_try_verb(sub)
     return parser
+
+
+def _add_try_verb(sub: argparse._SubParsersAction[Any]) -> None:
+    """Add the safe-apply ``try DIR [timeout]`` verb (task #437, ADR-0067).
+
+    Unlike the flat config verbs, ``try`` takes an *optional* ``timeout`` positional in addition to
+    the required ``config_dir``, so it has its own parser. It is privileged (mutates the live
+    ruleset) and non-persisting; with a timeout it auto-reverts to the pre-``try`` state after the
+    window elapses (see :func:`~shorewallnf.applier.safe_apply`).
+    """
+    try_parser = sub.add_parser(
+        "try",
+        help="apply a config with auto-revert; an optional timeout reverts to the pre-try state",
+    )
+    try_parser.add_argument("config_dir", help="path to the Shorewall-style config directory")
+    try_parser.add_argument(
+        "timeout",
+        nargs="?",
+        help="auto-revert after this window if given (e.g. 30, 45s, 5m, 2h)",
+    )
 
 
 def _add_status_verb(sub: argparse._SubParsersAction[Any]) -> None:
@@ -348,6 +371,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         check_ruleset(ruleset)
         apply_ruleset(ruleset)
         print(f"stopped: {args.config_dir}")
+        return 0
+    if args.verb == "try":
+        timeout = parse_timeout(args.timeout) if args.timeout is not None else None
+        candidate = compile_config(args.config_dir)
+        stopped = compile_stopped(args.config_dir)
+        safe_apply(candidate, stopped, timeout=timeout)
+        print(f"tried: {args.config_dir}")
         return 0
     if args.verb == "restore":
         restore_ruleset()

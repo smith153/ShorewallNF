@@ -25,6 +25,13 @@ def test_operations_documents_every_lifecycle_verb() -> None:
     assert not missing, f"operations.md is missing lifecycle verbs: {missing}"
 
 
+def test_operations_documents_the_try_verb() -> None:
+    """The safe-apply `try` verb (#437) has an operator surface — it must be documented."""
+    text = OPERATIONS.read_text()
+    assert "`try`" in text, "operations.md must document the `try` safe-apply verb"
+    assert "auto-revert" in text.lower(), "the `try` auto-revert semantics must be documented"
+
+
 def test_operations_covers_persistence_path() -> None:
     """The persisted-state path (ADR-0030) is the operator's boot-restore anchor."""
     assert "/var/lib/shorewallnf/ruleset.json" in OPERATIONS.read_text()

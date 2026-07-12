@@ -5,8 +5,8 @@ guarantees, and how the firewall survives a reboot.
 
 Every verb takes the form `shorewallnf <verb> [config-dir]`. The verbs that only read a config
 (`check`, `compile`) need no privileges; the verbs that touch the live kernel ruleset
-(`apply`, `start`, `reload`, `restart`, `stop`, `clear`, `restore`) need `CAP_NET_ADMIN` — run
-them as root (e.g. with `sudo`).
+(`apply`, `start`, `reload`, `restart`, `try`, `stop`, `clear`, `restore`) need `CAP_NET_ADMIN` —
+run them as root (e.g. with `sudo`).
 
 ## Lifecycle verbs
 
@@ -18,6 +18,7 @@ them as root (e.g. with `sudo`).
 | `start` | required | yes | Bring the firewall up: compile → dry-run check → atomically load. Does **not** persist. |
 | `reload` | required | yes | Compile → dry-run check → atomically replace the running ruleset. Does **not** persist. |
 | `restart` | required | yes | Alias of `reload`: atomically replace the running ruleset. |
+| `try` | required | yes | [Safe-apply](#safe-apply-with-try): snapshot the running ruleset, compile → dry-run check → atomically load `DIR`, and — given an optional `timeout` — auto-revert to the pre-`try` state after the window. Does **not** persist. |
 | `stop` | required | yes | Drop to the [stopped safe state](#the-stopped-safe-state): still admits declared admin access, drops the rest. |
 | `clear` | required | yes | Remove all ShorewallNF-owned tables, leaving traffic **unfiltered**. |
 | `restore` | none | yes | Re-load the last [persisted ruleset](#persistence-and-boot-restore) from disk, fail-closed. |
@@ -41,6 +42,33 @@ A few operational notes cross-checked against the CLI:
   tables owned by other tools are never touched. After `clear`, traffic to the host is
   **unfiltered** — this is a maintenance escape hatch, not a safe state; use `stop` for that.
 - **`restore` takes no config-dir.** It operates on the persisted on-disk ruleset, not a config.
+
+### Safe-apply with `try`
+
+`try DIR [timeout]` loads a candidate config the way `start` does — compile → `nft --check`
+dry-run → atomic load — but wraps it in an **auto-revert** so a change that locks you out of a
+remote host cannot become permanent. It never persists (like `start`/`reload`, it leaves
+`/var/lib/shorewallnf/ruleset.json` untouched), and the auto-revert model is fixed in
+[ADR-0067](adr/0067-safe-apply-auto-revert-model.md) — see also
+[lifecycle.md → safe-apply](lifecycle.md#safe-apply-with-auto-revert-try).
+
+- **It snapshots the *running* ruleset first**, not the last-saved one, and writes that snapshot
+  to its own path — never the persisted `ruleset.json`. If nothing was running (a stopped or
+  cleared firewall), the revert target is `clear`, not a stale on-disk ruleset.
+- **`try DIR` with no timeout** just applies the candidate. A compile or apply failure terminates
+  without changing the running (or the saved) ruleset and exits non-zero with one clear error —
+  the atomic load never half-lands.
+- **`try DIR timeout`** applies the candidate, then **auto-reverts** to the pre-`try` state once
+  the window elapses. The revert is unconditional — this verb asks for no confirmation (the
+  interactive `safe-reload`/`safe-start` siblings are separate). `timeout` uses the same syntax as
+  elsewhere: a bare number of seconds, or an `s`/`m`/`h` suffix (`30`, `45s`, `5m`, `2h`).
+- **The revert is fail-closed.** If restoring the snapshot itself fails, the firewall lands in the
+  [stopped safe state](#the-stopped-safe-state) rather than wide open.
+
+```bash
+# Apply a config for 5 minutes; if it locks you out, it reverts itself and you reconnect.
+sudo shorewallnf try /etc/shorewallnf 5m
+```
 
 ### A typical flow
 
