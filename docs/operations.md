@@ -63,15 +63,21 @@ sudo shorewallnf stop /etc/shorewallnf
 
 ## Visibility verbs (read-only)
 
-`show` inspects the **live** firewall — it reads the running ruleset and never changes it. `list`
-and `ls` are exact synonyms of `show`. These verbs take **no config directory**; they query the
-kernel through a `list`-only seam that has no mutating form (read-only by construction, see
+`show` inspects the firewall and never changes it — every object is read-only by construction,
+through a `list`-only seam that has no mutating form (see
 [ADR-0065](https://github.com/smith153/ShorewallNF/blob/master/docs/adr/0065-operational-visibility-output-format.md)).
+`list` and `ls` are exact synonyms of `show`. Objects differ in their **source**: `rules`,
+`connections`, and `log` read **live kernel state** and take no config directory, while `zones` and
+`policies` render **compile-time declarations** not recoverable from live state and so take a
+config directory. `log` accepts an **optional** config directory (only to read `LOGFORMAT`).
 
 | Verb | Privileged | What it does |
 |------|:----------:|--------------|
 | `show rules [-t {filter\|nat\|mangle\|raw}] [chain…]` | reads the live ruleset | Print the live rules of the named chains (all chains of the `filter` table by default), rendered as an annotated, columnar report. |
 | `show connections` | reads live conntrack | Print the connections the kernel is currently tracking (via the `conntrack` utility), rendered as a columnar report. |
+| `show log [config_dir] [-n N]` | reads the systemd journal | Print a bounded tail of recent firewall log messages (default 20; `-n`/`--lines N` overrides), read from the kernel journal and filtered to lines bearing the `LOGFORMAT` prefix. |
+| `show zones <config_dir>` | reads the config | Print the declared zones and their interface/host members from the config. |
+| `show policies <config_dir>` | reads the config | Print the inter-zone default-policy matrix from the config. |
 
 The `show rules` output is grouped by chain, with rules numbered within each chain and human
 `TARGET` labels (`ACCEPT`/`DROP`/`DNAT`/…) — not raw `nft list` output:
@@ -104,6 +110,22 @@ When the kernel is tracking nothing — including while the firewall is stopped 
 `show connections` prints an empty-but-valid report and exits 0. If the `conntrack` utility is
 not installed it fails fast with one actionable error (install `conntrack-tools`), not a stack
 trace.
+
+`show log` prints the most-recent firewall log messages, one per line, near their native form:
+
+```
+Firewall log
+
+  Shorewall:net-fw:DROP:IN=eth0 OUT= SRC=203.0.113.7 DST=192.0.2.1 PROTO=TCP SPT=51000 DPT=23
+  Shorewall:fw-net:REJECT:IN= OUT=eth0 SRC=192.0.2.1 DST=203.0.113.9 PROTO=TCP SPT=44444 DPT=25
+```
+
+The lines come from the systemd kernel journal (`journalctl -k`), where nft `log` statements land
+(ShorewallNF packages only systemd and has no `LOGFILE` setting). Only lines bearing the `LOGFORMAT`
+prefix are shown; the default bound is the 20 most-recent, overridable with `-n`/`--lines N`. Pass a
+config directory to read a non-default `LOGFORMAT` from it (otherwise the default template applies).
+When the journal holds no matching lines it prints an empty-but-valid report and exits 0; if the
+journal reader is unavailable it fails fast with one actionable error, not a stack trace.
 
 ## The stopped safe state
 

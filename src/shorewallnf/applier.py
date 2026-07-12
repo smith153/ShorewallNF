@@ -33,6 +33,7 @@ NFT = "nft"
 IP = "ip"
 SYSCTL = "sysctl"
 CONNTRACK = "conntrack"
+JOURNALCTL = "journalctl"
 
 # The ``ip`` family flag per artifact family (ADR-0002): a provider routing table + fwmark rule is
 # scoped to one family (v4 or v6, never both), so every ``ip`` invocation carries -4 or -6.
@@ -181,6 +182,37 @@ def list_connections() -> str:
         ) from err
     if result.returncode != 0:
         raise ConfigError(f"conntrack list failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def list_log() -> str:
+    """Read-only live query: return raw systemd kernel-journal text (task #413, ADR-0065).
+
+    The journal sibling of :func:`list_connections`, beside it in the shell (ADR-0003): nft ``log``
+    statements land in the kernel journal (ShorewallNF packages only systemd, ADR-0064; there is no
+    ``LOGFILE`` setting, ADR-0061), so it shells ``journalctl -k`` (kernel messages, ``-o cat`` for
+    the bare message text) and hands the raw output to the pure renderer, which filters it to
+    firewall lines and bounds the tail. Read-only is structural — ``-k`` reads kernel messages, no
+    mutating journal form (``--rotate``/``--vacuum-*``/``--flush``) is used, and nothing is streamed
+    on stdin. A missing ``journalctl`` binary makes ``subprocess.run`` raise ``FileNotFoundError``
+    (an ``OSError``, not a non-zero rc), translated to one actionable
+    :class:`~shorewallnf.errors.ShorewallNFError` (fail-fast, ADR-0004) rather than a traceback. An
+    empty journal exits 0, so the no-messages case degrades to an empty-but-valid render, not an
+    error. Any other non-zero rc raises :class:`~shorewallnf.errors.ConfigError`, caught once in the
+    CLI shell.
+    """
+    try:
+        result = subprocess.run(
+            [JOURNALCTL, "-k", "-o", "cat", "--no-pager"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as err:
+        raise ShorewallNFError(
+            "journalctl not found; systemd journal is required to show the firewall log"
+        ) from err
+    if result.returncode != 0:
+        raise ConfigError(f"journalctl read failed: {result.stderr.strip()}")
     return result.stdout
 
 

@@ -777,3 +777,65 @@ def test_list_connections_raises_configerror_when_conntrack_fails(
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(ConfigError, match="Operation not supported"):
         applier.list_connections()
+
+
+# --- read-only journal live-query seam (task #413, ADR-0065) -------------------------------
+
+
+def test_list_log_reads_kernel_journal_and_returns_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    output = "Shorewall:net-fw:DROP:IN=eth0 SRC=203.0.113.7 DST=192.0.2.1 PROTO=TCP\n"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = applier.list_log()
+
+    assert result == output  # the raw journal text is returned verbatim for the pure renderer
+    assert seen["cmd"] == ["journalctl", "-k", "-o", "cat", "--no-pager"]
+
+
+def test_list_log_is_read_only_by_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The query argv reads kernel messages and streams nothing on stdin — there is no
+    # journalctl form here that could mutate the journal or the ruleset.
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        assert kwargs.get("input") is None
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    applier.list_log()
+
+    assert "-k" in seen["cmd"]
+    for mutating in ("--rotate", "--vacuum-size", "--vacuum-time", "--flush", "--sync"):
+        assert mutating not in seen["cmd"]
+
+
+def test_list_log_missing_journalctl_raises_shorewallnferror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A missing `journalctl` binary raises FileNotFoundError (an OSError, not a non-zero rc);
+    # the seam translates it to one actionable ShorewallNFError (ADR-0004), never a traceback.
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(2, "No such file or directory", "journalctl")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ShorewallNFError, match="journalctl"):
+        applier.list_log()
+
+
+def test_list_log_raises_configerror_when_journalctl_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "Failed to open journal: Permission denied")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ConfigError, match="Permission denied"):
+        applier.list_log()

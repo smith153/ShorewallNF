@@ -630,3 +630,109 @@ def test_show_connections_missing_binary_fails_fast_one_error(
     err = capsys.readouterr().err
     assert "error:" in err
     assert "Traceback" not in err  # a clean ADR-0004 message, not a stack trace
+
+
+# ---- show log: bounded tail of firewall journal lines (task #413, ADR-0065) ----------------
+
+_LOG_FIXTURE = (
+    "usb 1-1: new high-speed USB device number 4\n"
+    "Shorewall:net-fw:DROP:IN=eth0 SRC=203.0.113.7 DST=192.0.2.1 PROTO=TCP DPT=23\n"
+    "EXT4-fs (sda1): mounted filesystem\n"
+    "Shorewall:fw-net:REJECT:OUT=eth0 SRC=192.0.2.1 DST=203.0.113.9 PROTO=TCP DPT=25\n"
+)
+
+
+@pytest.mark.parametrize("verb", ["show", "list", "ls"])
+def test_show_log_renders_firewall_tail(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_log", lambda: _LOG_FIXTURE)
+    assert cli.main([verb, "log"]) == 0
+    out = capsys.readouterr().out
+    assert "Firewall log" in out
+    assert "Shorewall:net-fw:DROP" in out
+    assert "USB device" not in out  # non-firewall kernel noise is filtered out
+
+
+def test_show_log_list_ls_dispatch_identically(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_log", lambda: _LOG_FIXTURE)
+    outs = []
+    for verb in ("show", "list", "ls"):
+        assert cli.main([verb, "log"]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1] == outs[2]  # exact same output — same code path
+
+
+def test_show_log_lines_override_caps_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = "".join(f"Shorewall:net-fw:DROP:seq={i}\n" for i in range(5))
+    monkeypatch.setattr(cli, "list_log", lambda: output)
+    assert cli.main(["show", "log", "-n", "2"]) == 0
+    out = capsys.readouterr().out
+    shown = [ln for ln in out.splitlines() if "seq=" in ln]
+    assert len(shown) == 2
+    assert "seq=4" in out and "seq=3" in out and "seq=2" not in out
+
+
+def test_show_log_default_caps_at_twenty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = "".join(f"Shorewall:net-fw:DROP:seq={i}\n" for i in range(30))
+    monkeypatch.setattr(cli, "list_log", lambda: output)
+    assert cli.main(["show", "log"]) == 0
+    out = capsys.readouterr().out
+    shown = [ln for ln in out.splitlines() if "seq=" in ln]
+    assert len(shown) == 20  # default bound
+
+
+def test_show_log_takes_optional_config_dir_for_logformat(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # A config dir supplies LOGFORMAT; its prefix head drives which lines are firewall lines.
+    (tmp_path / "shorewallnf.conf").write_text('LOGFORMAT="MyFW:%s:%s:"\n')
+    output = "MyFW:net-fw:DROP:a\nShorewall:net-fw:DROP:b\n"
+    monkeypatch.setattr(cli, "list_log", lambda: output)
+    assert cli.main(["show", "log", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "MyFW:net-fw:DROP:a" in out
+    assert "Shorewall:net-fw:DROP:b" not in out  # a different prefix isn't a firewall line here
+
+
+def test_show_log_empty_degrades_gracefully(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_log", lambda: "")
+    assert cli.main(["show", "log"]) == 0  # empty-but-valid, exit 0
+    out = capsys.readouterr().out
+    assert "Firewall log" in out
+    assert "(no firewall log messages)" in out
+
+
+def test_show_log_missing_journal_fails_fast_one_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom() -> str:
+        raise ShorewallNFError("journalctl not found; systemd journal is required")
+
+    monkeypatch.setattr(cli, "list_log", boom)
+    assert cli.main(["show", "log"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "Traceback" not in err  # a clean ADR-0004 message, not a stack trace
+
+
+def test_show_log_is_read_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The show path touches no live/saved ruleset — only the read-only journal seam is invoked.
+    monkeypatch.setattr(cli, "list_log", lambda: _LOG_FIXTURE)
+    monkeypatch.setattr(
+        cli, "apply_ruleset", lambda r: pytest.fail("show log must not apply a ruleset")
+    )
+    monkeypatch.setattr(
+        cli, "save_ruleset", lambda r: pytest.fail("show log must not save a ruleset")
+    )
+    assert cli.main(["show", "log"]) == 0
