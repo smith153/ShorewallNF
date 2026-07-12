@@ -286,15 +286,49 @@ def list_log() -> str:
     return result.stdout
 
 
+#: nft JSON *command* verbs. A persisted object keyed by one of these is already command form
+#: (e.g. the generator's / ``restore`` verb's ``{"add": …}``); anything else is a bare *listing*
+#: object from :func:`list_ruleset` that must be wrapped before a load (#449).
+_NFT_COMMAND_VERBS = frozenset(
+    {"add", "delete", "insert", "replace", "create", "flush", "rename", "reset"}
+)
+
+
+def _to_command_form(ruleset: dict[str, Any]) -> dict[str, Any]:
+    """Normalise a persisted ruleset to nft *command* form so a load scopes a real flush (#449).
+
+    :func:`list_ruleset` output — what :func:`safe_apply` snapshots — is *listing form*: bare
+    ``{"table":…}``/``{"chain":…}``/``{"rule":…}`` objects plus a ``{"metainfo":…}`` header, with no
+    command verb. :func:`atomic_load_payload` keys its create-then-delete flush prelude off ``add``,
+    so replaying listing form produces an **empty** prelude and never replaces the live table.
+    Convert to command form: drop ``metainfo`` and wrap each verb-less listing object as
+    ``{"add": obj}``, stripping the kernel-assigned ``handle`` (an output-only identifier nft
+    rejects on ``add``). Objects that already carry a command verb — a persisted command-form
+    ruleset, e.g. the ``restore`` verb's saved file — pass through unchanged, so this is idempotent
+    on the generator's output.
+    """
+    commands: list[dict[str, Any]] = []
+    for obj in ruleset["nftables"]:
+        if "metainfo" in obj:
+            continue
+        if any(key in _NFT_COMMAND_VERBS for key in obj):
+            commands.append(obj)
+            continue
+        (kind, body), = obj.items()
+        commands.append({"add": {kind: {k: v for k, v in body.items() if k != "handle"}}})
+    return {"nftables": commands}
+
+
 def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
     """Load the persisted ruleset from ``path`` live, fail-closed (task #206, ADR-0030).
 
-    The read half of :func:`save_ruleset`: parse the persisted JSON and hand the exact object
-    to :func:`apply_ruleset` for one atomic load. A missing file, corrupt JSON, or a payload
-    that is not a ruleset is wrapped as :class:`~shorewallnf.errors.ShorewallNFError` *before*
-    any nft call, so a failed restore never flushes the live ruleset to an empty (wide-open)
-    state. An nft-rejected ruleset raises :class:`~shorewallnf.errors.ConfigError` from
-    :func:`apply_ruleset` and commits nothing.
+    The read half of :func:`save_ruleset`: parse the persisted JSON, normalise it to nft command
+    form (:func:`_to_command_form` — the snapshot :func:`safe_apply` writes is ``list_ruleset()``
+    *listing form*, #449), and hand it to :func:`apply_ruleset` for one atomic, scoped-flush load. A
+    missing file, corrupt JSON, or a payload that is not a ruleset is wrapped as
+    :class:`~shorewallnf.errors.ShorewallNFError` *before* any nft call, so a failed restore never
+    flushes the live ruleset to an empty (wide-open) state. An nft-rejected ruleset raises
+    :class:`~shorewallnf.errors.ConfigError` from :func:`apply_ruleset` and commits nothing.
     """
     try:
         text = path.read_text()
@@ -306,7 +340,7 @@ def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
         raise ShorewallNFError(f"persisted ruleset at {path} is not valid JSON: {err}") from err
     if not isinstance(ruleset, dict) or not isinstance(ruleset.get("nftables"), list):
         raise ShorewallNFError(f"persisted ruleset at {path} is not a valid nftables ruleset")
-    apply_ruleset(ruleset)
+    apply_ruleset(_to_command_form(ruleset))
 
 
 def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> None:

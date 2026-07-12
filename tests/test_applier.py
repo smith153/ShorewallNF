@@ -400,6 +400,67 @@ def test_restore_ruleset_round_trips_a_saved_ruleset_live(tmp_path: Path) -> Non
         )
 
 
+def test_restore_ruleset_converts_listing_form_to_a_scoped_flush_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot in ``list_ruleset()`` *listing form* must reach nft as a real scoped-flush load.
+
+    Regression for #449: the snapshot safe_apply writes is ``nft --json list ruleset`` output —
+    bare ``{"table":…}``/``{"chain":…}``/``{"rule":…}`` objects plus a ``{"metainfo":…}`` header,
+    with no ``add`` verb. The old restore handed that straight to ``atomic_load_payload``, whose
+    prelude keys off ``add`` → the create-then-delete flush came out empty and the live table was
+    never replaced. This drives a realistic listing snapshot through the *real* transform + applier
+    (only the nft subprocess seam is stubbed) and asserts the bytes handed to nft carry a genuine
+    scoped flush (create+delete of the table) ahead of the wrapped adds — so it would have caught
+    the bug without netns.
+    """
+    listing = {
+        "nftables": [
+            {"metainfo": {"version": "1.0.9", "release_name": "x", "json_schema_version": 1}},
+            {"table": {"family": "inet", "name": "filter", "handle": 1}},
+            {
+                "chain": {
+                    "family": "inet", "table": "filter", "name": "input", "handle": 1,
+                    "type": "filter", "hook": "input", "prio": 0, "policy": "drop",
+                }
+            },
+            {
+                "rule": {
+                    "family": "inet", "table": "filter", "chain": "input", "handle": 4,
+                    "expr": [{"accept": None}],
+                }
+            },
+        ]
+    }
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(listing))
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        seen["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    applier.restore_ruleset(path)
+
+    commands = json.loads(seen["input"])["nftables"]
+    table = {"family": "inet", "name": "filter"}  # scoped by name — handle stripped, not settable
+    # A real, non-empty scoped-flush prelude: create-then-delete of the candidate table (the fix).
+    assert commands[0] == {"add": {"table": table}}
+    assert commands[1] == {"delete": {"table": table}}
+    # The listing objects reach nft in command form: wrapped in ``add``, metainfo dropped, no
+    # kernel-assigned handles (which nft rejects on add).
+    assert {"add": {"table": table}} in commands[2:]
+    assert not any("metainfo" in c for c in commands)
+    assert "handle" not in json.dumps(commands)
+    # End to end: exactly the atomic-load payload of the normalised command form.
+    assert json.loads(seen["input"]) == applier.atomic_load_payload(
+        applier._to_command_form(listing)
+    )
+
+
 # --- provider routing artifacts via iproute2 (#235, ADR-0050) ----------------
 #
 # The applier lowers ADR-0050 RoutingArtifacts to `ip route`/`ip rule` argv, per family, and
