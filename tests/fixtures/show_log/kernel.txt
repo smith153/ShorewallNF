@@ -1,0 +1,6 @@
+usb 1-1: new high-speed USB device number 4 using xhci_hcd
+Shorewall:net-fw:DROP:IN=eth0 OUT= MAC=00:11 SRC=203.0.113.7 DST=192.0.2.1 PROTO=TCP SPT=51000 DPT=23
+EXT4-fs (sda1): mounted filesystem with ordered data mode
+Shorewall:net-fw:DROP:IN=eth0 OUT= MAC=00:11 SRC=198.51.100.5 DST=192.0.2.1 PROTO=UDP SPT=40000 DPT=53
+Shorewall:fw-net:REJECT:IN= OUT=eth0 SRC=192.0.2.1 DST=203.0.113.9 PROTO=TCP SPT=44444 DPT=25
+audit: type=1400 apparmor="STATUS" operation="profile_load"

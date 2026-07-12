@@ -138,6 +138,26 @@ def render_connections(output: str) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_log(output: str, *, logformat: str, lines: int) -> str:
+    """Render a bounded tail of firewall log messages from raw kernel-journal text (task #413).
+
+    Pure (no I/O, no ``journalctl``): filters ``output`` to firewall lines — those bearing the
+    ``LOGFORMAT`` prefix head (the template up to its first ``%s``, e.g. ``Shorewall:`` for the
+    default) — then keeps the ``lines`` most-recent matches and prints them in near-native form,
+    one message per line, under the ADR-0065 section banner. Free-form log messages don't fit the
+    ``show rules`` NUM/TARGET columns, so they are shown verbatim rather than in a columnar grid. No
+    matching lines — an empty journal, or one with no firewall lines — renders an empty-but-valid
+    section (the ADR-0065 empty-section contract), not a crash.
+    """
+    head = logformat.split("%s", 1)[0]
+    matching = [line for line in output.splitlines() if head in line]
+    tail = matching[-lines:] if lines > 0 else []
+    if not tail:
+        return "Firewall log\n\n  (no firewall log messages)\n"
+    body = "\n".join(f"  {line}" for line in tail)
+    return f"Firewall log\n\n{body}\n"
+
+
 def _connection_row(line: str) -> tuple[str, str, str, str, str]:
     """Fold one ``conntrack -L`` line into the connection columns (original direction only)."""
     tokens = line.split()

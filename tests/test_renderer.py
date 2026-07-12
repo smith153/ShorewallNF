@@ -176,3 +176,65 @@ def test_render_connections_empty_is_valid_not_a_crash() -> None:
     assert text  # non-empty banner, no exception
     assert "(no tracked connections)" in text
     _assert_golden_in(text, _GOLD_CONN, "empty")
+
+
+# ---- show log: pure journal-text renderer (task #413, ADR-0065) ----------------------------
+
+_FIX_LOG = Path(__file__).parent / "fixtures" / "show_log"
+_GOLD_LOG = Path(__file__).parent / "golden" / "show_log"
+
+_DEFAULT_LOGFORMAT = "Shorewall:%s:%s:"
+
+
+def _load_log(name: str) -> str:
+    return (_FIX_LOG / name).read_text()
+
+
+def test_render_log_filters_to_firewall_lines_and_tails() -> None:
+    # A journal mixing firewall lines (LOGFORMAT prefix head) with unrelated kernel noise:
+    # only the prefix-bearing lines are rendered, near-native (one message per line).
+    text = renderer.render_log(_load_log("kernel.txt"), logformat=_DEFAULT_LOGFORMAT, lines=20)
+    _assert_golden_in(text, _GOLD_LOG, "log")
+    assert "Shorewall:net-fw:DROP" in text
+    assert "USB device" not in text  # non-firewall kernel noise is filtered out
+    assert "apparmor" not in text
+
+
+def test_render_log_default_tail_caps_line_count() -> None:
+    # Default bound is the 20 most-recent matching lines (mirrors upstream `show log`).
+    output = "\n".join(f"Shorewall:net-fw:DROP:seq={i}" for i in range(30)) + "\n"
+    text = renderer.render_log(output, logformat=_DEFAULT_LOGFORMAT, lines=20)
+    body = [ln for ln in text.splitlines() if "seq=" in ln]
+    assert len(body) == 20  # capped at the default
+    assert "seq=29" in text and "seq=10" in text  # the last 20 (10..29)
+    assert "seq=9" not in text  # older lines dropped
+
+
+def test_render_log_lines_override_caps_line_count() -> None:
+    output = "\n".join(f"Shorewall:net-fw:DROP:seq={i}" for i in range(5)) + "\n"
+    text = renderer.render_log(output, logformat=_DEFAULT_LOGFORMAT, lines=2)
+    body = [ln for ln in text.splitlines() if "seq=" in ln]
+    assert len(body) == 2
+    assert "seq=4" in text and "seq=3" in text  # the two most recent
+    assert "seq=2" not in text
+
+
+def test_render_log_empty_when_no_matching_lines() -> None:
+    text = renderer.render_log(_load_log("noise.txt"), logformat=_DEFAULT_LOGFORMAT, lines=20)
+    assert text  # non-empty banner, no exception
+    assert "(no firewall log messages)" in text
+    _assert_golden_in(text, _GOLD_LOG, "empty")
+
+
+def test_render_log_empty_input_is_valid_not_a_crash() -> None:
+    text = renderer.render_log("", logformat=_DEFAULT_LOGFORMAT, lines=20)
+    assert "(no firewall log messages)" in text
+
+
+def test_render_log_uses_custom_logformat_prefix_head() -> None:
+    # A non-default LOGFORMAT changes the prefix head the filter keys on.
+    output = "MyFW:net-fw:DROP:a\nShorewall:net-fw:DROP:b\nMyFW:fw-net:REJECT:c\n"
+    text = renderer.render_log(output, logformat="MyFW:%s:%s:", lines=20)
+    assert "MyFW:net-fw:DROP:a" in text
+    assert "MyFW:fw-net:REJECT:c" in text
+    assert "Shorewall:net-fw:DROP:b" not in text  # a different prefix is not a firewall line here

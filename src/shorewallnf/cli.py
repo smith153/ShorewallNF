@@ -23,6 +23,7 @@ from .applier import (
     check_ruleset,
     clear_ruleset,
     list_connections,
+    list_log,
     list_ruleset,
     restore_ruleset,
     save_ruleset,
@@ -32,7 +33,13 @@ from .generator import generate, generate_stopped
 from .ir import Settings
 from .parser import parse_config, parse_settings
 from .preprocessor import SourceLine, parse_params, preprocess_file
-from .renderer import render_connections, render_policies, render_rules, render_zones
+from .renderer import (
+    render_connections,
+    render_log,
+    render_policies,
+    render_rules,
+    render_zones,
+)
 from .resolver import resolve
 from .validator import validate
 
@@ -141,8 +148,9 @@ def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
     in their source: ``rules`` reads the live ruleset and ``connections`` reads live conntrack
     state (both take no ``config_dir``), while ``zones`` and ``policies`` are compile-time
     declarations not recoverable from live kernel state — they render the config IR, taking a
-    ``config_dir`` positional. ``_dispatch`` routes by ``show_object``; the remaining siblings
-    (#413-#415) add more objects under this same group.
+    ``config_dir`` positional. ``log`` reads live kernel-journal state but takes an *optional*
+    ``config_dir`` (only to read ``LOGFORMAT``) plus ``-n``/``--lines``. ``_dispatch`` routes by
+    ``show_object``; the remaining siblings (#414-#415) add more objects under this same group.
     """
     show_parser = sub.add_parser(verb, help="display firewall state (read-only)")
     objects = show_parser.add_subparsers(dest="show_object", required=True)
@@ -160,14 +168,28 @@ def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
         "policies", help="show the inter-zone default-policy matrix (from config)"
     )
     policies.add_argument("config_dir", help="path to the Shorewall-style config directory")
+    log = objects.add_parser("log", help="show a bounded tail of recent firewall log messages")
+    log.add_argument(
+        "config_dir",
+        nargs="?",
+        help="config directory to read LOGFORMAT from (optional; default template otherwise)",
+    )
+    log.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=20,
+        help="most-recent matching lines to show (default 20)",
+    )
 
 
 def _dispatch_show(args: argparse.Namespace) -> int:
     """Route a read-only ``show``/``list``/``ls`` object (ADR-0065); ``list``/``ls`` are synonyms.
 
-    ``rules`` renders the live ruleset and ``connections`` the live conntrack table (both live,
-    read-only); ``zones``/``policies`` render the compiled config IR reached through the pipeline
-    seam (compile-time declarations, not recoverable from live kernel state).
+    ``rules`` renders the live ruleset, ``connections`` the live conntrack table, and ``log`` a
+    bounded tail of firewall lines from the systemd kernel journal (all live, read-only);
+    ``zones``/``policies`` render the compiled config IR reached through the pipeline seam
+    (compile-time declarations, not recoverable from live kernel state).
     """
     if args.show_object == "rules":
         chains = tuple(args.chains) or None
@@ -175,6 +197,13 @@ def _dispatch_show(args: argparse.Namespace) -> int:
         return 0
     if args.show_object == "connections":
         print(render_connections(list_connections()))
+        return 0
+    if args.show_object == "log":
+        # config_dir is optional: read LOGFORMAT from it when given, else the default template.
+        logformat = (
+            _read_settings(args.config_dir).logformat if args.config_dir else Settings().logformat
+        )
+        print(render_log(list_log(), logformat=logformat, lines=args.lines))
         return 0
     ruleset = parse_config(preprocess(args.config_dir), _read_settings(args.config_dir))
     if args.show_object == "zones":
