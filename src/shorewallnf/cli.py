@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +142,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for verb in _SHOW_VERBS:
         _add_show_group(sub, verb)
     _add_status_verb(sub)
+    _add_dump_verb(sub)
     return parser
 
 
@@ -161,6 +162,21 @@ def _add_status_verb(sub: argparse._SubParsersAction[Any]) -> None:
         metavar="config_dir",
         help="also report per-declared-interface up/down state (from the config dir)",
     )
+
+
+def _add_dump_verb(sub: argparse._SubParsersAction[Any]) -> None:
+    """Add the read-only ``dump`` verb (task #415, ADR-0065).
+
+    A consolidated diagnostic report — live ruleset + declared zones/policies + tracked
+    connections + a bounded log tail — so it takes the config directory (for the IR sections
+    and ``LOGFORMAT``), mirroring ``show log``/``status -i``.
+    """
+    dump_parser = sub.add_parser(
+        "dump",
+        help="emit a consolidated read-only diagnostic report "
+        "(ruleset + zones/policies + connections + log)",
+    )
+    dump_parser.add_argument("config_dir", help="path to the Shorewall-style config directory")
 
 
 def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
@@ -236,6 +252,61 @@ def _dispatch_show(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Bound on the log tail dump shows, matching the `show log` default (#413).
+_DUMP_LOG_LINES = 20
+
+
+def _dump_section(label: str, produce: Callable[[], str]) -> str:
+    """Render one dump section, or an actionable in-section note if its source is unavailable.
+
+    Graceful degradation (#415): a per-section collection failure (``nft``/``conntrack``/journal
+    missing, firewall stopped, …) surfaces as a ``ShorewallNFError`` from the seam; it is caught
+    and rendered under ``label`` so one failing section never aborts the whole report.
+    """
+    try:
+        return produce()
+    except ShorewallNFError as err:
+        return f"{label}\n\n  (unavailable: {err})\n"
+
+
+def _dump_ir_sections(config_dir: str | Path) -> list[str]:
+    """The zones and policies sections, both derived from the one compiled-IR seam (#411).
+
+    They share a source, so they degrade together: if the config can't be read/parsed, each is
+    still emitted as its own labelled section carrying the same actionable note.
+    """
+    try:
+        ir = parse_config(preprocess(config_dir), _read_settings(config_dir))
+    except ShorewallNFError as err:
+        note = f"  (unavailable: {err})\n"
+        return [f"Zones\n\n{note}", f"Policies\n\n{note}"]
+    return [render_zones(ir.zones), render_policies(ir.policies)]
+
+
+def _render_dump(config_dir: str | Path) -> str:
+    """Compose the consolidated read-only diagnostic report (#415, ADR-0065).
+
+    A pure aggregator over the already-merged read-only seams — live ruleset, declared
+    zones/policies (compiled IR), tracked connections, and a bounded log tail — concatenated in
+    order behind labelled section headers. It invents no new collection or renderer and mutates
+    nothing; every section degrades independently (see :func:`_dump_section`).
+    """
+    try:
+        logformat = _read_settings(config_dir).logformat
+    except ShorewallNFError:
+        logformat = Settings().logformat  # config unreadable: still show the tail, default filter
+    sections = [
+        _dump_section("Ruleset", lambda: render_rules(list_ruleset(), table="filter")),
+        *_dump_ir_sections(config_dir),
+        _dump_section("Connections", lambda: render_connections(list_connections())),
+        _dump_section(
+            "Firewall log",
+            lambda: render_log(list_log(), logformat=logformat, lines=_DUMP_LOG_LINES),
+        ),
+    ]
+    return "\n".join(sections)
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.verb in _SHOW_VERBS:
         return _dispatch_show(args)
@@ -248,6 +319,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             preprocess(args.status_config_dir), _read_settings(args.status_config_dir)
         )
         print(render_status(loaded, config_ir.interfaces, link_states()))
+        return 0
+    if args.verb == "dump":
+        print(_render_dump(args.config_dir), end="")
         return 0
     if args.verb == "check":
         streams = preprocess(args.config_dir)
