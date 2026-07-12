@@ -736,3 +736,66 @@ def test_show_log_is_read_only(
         cli, "save_ruleset", lambda r: pytest.fail("show log must not save a ruleset")
     )
     assert cli.main(["show", "log"]) == 0
+
+
+# ---- status: short firewall state plus `-i` per-interface state (task #414) -----------------
+
+
+def test_status_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "status" in capsys.readouterr().out
+
+
+def test_status_short_reports_loaded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "Firewall: loaded" in out
+
+
+def test_status_short_reports_not_loaded_when_stopped_or_cleared(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", lambda: {"nftables": []})
+    assert cli.main(["status"]) == 0  # graceful degradation, not a crash
+    assert "Firewall: stopped or cleared" in capsys.readouterr().out
+
+
+def test_status_short_takes_no_config_dir_positional() -> None:
+    # The short state reads the live ruleset — no config dir is accepted.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["status", "some-dir"])
+    assert exc.value.code == 2
+
+
+def test_status_interfaces_reports_per_interface_state(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    monkeypatch.setattr(cli, "link_states", lambda: {"eth0": True, "eth1": False})
+    assert cli.main(["status", "-i", _POLICY_DIR]) == 0
+    out = capsys.readouterr().out
+    assert "Firewall: loaded" in out
+    assert "Interfaces" in out
+    assert "eth0" in out and "eth1" in out
+
+
+def test_status_interfaces_requires_a_config_dir() -> None:
+    # `-i` takes the config dir as its value — omitting it is an argparse usage error.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["status", "-i"])
+    assert exc.value.code == 2
+
+
+def test_status_interfaces_degrades_when_stopped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "list_ruleset", lambda: {"nftables": []})
+    monkeypatch.setattr(cli, "link_states", lambda: {})
+    assert cli.main(["status", "-i", _POLICY_DIR]) == 0
+    out = capsys.readouterr().out
+    assert "Firewall: stopped or cleared" in out
+    assert "Interfaces" in out  # IR interfaces still render, with live link state

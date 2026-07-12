@@ -839,3 +839,89 @@ def test_list_log_raises_configerror_when_journalctl_fails(
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(ConfigError, match="Permission denied"):
         applier.list_log()
+
+
+# --- short firewall-state predicate + live link-state seam (task #414) ----------------------
+
+
+def test_firewall_loaded_true_when_owned_table_present() -> None:
+    # `nft --json list ruleset` emits bare `{"table": {...}}` objects; any OWNED_TABLES entry
+    # means the firewall is loaded.
+    ruleset = {
+        "nftables": [
+            {"metainfo": {"version": "1.0.9"}},
+            {"table": {"family": "inet", "name": "filter", "handle": 1}},
+        ]
+    }
+    assert applier.firewall_loaded(ruleset) is True
+
+
+def test_firewall_loaded_false_on_empty_ruleset() -> None:
+    # A stopped/cleared firewall leaves no owned table — the short state is not-loaded, not a crash.
+    assert applier.firewall_loaded({"nftables": []}) is False
+    assert applier.firewall_loaded({}) is False
+
+
+def test_firewall_loaded_ignores_co_resident_foreign_tables() -> None:
+    # A table ShorewallNF does not own must not read as loaded.
+    ruleset = {"nftables": [{"table": {"family": "ip", "name": "not-ours", "handle": 9}}]}
+    assert applier.firewall_loaded(ruleset) is False
+
+
+def test_link_states_invokes_ip_json_and_maps_up_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    output = json.dumps(
+        [
+            {"ifname": "lo", "flags": ["LOOPBACK", "UP", "LOWER_UP"]},
+            {"ifname": "eth0", "flags": ["BROADCAST", "MULTICAST", "UP"]},
+            {"ifname": "eth1", "flags": ["BROADCAST", "MULTICAST"]},
+        ]
+    )
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert applier.link_states() == {"lo": True, "eth0": True, "eth1": False}
+    assert seen["cmd"] == ["ip", "--json", "link", "show"]
+
+
+def test_link_states_is_read_only_by_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        assert kwargs.get("input") is None  # a query streams nothing to load
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    applier.link_states()
+
+    assert "show" in seen["cmd"]
+    for mutating in ("set", "add", "delete", "del", "flush", "change"):
+        assert mutating not in seen["cmd"]
+
+
+def test_link_states_missing_binary_raises_shorewallnferror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(2, "No such file or directory", "ip")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ShorewallNFError, match="ip"):
+        applier.link_states()
+
+
+def test_link_states_raises_configerror_when_ip_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "ip: something went wrong")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ConfigError, match="something went wrong"):
+        applier.link_states()
