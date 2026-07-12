@@ -1,0 +1,38 @@
+{
+  "nftables": [
+    { "metainfo": { "version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1 } },
+    { "table": { "family": "inet", "name": "filter", "handle": 1 } },
+    { "chain": { "family": "inet", "table": "filter", "name": "input", "handle": 1, "type": "filter", "hook": "input", "prio": 0, "policy": "drop" } },
+    { "rule": { "family": "inet", "table": "filter", "chain": "input", "handle": 10, "expr": [
+      { "reject": { "type": "icmpx", "expr": "admin-prohibited" } }
+    ] } },
+    { "rule": { "family": "inet", "table": "filter", "chain": "input", "handle": 11, "expr": [
+      { "reject": { "type": "tcp reset" } }
+    ] } },
+    { "rule": { "family": "inet", "table": "filter", "chain": "input", "handle": 12, "expr": [
+      { "reject": null }
+    ] } },
+    { "rule": { "family": "inet", "table": "filter", "chain": "input", "handle": 13, "expr": [
+      { "match": { "op": "==", "left": { "payload": { "protocol": "ip6", "field": "hoplimit" } }, "right": 1 } },
+      { "drop": null }
+    ] } },
+    { "table": { "family": "inet", "name": "nat", "handle": 2 } },
+    { "chain": { "family": "inet", "table": "nat", "name": "prerouting", "handle": 4, "type": "nat", "hook": "prerouting", "prio": -100, "policy": "accept" } },
+    { "chain": { "family": "inet", "table": "nat", "name": "postrouting", "handle": 5, "type": "nat", "hook": "postrouting", "prio": 100, "policy": "accept" } },
+    { "rule": { "family": "inet", "table": "nat", "chain": "prerouting", "handle": 20, "expr": [
+      { "dnat": { "addr": { "range": ["192.0.2.1", "192.0.2.10"] } } }
+    ] } },
+    { "rule": { "family": "inet", "table": "nat", "chain": "prerouting", "handle": 21, "expr": [
+      { "dnat": { "addr": "192.0.2.1", "port": { "range": [4000, 4100] } } }
+    ] } },
+    { "rule": { "family": "inet", "table": "nat", "chain": "prerouting", "handle": 22, "expr": [
+      { "dnat": { "addr": { "set": ["192.0.2.1", "192.0.2.2"] } } }
+    ] } },
+    { "rule": { "family": "inet", "table": "nat", "chain": "prerouting", "handle": 23, "expr": [
+      { "dnat": { "addr": "192.0.2.10", "port": 80, "flags": "random" } }
+    ] } },
+    { "rule": { "family": "inet", "table": "nat", "chain": "postrouting", "handle": 24, "expr": [
+      { "snat": { "addr": "203.0.113.5", "flags": ["random", "persistent"] } }
+    ] } }
+  ]
+}

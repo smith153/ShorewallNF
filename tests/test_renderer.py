@@ -78,6 +78,45 @@ def test_render_unknown_chain_on_stopped_firewall_degrades() -> None:
     assert text  # empty-but-valid, no exception
 
 
+# ---- verdict DETAIL coverage: reject reason, snat/dnat ranges/flags, PROTO (task #426) ------
+
+
+def test_render_reject_reason_surfaced() -> None:
+    # A reject with an ICMP type/`with` body carries its reason into DETAIL rather than dropping it.
+    text = renderer.render_rules(_load("verdict_detail.json"), table="filter")
+    _assert_golden(text, "verdict_detail_filter")
+    assert "REJECT" in text
+    assert "with icmpx admin-prohibited" in text  # type + expr reason
+    assert "with tcp reset" in text  # type-only reason
+    # A bare `{"reject": null}` still renders REJECT with an empty DETAIL (no regression):
+    # its row has only NUM/TARGET/PROTO/SOURCE/DEST columns and no `with` reason.
+    reject_rows = [ln for ln in text.splitlines() if "REJECT" in ln]
+    assert any("with" not in ln and len(ln.split()) == 5 for ln in reject_rows)
+
+
+def test_render_l3_payload_field_does_not_hijack_proto() -> None:
+    # An L3 payload field (ip6 hoplimit) must not overwrite PROTO with the family name; it goes to
+    # DETAIL and PROTO stays `all`.
+    text = renderer.render_rules(_load("verdict_detail.json"), table="filter")
+    hop = next(ln for ln in text.splitlines() if "hoplimit" in ln)
+    cols = hop.split()
+    assert cols[2] == "all"  # PROTO column not hijacked to `ip6`
+    assert "ip6" not in cols[2]
+    assert "ip6 hoplimit 1" in hop  # the field is surfaced in DETAIL
+
+
+def test_render_snat_dnat_ranges_flags_via_value_helper() -> None:
+    # addr/port render through _value() (ranges, sets), and NAT flags are appended, not dropped.
+    text = renderer.render_rules(_load("verdict_detail.json"), table="nat")
+    _assert_golden(text, "verdict_detail_nat")
+    assert "to 192.0.2.1-192.0.2.10" in text  # address range
+    assert "to 192.0.2.1:4000-4100" in text  # port range (no raw Python dict repr)
+    assert "{'range'" not in text and "{\"range\"" not in text  # dict-repr defect fixed
+    assert "to {192.0.2.1,192.0.2.2}" in text  # set-valued addr
+    assert "to 192.0.2.10:80 flags random" in text  # scalar flag appended
+    assert "to 203.0.113.5 flags random,persistent" in text  # list flags appended
+
+
 # ---- show zones / show policies: pure IR renderers (task #411, ADR-0065) ----------
 
 from shorewallnf import ir  # noqa: E402

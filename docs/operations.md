@@ -91,6 +91,11 @@ Chain input (policy drop)
     2  ACCEPT  tcp    192.0.2.0/24   any          dport {80,443}
 ```
 
+The `DETAIL` column carries whatever doesn't fit a dedicated column: a `REJECT`'s reason
+(`with icmpx admin-prohibited`, `with tcp reset`), and a `DNAT`/`SNAT` target with its address and
+port rendered compactly — ranges as `192.0.2.1-192.0.2.10`, sets as `{a,b}`, plus any NAT `flags`
+(`to 192.0.2.10:80 flags random`).
+
 When the firewall is stopped or cleared, `show rules` prints an empty-but-valid report and exits 0
 rather than erroring; a chain name that does not exist in a running table fails fast with one clear
 error.

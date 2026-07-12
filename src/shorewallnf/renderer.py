@@ -322,7 +322,10 @@ def _apply_match(
             detail.append(f"{field} {prefix}{right}")
             return new_proto, source, dest
         detail.append(f"{payload_proto} {field} {prefix}{right}")
-        return (str(payload_proto) if proto == "all" else proto), source, dest
+        # An L4 field carries a usable PROTO (icmp/tcp/…); an L3 family name (ip/ip6) must not
+        # hijack the PROTO column — leave it `all` (or the already-set L4 proto).
+        promote = proto == "all" and payload_proto not in ("ip", "ip6")
+        return (str(payload_proto) if promote else proto), source, dest
     if "meta" in left:
         key = left["meta"].get("key")
         label = {"iifname": "in", "oifname": "out"}.get(key, key)
@@ -350,16 +353,41 @@ def _verdict(expr: dict[str, Any]) -> tuple[str, list[str]] | None:
 
 
 def _verdict_detail(key: str, body: Any) -> list[str]:
+    if key == "reject":
+        return _reject_detail(body)
     if key in ("dnat", "snat", "redirect") and isinstance(body, dict):
-        addr = body.get("addr")
-        port = body.get("port")
-        if addr is not None and port is not None:
-            return [f"to {addr}:{port}"]
-        if addr is not None:
-            return [f"to {addr}"]
-        if port is not None:
-            return [f"to :{port}"]
+        return _nat_detail(body)
     return []
+
+
+def _reject_detail(body: Any) -> list[str]:
+    """The ``with <type> [reason]`` reject body, or ``[]`` for a bare drop-style reject."""
+    if not isinstance(body, dict):
+        return []
+    parts = [str(body[key]) for key in ("type", "expr") if body.get(key) is not None]
+    return [f"with {' '.join(parts)}"] if parts else []
+
+
+def _nat_detail(body: dict[str, Any]) -> list[str]:
+    """The ``to <addr>[:port] [flags …]`` tokens for a snat/dnat/redirect body.
+
+    addr and port go through :func:`_value` so ranges/sets/prefixes render as compact tokens
+    (``192.0.2.1-192.0.2.10``, ``{a,b}``) instead of a raw Python dict repr.
+    """
+    addr = body.get("addr")
+    port = body.get("port")
+    tokens: list[str] = []
+    if addr is not None and port is not None:
+        tokens.append(f"to {_value(addr)}:{_value(port)}")
+    elif addr is not None:
+        tokens.append(f"to {_value(addr)}")
+    elif port is not None:
+        tokens.append(f"to :{_value(port)}")
+    flags = body.get("flags")
+    if flags is not None:
+        rendered = ",".join(flags) if isinstance(flags, list) else str(flags)
+        tokens.append(f"flags {rendered}")
+    return tokens
 
 
 def _value(right: Any) -> str:
