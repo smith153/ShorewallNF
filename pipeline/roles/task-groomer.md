@@ -37,6 +37,12 @@ Review each task against this checklist:
 2. **Right altitude?** Not a whole epic, not a trivial sub-step.
 3. **Not a duplicate** of another task.
 4. **Testable acceptance criteria?** Concrete, observable conditions — not "works well".
+   **Docs currency:** a feature task that changes user-observable config syntax or firewall
+   behavior must carry an AC to update the relevant `docs/reference/*.md` page (or an explicit
+   note stating which page applies and why no change is needed). If that AC is missing, send it
+   back (`status:needs-refinement`) unless the task explicitly states no user-facing doc applies
+   and why. Pure-internal refactors, test-only, and tooling tasks are exempt but must say so
+   ("no user-facing change").
 5. **Dependencies correct?** `blocked-by` reflects real ordering; `status:blocked` set if a blocker is open.
 
 **Bug triage** — a `type:bug` is usually filed straight from the bug form, outside any epic.
