@@ -20,7 +20,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: Testable conditions (given/when/then where possible).
+      description: "Testable conditions (given/when/then where possible). For user-facing feature work, include an AC to update the relevant docs/reference/*.md page (name it) — or state which page applies and why no change is needed. Internal/test-only/tooling tasks: note \"no user-facing change\"."
     validations:
       required: true
   - type: textarea

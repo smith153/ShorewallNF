@@ -43,7 +43,14 @@ pre-filter claimed epics — a lost race just returns `422`.
 3. Slice the epic into the smallest units that each carry their own test cycle and are worth
    a reviewer's gate. Fold setup/scaffolding into the task that needs it.
 4. Order them: derive the dependency chain and record it with `blocked-by`.
-5. Give every task a one-sentence goal and concrete, testable acceptance criteria.
+5. Give every task a one-sentence goal and concrete, testable acceptance criteria. **Keep the
+   user-facing reference docs current in the same task:** any task that changes user-observable
+   config syntax or firewall behavior must carry an explicit acceptance criterion to update the
+   relevant `docs/reference/*.md` page (name it, e.g. `docs/reference/rules.md`), **or** an
+   explicit note stating which page applies and why no change is needed. This keeps code and docs
+   in one PR/review so they can't drift — do not spawn a separate `type:docs` task for it.
+   *Scope:* the requirement applies only to user-facing feature work; pure-internal refactors,
+   test-only, and tooling tasks are exempt but must say so ("no user-facing change").
 6. **Reserve a new ADR's number** if a task introduces one. Allocate the next free `NNNN` —
    above the highest in `docs/adr/` **and** any number already reserved by another open task —
    and record it in that task's body (see Outputs), so implementers never race for the same

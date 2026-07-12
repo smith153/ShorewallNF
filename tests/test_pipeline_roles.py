@@ -228,3 +228,52 @@ def test_implementer_bounded_blocked_claim_to_stack() -> None:
     assert not missing, (
         "implementer.md missing bounded blocked-claim elements: " + ", ".join(missing)
     )
+
+
+# --- feature tasks must keep docs/reference/ current (#428) -------------------
+
+GROOMER = ROOT / "pipeline" / "roles" / "task-groomer.md"
+TASK_TEMPLATE = ROOT / ".github" / "ISSUE_TEMPLATE" / "task.yml"
+DOCS_REF = "docs/reference/"
+
+
+def test_decomposer_writes_docs_currency_ac() -> None:
+    """Feature tasks shipped code while docs/reference/ went stale (#428). The Decomposer must
+    write a docs-currency acceptance criterion for any user-facing task — update the relevant
+    docs/reference/ page or state why none applies — with an explicit exemption for
+    internal/test-only/tooling work. Guard it against a silent drop by a future edit."""
+    text = DECOMPOSER.read_text()
+    lowered = text.lower()
+    assert DOCS_REF in text, (
+        "epic-decomposer.md must require a docs/reference/ acceptance criterion"
+    )
+    assert "user-facing" in lowered or "user-observable" in lowered, (
+        "epic-decomposer.md must scope the requirement to user-facing work"
+    )
+    assert "exempt" in lowered or "no user-facing change" in lowered, (
+        "epic-decomposer.md must exempt internal/test-only/tooling tasks (which must say so)"
+    )
+
+
+def test_groomer_gates_docs_currency() -> None:
+    """The Groomer's testable-AC check (#4) must gate docs currency: a feature task whose AC omits
+    the docs/reference/ update is sent back (needs-refinement) unless it states no user-facing doc
+    applies and why (#428). Guard the sub-check against a silent drop."""
+    text = GROOMER.read_text()
+    lowered = text.lower()
+    assert DOCS_REF in text, "task-groomer.md must add a docs/reference/ currency sub-check"
+    assert "needs-refinement" in lowered, (
+        "task-groomer.md must send a docs-stale feature task back to needs-refinement"
+    )
+    assert "exempt" in lowered or "no user-facing" in lowered, (
+        "task-groomer.md must honor the internal/test-only/tooling exemption"
+    )
+
+
+def test_task_template_prompts_docs_currency() -> None:
+    """The task template's Acceptance criteria field must prompt the author for the
+    docs/reference/ update (or a note that none applies) (#428)."""
+    text = TASK_TEMPLATE.read_text()
+    assert DOCS_REF in text, (
+        "task.yml Acceptance criteria description must prompt for the docs/reference/ update"
+    )
