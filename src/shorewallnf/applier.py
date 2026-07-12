@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -376,6 +378,28 @@ def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> 
 SAFE_APPLY_SNAPSHOT_PATH = Path("/var/lib/shorewallnf/pre-try-snapshot.json")
 
 
+def prompt_confirm(timeout: int) -> bool:
+    """Prompt the operator to confirm the candidate ruleset within ``timeout`` seconds (#439).
+
+    The default ``confirm`` seam for the interactive ``safe-reload``/``safe-start`` verbs: print a
+    prompt on the controlling terminal and wait up to ``timeout`` seconds for an answer, bounding
+    the window so an unattended box always self-reverts. Returns ``True`` only on an explicit
+    affirmative (``y``/``yes``); a negative answer, blank line, EOF, or the window elapsing with no
+    input returns ``False`` — fail-closed to revert. Split out behind :func:`safe_apply`'s
+    injectable ``confirm`` parameter so tests never touch real stdin/TTY (ADR-0003 shell seam).
+    """
+    print(
+        f"Keep this ruleset? Reply within {timeout}s or it auto-reverts [y/N]: ",
+        end="",
+        flush=True,
+    )
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    if not ready:
+        print()  # terminate the prompt line the operator never answered
+        return False
+    return sys.stdin.readline().strip().lower() in {"y", "yes"}
+
+
 def safe_apply(
     candidate: dict[str, Any],
     stopped: dict[str, Any],
@@ -383,22 +407,30 @@ def safe_apply(
     timeout: int | None = None,
     snapshot_path: Path = SAFE_APPLY_SNAPSHOT_PATH,
     wait: Callable[[int], None] = time.sleep,
-) -> None:
-    """Apply ``candidate`` with auto-revert — the safe-apply primitive (task #437, ADR-0067).
+    confirm: Callable[[int], bool] | None = None,
+) -> bool:
+    """Apply ``candidate`` with auto-revert — the safe-apply primitive (task #437/#439, ADR-0067).
 
     One reusable helper wiring the shipped building blocks: capture the *running* ruleset
     (:func:`list_ruleset`), dry-run check then atomically load ``candidate``
-    (:func:`check_ruleset`/:func:`apply_ruleset`), and — when ``timeout`` is given — wait the
-    window, then revert to the pre-``try`` state. A check/apply failure raises (fail-fast,
-    ADR-0004) before any revert is armed; the load is atomic, so a rejected ``candidate`` leaves the
-    running ruleset unchanged.
+    (:func:`check_ruleset`/:func:`apply_ruleset`), and — when ``timeout`` is given — either wait the
+    window (``try``) or prompt the operator to confirm (``safe-reload``/``safe-start``), then keep
+    or revert. A check/apply failure raises (fail-fast, ADR-0004) before any revert is armed or the
+    operator is prompted; the load is atomic, so a rejected ``candidate`` leaves the running ruleset
+    unchanged. Returns ``True`` when the candidate is kept as the final running state (the caller
+    then persists), ``False`` when it was reverted.
 
-    The revert target is the pre-``try`` state: the captured snapshot when a firewall was running
+    Post-window policy is set by ``confirm``: when ``None`` (the ``try`` path) the primitive
+    :func:`wait`\\ s the window then reverts **unconditionally**; when given, it calls
+    ``confirm(timeout)`` in place of the blind wait and reverts only on a falsey answer, keeping the
+    candidate on an affirmative one.
+
+    The revert target is the pre-apply state: the captured snapshot when a firewall was running
     (:func:`firewall_loaded` true), or :func:`clear_ruleset` when nothing was. The snapshot is
-    written to its **own** ``snapshot_path`` — never :data:`DEFAULT_RULESET_PATH` — so a ``try``
+    written to its **own** ``snapshot_path`` — never :data:`DEFAULT_RULESET_PATH` — so a safe-apply
     does not touch the persisted ruleset. If the restore itself fails, the primitive falls closed to
-    the ``stopped`` safe-state ruleset (ADR-0021), never a wide-open firewall. ``wait`` is
-    injectable so the timeout window is unit-testable without sleeping.
+    the ``stopped`` safe-state ruleset (ADR-0021), never a wide-open firewall. ``wait``/``confirm``
+    are injectable so the window is unit-testable without sleeping or reading stdin.
     """
     running = list_ruleset()
     was_running = firewall_loaded(running)
@@ -407,15 +439,19 @@ def safe_apply(
     check_ruleset(candidate)
     apply_ruleset(candidate)
     if timeout is None:
-        return
-    wait(timeout)
+        return True
+    if confirm is None:
+        wait(timeout)
+    elif confirm(timeout):
+        return True  # operator confirmed reachability -> keep the candidate (caller persists)
     if not was_running:
         clear_ruleset()
-        return
+        return False
     try:
         restore_ruleset(snapshot_path)
     except ShorewallNFError:
         apply_ruleset(stopped)  # fail-closed: stopped safe state, never wide open (ADR-0021/0004)
+    return False
 
 
 # --- provider policy routing via iproute2 (task #235, ADR-0050) ----------------------------

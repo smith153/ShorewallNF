@@ -43,22 +43,30 @@ owner-only (`0o600`) — a ruleset can encode network topology, so it is never w
 and a crash mid-save never leaves a truncated file that a boot restore would then load. The
 path is `applier.DEFAULT_RULESET_PATH` in code.
 
-## Safe-apply with auto-revert (`try`)
+## Safe-apply with auto-revert (`try`, `safe-reload`, `safe-start`)
 
-The `try DIR [timeout]` verb ([Operations → Safe-apply](operations.md#safe-apply-with-try)) reuses
-this same save/restore machinery for a different purpose: protecting a remote operator from a
-config change that locks them out. It is a snapshot → apply → (timeout-)revert wrapper around the
-primitives above, fixed in [ADR-0067](adr/0067-safe-apply-auto-revert-model.md).
+The safe-apply verbs ([Operations → Safe-apply](operations.md#safe-apply-with-try)) reuse this same
+save/restore machinery for a different purpose: protecting a remote operator from a config change
+that locks them out. They are one snapshot → apply → (timeout-)revert primitive, fixed in
+[ADR-0067](adr/0067-safe-apply-auto-revert-model.md); `try` reverts on a blind timer, while
+`safe-reload`/`safe-start` revert unless the operator confirms.
 
 - **The snapshot is of the *running* ruleset**, captured with the same `save_ruleset` writer — but
-  to its **own** path, **not** `/var/lib/shorewallnf/ruleset.json`. A `try` never mutates the
-  persisted ruleset, so the save-on-`apply` state is untouched (the ADR-0030 contract above holds).
-- **The revert re-uses `restore` semantics.** When the timeout elapses, `try` restores that
-  snapshot through the same atomic applier — or, when nothing was running before the `try`, clears
-  to the empty state it started from rather than re-applying a stale on-disk ruleset.
-- **Fail-closed, like boot restore.** If the snapshot restore itself fails, `try` falls to the
-  [stopped safe state](operations.md#the-stopped-safe-state) rather than leaving the host wide open
-  — the same never-flush-to-empty guarantee the restore verb makes.
+  to its **own** path, **not** `/var/lib/shorewallnf/ruleset.json`. A safe-apply never mutates the
+  persisted ruleset on the revert path, so the save-on-`apply` state is untouched (the ADR-0030
+  contract above holds).
+- **The revert re-uses `restore` semantics.** On timeout (`try`) or a negative/absent confirmation
+  (`safe-reload`/`safe-start`), the snapshot is restored through the same atomic applier — or, when
+  nothing was running beforehand, cleared to the empty state it started from rather than re-applying
+  a stale on-disk ruleset.
+- **A *confirmed* `safe-reload`/`safe-start` writes `/var/lib/shorewallnf/ruleset.json`.** The
+  interactive variants prompt the operator within a bounded window (default 60 s); on an affirmative
+  answer the candidate is kept **and persisted** via `save_ruleset` to the same
+  `DEFAULT_RULESET_PATH` as `apply`, so a confirmed safe-apply survives a reboot. `try` and any
+  reverted safe-apply never write that path.
+- **Fail-closed, like boot restore.** If the snapshot restore itself fails, the safe-apply falls to
+  the [stopped safe state](operations.md#the-stopped-safe-state) rather than leaving the host wide
+  open — the same never-flush-to-empty guarantee the restore verb makes.
 
 ## Boot-time restore (systemd)
 

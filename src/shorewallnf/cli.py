@@ -28,6 +28,7 @@ from .applier import (
     list_log,
     list_ruleset,
     parse_timeout,
+    prompt_confirm,
     restore_ruleset,
     safe_apply,
     save_ruleset,
@@ -71,6 +72,10 @@ _SHOW_TABLES = ("filter", "nat", "mangle", "raw")
 # start/reload/restart share apply's compile->check->apply mechanism (incremental diff
 # deferred, #175); they differ only in the confirmation line the operator sees.
 _LIFECYCLE_MESSAGE = {"start": "started", "reload": "reloaded", "restart": "reloaded"}
+
+# safe-reload/safe-start share the interactive safe-apply mechanism (task #439); like
+# start/reload they differ only in the confirmation line the operator sees.
+_SAFE_MESSAGE = {"safe-reload": "safe-reloaded", "safe-start": "safe-started"}
 
 
 def preprocess(config_dir: str | Path) -> dict[str, list[SourceLine]]:
@@ -146,7 +151,31 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_status_verb(sub)
     _add_dump_verb(sub)
     _add_try_verb(sub)
+    for verb in _SAFE_MESSAGE:
+        _add_safe_verb(sub, verb)
     return parser
+
+
+def _add_safe_verb(sub: argparse._SubParsersAction[Any], verb: str) -> None:
+    """Add an interactive safe-apply verb — ``safe-reload``/``safe-start`` (task #439, ADR-0067).
+
+    Like ``try``, these need an *optional* ``-t/--timeout`` flag rather than a flat config verb, so
+    each gets its own parser. Both are privileged: compile → dry-run check → atomically load the
+    candidate, then prompt the operator to confirm within the window; on confirm the candidate is
+    kept **and persisted**, on a negative answer or the window elapsing it auto-reverts to the
+    pre-apply state (see :func:`~shorewallnf.applier.safe_apply`).
+    """
+    safe_parser = sub.add_parser(
+        verb,
+        help="apply a config, then keep+persist it only if the operator confirms; else auto-revert",
+    )
+    safe_parser.add_argument("config_dir", help="path to the Shorewall-style config directory")
+    safe_parser.add_argument(
+        "-t",
+        "--timeout",
+        metavar="timeout",
+        help="confirmation window before auto-revert (e.g. 30, 45s, 5m, 2h; default 60s)",
+    )
 
 
 def _add_try_verb(sub: argparse._SubParsersAction[Any]) -> None:
@@ -378,6 +407,19 @@ def _dispatch(args: argparse.Namespace) -> int:
         stopped = compile_stopped(args.config_dir)
         safe_apply(candidate, stopped, timeout=timeout)
         print(f"tried: {args.config_dir}")
+        return 0
+    if args.verb in _SAFE_MESSAGE:
+        # Default the confirmation window to 60s so an unattended box always self-reverts.
+        window = parse_timeout(args.timeout) if args.timeout is not None else 60
+        candidate = compile_config(args.config_dir)
+        stopped = compile_stopped(args.config_dir)
+        kept = safe_apply(candidate, stopped, timeout=window, confirm=prompt_confirm)
+        if kept:
+            # confirmed -> persist, unlike try (this is why apply is no longer the only saver).
+            save_ruleset(candidate)
+            print(f"{_SAFE_MESSAGE[args.verb]}: {args.config_dir}")
+        else:
+            print(f"reverted: {args.config_dir}")
         return 0
     if args.verb == "restore":
         restore_ruleset()

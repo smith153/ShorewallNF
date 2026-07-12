@@ -5,8 +5,8 @@ guarantees, and how the firewall survives a reboot.
 
 Every verb takes the form `shorewallnf <verb> [config-dir]`. The verbs that only read a config
 (`check`, `compile`) need no privileges; the verbs that touch the live kernel ruleset
-(`apply`, `start`, `reload`, `restart`, `try`, `stop`, `clear`, `restore`) need `CAP_NET_ADMIN` —
-run them as root (e.g. with `sudo`).
+(`apply`, `start`, `reload`, `restart`, `try`, `safe-reload`, `safe-start`, `stop`, `clear`,
+`restore`) need `CAP_NET_ADMIN` — run them as root (e.g. with `sudo`).
 
 ## Lifecycle verbs
 
@@ -19,6 +19,8 @@ run them as root (e.g. with `sudo`).
 | `reload` | required | yes | Compile → dry-run check → atomically replace the running ruleset. Does **not** persist. |
 | `restart` | required | yes | Alias of `reload`: atomically replace the running ruleset. |
 | `try` | required | yes | [Safe-apply](#safe-apply-with-try): snapshot the running ruleset, compile → dry-run check → atomically load `DIR`, and — given an optional `timeout` — auto-revert to the pre-`try` state after the window. Does **not** persist. |
+| `safe-reload` | required | yes | [Interactive safe-apply](#interactive-safe-apply-safe-reload-and-safe-start): apply `DIR` like `try`, then **prompt** the operator to confirm within `-t timeout` (default 60 s). On confirm it keeps **and persists** the ruleset; on a negative answer or timeout it auto-reverts. |
+| `safe-start` | required | yes | Same interactive confirm-or-revert flow as `safe-reload` (identical mechanism; distinct intent/message). |
 | `stop` | required | yes | Drop to the [stopped safe state](#the-stopped-safe-state): still admits declared admin access, drops the rest. |
 | `clear` | required | yes | Remove all ShorewallNF-owned tables, leaving traffic **unfiltered**. |
 | `restore` | none | yes | Re-load the last [persisted ruleset](#persistence-and-boot-restore) from disk, fail-closed. |
@@ -29,9 +31,11 @@ A few operational notes cross-checked against the CLI:
   hand nftables one transaction; a ruleset nft rejects commits nothing and leaves the running
   ruleset unchanged (the command exits non-zero with nft's error text). A wrong firewall never
   half-lands.
-- **`apply` is the only verb that persists.** `start`, `reload`, and `restart` load the same
-  compiled ruleset but do **not** write it to disk — so a reboot after a bare `start` comes up
-  with the last *applied* ruleset, not the last *started* one. Use `apply` when you want the
+- **`apply` and a *confirmed* `safe-reload`/`safe-start` persist; nothing else does.** `apply`
+  persists unconditionally; a `safe-reload`/`safe-start` persists only once the operator confirms
+  (a reverted one does not). `start`, `reload`, `restart`, and `try` load the compiled ruleset but
+  do **not** write it to disk — so a reboot after a bare `start` comes up with the last *persisted*
+  ruleset, not the last *started* one. Use `apply` (or a confirmed `safe-reload`) when you want the
   change to survive a reboot. See [Persistence and boot-restore](#persistence-and-boot-restore).
 - **`start`, `reload`, and `restart` are currently equivalent** — all three compile the config
   and atomically replace the running ruleset (they differ only in the confirmation line printed).
@@ -50,7 +54,7 @@ dry-run → atomic load — but wraps it in an **auto-revert** so a change that 
 remote host cannot become permanent. It never persists (like `start`/`reload`, it leaves
 `/var/lib/shorewallnf/ruleset.json` untouched), and the auto-revert model is fixed in
 [ADR-0067](adr/0067-safe-apply-auto-revert-model.md) — see also
-[lifecycle.md → safe-apply](lifecycle.md#safe-apply-with-auto-revert-try).
+[lifecycle.md → safe-apply](lifecycle.md#safe-apply-with-auto-revert-try-safe-reload-safe-start).
 
 - **It snapshots the *running* ruleset first**, not the last-saved one, and writes that snapshot
   to its own path — never the persisted `ruleset.json`. If nothing was running (a stopped or
@@ -68,6 +72,38 @@ remote host cannot become permanent. It never persists (like `start`/`reload`, i
 ```bash
 # Apply a config for 5 minutes; if it locks you out, it reverts itself and you reconnect.
 sudo shorewallnf try /etc/shorewallnf 5m
+```
+
+### Interactive safe-apply (`safe-reload` and `safe-start`)
+
+`safe-reload` and `safe-start` are the **interactive** siblings of `try`. They apply a candidate
+config exactly as `try` does — snapshot the running ruleset, compile → `nft --check` dry-run →
+atomic load — but instead of reverting on a blind timer they **prompt the operator to confirm the
+box is still reachable**, and only then keep the change. This is the remote-lockout protection of
+the safe-apply model ([ADR-0067](adr/0067-safe-apply-auto-revert-model.md)): push a rule over SSH,
+and if it cuts your own session you simply never answer the prompt and the firewall self-heals.
+
+- **Confirm keeps *and* persists.** On an affirmative answer (`y`/`yes`) within the window the
+  candidate is left running **and** written to `/var/lib/shorewallnf/ruleset.json` via the same
+  save-on-`apply` writer — so a confirmed `safe-reload`/`safe-start` survives a reboot (unlike
+  `try`, which never persists). This is why `apply` is no longer the *only* persisting verb.
+- **No confirm, negative answer, or timeout reverts.** A negative answer, EOF, or the window
+  elapsing with no reply auto-reverts to the pre-apply snapshot (or `clear` if nothing was
+  running); the persisted `ruleset.json` is **not** written on the revert path.
+- **`-t`/`--timeout` bounds the window** and defaults to **60 s** when omitted — the prompt must
+  always be bounded so an unattended box self-reverts. It takes the same syntax as `try`'s
+  timeout: a bare number of seconds or an `s`/`m`/`h` suffix (`30`, `45s`, `5m`, `2h`).
+- **Fail-fast and fail-closed, like `try`.** A compile or apply failure exits non-zero with one
+  clear error and never reaches the prompt (the running and saved rulesets are untouched); if the
+  revert itself fails, the firewall lands in the [stopped safe state](#the-stopped-safe-state), not
+  wide open.
+
+`safe-reload` and `safe-start` share one mechanism and differ only in intent and the confirmation
+line printed — mirroring how `reload` relates to `start`.
+
+```bash
+# Reload over SSH with a 2-minute confirm window; answer "y" only once you're still connected.
+sudo shorewallnf safe-reload -t 2m /etc/shorewallnf
 ```
 
 ### A typical flow
@@ -241,9 +277,11 @@ re-load it after a reboot.
 - **Where it lives.** The effective ruleset is saved to `/var/lib/shorewallnf/ruleset.json`
   (`/var/lib` is the FHS home for persistent application state). It holds the generated nftables
   JSON verbatim.
-- **When it is written (save-on-apply).** A successful `apply` persists the exact ruleset it
-  loaded, immediately after the live load succeeds — so a rejected load never overwrites a good
-  saved ruleset. This is the **only** auto-save: `start`/`reload`/`restart` do not persist.
+- **When it is written (save-on-apply, and on a confirmed safe-apply).** A successful `apply`
+  persists the exact ruleset it loaded, immediately after the live load succeeds — so a rejected
+  load never overwrites a good saved ruleset. A `safe-reload`/`safe-start` persists the same way,
+  but only once the operator confirms; `start`/`reload`/`restart` and an unconfirmed `try` do not
+  persist.
 - **How it is written.** The file is created owner-only (`0o600`) — a ruleset can encode network
   topology, so it is never world-readable — and published atomically (temp file + `fsync` +
   rename). A reader sees either the old file or the new one, never a truncated one, so a crash

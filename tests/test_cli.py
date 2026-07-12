@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from shorewallnf import cli
-from shorewallnf.applier import DEFAULT_RULESET_PATH
+from shorewallnf.applier import DEFAULT_RULESET_PATH, prompt_confirm
 from shorewallnf.errors import ConfigError, ShorewallNFError
 
 
@@ -990,3 +990,128 @@ def test_try_verb_does_not_apply_or_persist_after_compile_failure(
     assert applied is False  # compile failure terminates before the safe-apply seam
     assert saved is False
     assert "error:" in capsys.readouterr().err
+
+
+# --- safe-reload / safe-start verbs: apply, confirm, persist-or-revert (task #439) ------------
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_in_help(verb: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert verb in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_defaults_timeout_to_60s_and_passes_confirm(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "compile_config", lambda d: {"candidate": d})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {"stopped": d})
+
+    def fake_safe_apply(
+        candidate: Any, stopped: Any, *, timeout: int, confirm: Any
+    ) -> bool:
+        seen.update(candidate=candidate, stopped=stopped, timeout=timeout, confirm=confirm)
+        return True
+
+    monkeypatch.setattr(cli, "safe_apply", fake_safe_apply)
+    saved: list[Any] = []
+    monkeypatch.setattr(cli, "save_ruleset", lambda rs: saved.append(rs))
+    assert cli.main([verb, _COMPILE_DIR]) == 0
+    assert seen["candidate"] == {"candidate": _COMPILE_DIR}
+    assert seen["stopped"] == {"stopped": _COMPILE_DIR}
+    assert seen["timeout"] == 60  # default confirmation window when -t is omitted
+    assert seen["confirm"] is prompt_confirm  # the default terminal prompt seam
+    assert saved == [{"candidate": _COMPILE_DIR}]  # confirmed -> persist the candidate
+    assert _COMPILE_DIR in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_parses_the_timeout_flag(
+    verb: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    monkeypatch.setattr(
+        cli, "safe_apply", lambda c, s, *, timeout, confirm: seen.update(timeout=timeout) or True
+    )
+    monkeypatch.setattr(cli, "save_ruleset", lambda rs: None)
+    assert cli.main([verb, "-t", "5m", _COMPILE_DIR]) == 0
+    assert seen["timeout"] == 300  # parse_timeout("5m") -> 300s (#436)
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_does_not_persist_on_revert(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    monkeypatch.setattr(cli, "safe_apply", lambda c, s, *, timeout, confirm: False)  # reverted
+    saved = False
+
+    def record_save(*_a: Any, **_k: Any) -> None:
+        nonlocal saved
+        saved = True
+
+    monkeypatch.setattr(cli, "save_ruleset", record_save)
+    assert cli.main([verb, _COMPILE_DIR]) == 0
+    assert saved is False  # revert path never writes DEFAULT_RULESET_PATH
+    assert "reverted" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_rejects_a_bad_timeout(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    applied = False
+
+    def fake_safe_apply(*_a: Any, **_k: Any) -> bool:
+        nonlocal applied
+        applied = True
+        return True
+
+    monkeypatch.setattr(cli, "safe_apply", fake_safe_apply)
+    assert cli.main([verb, "-t", "nope", _COMPILE_DIR]) == 1
+    assert applied is False  # fail fast before touching the firewall
+    assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_does_not_apply_or_persist_after_compile_failure(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(_d: object) -> dict[str, Any]:
+        raise ConfigError("compile boom")
+
+    monkeypatch.setattr(cli, "compile_config", boom)
+    applied = False
+
+    def fake_safe_apply(*_a: Any, **_k: Any) -> bool:
+        nonlocal applied
+        applied = True
+        return True
+
+    monkeypatch.setattr(cli, "safe_apply", fake_safe_apply)
+    saved = False
+
+    def record_save(*_a: Any, **_k: Any) -> None:
+        nonlocal saved
+        saved = True
+
+    monkeypatch.setattr(cli, "save_ruleset", record_save)
+    assert cli.main([verb, _COMPILE_DIR]) == 1
+    assert applied is False  # compile failure terminates before the safe-apply seam
+    assert saved is False
+    assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_requires_config_dir(verb: str) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main([verb])
+    assert exc.value.code == 2  # argparse usage error: config_dir is required

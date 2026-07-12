@@ -32,6 +32,24 @@ def test_operations_documents_the_try_verb() -> None:
     assert "auto-revert" in text.lower(), "the `try` auto-revert semantics must be documented"
 
 
+def test_operations_documents_the_interactive_safe_verbs() -> None:
+    """The interactive `safe-reload`/`safe-start` verbs (#439) are an operator surface."""
+    text = OPERATIONS.read_text()
+    for verb in cli._SAFE_MESSAGE:
+        assert f"`{verb}`" in text, f"operations.md must document the {verb} verb"
+    assert "confirm" in text.lower(), "the confirm-or-revert semantics must be documented"
+
+
+def test_operations_reconciles_the_persisting_verbs_statement() -> None:
+    """`apply` is no longer the *only* persisting verb — a confirmed safe-reload/start persists too.
+
+    Guards the reconciled doc line (#439 AC): the stale "apply is the only verb that persists"
+    absolute must be gone so the prose can't contradict persist-on-confirm.
+    """
+    text = OPERATIONS.read_text()
+    assert "only verb that persists" not in text
+
+
 def test_operations_covers_persistence_path() -> None:
     """The persisted-state path (ADR-0030) is the operator's boot-restore anchor."""
     assert "/var/lib/shorewallnf/ruleset.json" in OPERATIONS.read_text()
