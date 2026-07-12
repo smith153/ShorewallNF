@@ -14,11 +14,11 @@ without root (ADR-0003 functional core). ``show rules`` is its first consumer; t
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .errors import ConfigError
-from .ir import Policy, Zone
+from .ir import Interface, Policy, Zone
 
 #: The nftables family every ShorewallNF-owned table lives in (ADR-0002 unified dual-stack).
 _FAMILY = "inet"
@@ -43,6 +43,10 @@ _COLUMNS = ("NUM", "TARGET", "PROTO", "SOURCE", "DESTINATION", "DETAIL")
 #: declarations from the ``Ruleset`` IR — zones/policies are not recoverable from live nft state.
 _ZONE_COLUMNS = ("INTERFACE", "HOST", "FAMILY")
 _POLICY_COLUMNS = ("SOURCE", "DEST", "ACTION", "LOG")
+
+#: Columns for the ``status -i`` per-interface report (task #414): a declared interface and its
+#: live up/down link state.
+_STATUS_INTERFACE_COLUMNS = ("INTERFACE", "STATE")
 
 #: Columns for live kernel-tracked connections (task #412). A different shape from nft rules —
 #: curated from ``conntrack -L`` original-direction tuples, not the NUM/TARGET rule grid.
@@ -116,6 +120,32 @@ def render_policies(policies: tuple[Policy, ...]) -> str:
     rows = [(p.source, p.dest, p.action, p.log_level or "-") for p in policies]
     lines = ["Policies", ""]
     lines.extend(_columnar(_POLICY_COLUMNS, rows))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_status(
+    loaded: bool,
+    interfaces: tuple[Interface, ...] | None = None,
+    link_states: Mapping[str, bool] | None = None,
+) -> str:
+    """Render the short firewall state, optionally with per-interface state (task #414).
+
+    ``loaded`` is the short state derived from the live ruleset (owned tables present, ADR-0065):
+    ``loaded`` vs ``stopped or cleared``. When ``interfaces`` is given (the ``-i`` view), each
+    declared IR interface is combined with its live link state — up when ``link_states`` reports it
+    up, ``down`` otherwise (a declared interface the kernel does not report reads down, not a
+    crash). Zero declared interfaces renders an empty-but-valid section. Pure: no I/O.
+    """
+    lines = [f"Firewall: {'loaded' if loaded else 'stopped or cleared'}"]
+    if interfaces is None:
+        return "\n".join(lines) + "\n"
+    links = link_states or {}
+    lines += ["", "Interfaces", ""]
+    if not interfaces:
+        lines.append("  (no interfaces declared)")
+        return "\n".join(lines) + "\n"
+    rows = [(i.name, "up" if links.get(i.name, False) else "down") for i in interfaces]
+    lines.extend(_columnar(_STATUS_INTERFACE_COLUMNS, rows))
     return "\n".join(lines).rstrip() + "\n"
 
 

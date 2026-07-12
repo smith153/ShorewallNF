@@ -157,6 +157,49 @@ def list_ruleset() -> dict[str, Any]:
     return parsed
 
 
+def firewall_loaded(ruleset: dict[str, Any]) -> bool:
+    """True when a ShorewallNF-owned table is present in the live ruleset (task #414).
+
+    A pure predicate over :func:`list_ruleset` output — whose objects are the bare ``{"table":
+    {...}}`` listing form, not the ``{"add": …}`` command form. The firewall reads as loaded when
+    any :data:`OWNED_TABLES` entry appears; a stopped or cleared firewall leaves none, so this
+    returns ``False`` without special-casing. Co-resident foreign tables are ignored. This is the
+    short-state seam the read-only ``status`` verb reports from (ADR-0065).
+    """
+    owned = {(t["family"], t["name"]) for t in OWNED_TABLES}
+    return any(
+        (table := command.get("table")) is not None
+        and (table.get("family"), table.get("name")) in owned
+        for command in ruleset.get("nftables", [])
+    )
+
+
+def link_states() -> dict[str, bool]:
+    """Read-only live query: map each network link to its up/down state (task #414).
+
+    Shells ``ip --json link show`` and folds the result to ``{ifname: is_up}``, where up means the
+    ``UP`` admin flag is set (the ``ip link set … up`` sense). The injectable ``ip`` seam for the
+    ``status -i`` per-interface report (ADR-0003 shell): structurally read-only — ``link show`` is
+    a query with no mutating form and nothing streamed on stdin. A missing ``ip`` binary raises
+    :class:`~shorewallnf.errors.ShorewallNFError`; a non-zero rc raises
+    :class:`~shorewallnf.errors.ConfigError`, both caught once in the CLI shell (ADR-0004).
+    """
+    try:
+        result = subprocess.run(
+            [IP, "--json", "link", "show"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as err:
+        raise ShorewallNFError(
+            "ip utility not found; install iproute2 to report interface state"
+        ) from err
+    if result.returncode != 0:
+        raise ConfigError(f"ip link failed: {result.stderr.strip()}")
+    links: list[dict[str, Any]] = json.loads(result.stdout)
+    return {link["ifname"]: "UP" in link.get("flags", []) for link in links}
+
+
 def list_connections() -> str:
     """Read-only live query: return raw ``conntrack -L`` output (task #412, ADR-0065).
 

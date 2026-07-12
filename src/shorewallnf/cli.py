@@ -22,6 +22,8 @@ from .applier import (
     apply_sysctls,
     check_ruleset,
     clear_ruleset,
+    firewall_loaded,
+    link_states,
     list_connections,
     list_log,
     list_ruleset,
@@ -38,6 +40,7 @@ from .renderer import (
     render_log,
     render_policies,
     render_rules,
+    render_status,
     render_zones,
 )
 from .resolver import resolve
@@ -138,7 +141,26 @@ def _build_parser() -> argparse.ArgumentParser:
             )
     for verb in _SHOW_VERBS:
         _add_show_group(sub, verb)
+    _add_status_verb(sub)
     return parser
+
+
+def _add_status_verb(sub: argparse._SubParsersAction[Any]) -> None:
+    """Add the read-only ``status`` verb (task #414, ADR-0065).
+
+    The short form reads the live ruleset (no config dir); ``-i <config_dir>`` additionally reports
+    per-declared-interface up/down state, so it takes the config directory as its value.
+    """
+    status_parser = sub.add_parser(
+        "status", help="report short firewall state (read-only); -i adds per-interface state"
+    )
+    status_parser.add_argument(
+        "-i",
+        "--interfaces",
+        dest="status_config_dir",
+        metavar="config_dir",
+        help="also report per-declared-interface up/down state (from the config dir)",
+    )
 
 
 def _add_show_group(sub: argparse._SubParsersAction[Any], verb: str) -> None:
@@ -217,6 +239,16 @@ def _dispatch_show(args: argparse.Namespace) -> int:
 def _dispatch(args: argparse.Namespace) -> int:
     if args.verb in _SHOW_VERBS:
         return _dispatch_show(args)
+    if args.verb == "status":
+        loaded = firewall_loaded(list_ruleset())
+        if args.status_config_dir is None:
+            print(render_status(loaded))
+            return 0
+        config_ir = parse_config(
+            preprocess(args.status_config_dir), _read_settings(args.status_config_dir)
+        )
+        print(render_status(loaded, config_ir.interfaces, link_states()))
+        return 0
     if args.verb == "check":
         streams = preprocess(args.config_dir)
         lines = sum(len(s) for s in streams.values())

@@ -127,6 +127,31 @@ config directory to read a non-default `LOGFORMAT` from it (otherwise the defaul
 When the journal holds no matching lines it prints an empty-but-valid report and exits 0; if the
 journal reader is unavailable it fails fast with one actionable error, not a stack trace.
 
+### `status`
+
+`status` reports the **short firewall state** in one line — derived from the live ruleset (are the
+ShorewallNF-owned tables present?), so it takes no config directory and is read-only:
+
+```
+$ shorewallnf status
+Firewall: loaded
+```
+
+A stopped or cleared firewall (no owned tables) reports `Firewall: stopped or cleared` and exits 0
+rather than erroring. Adding `-i <config_dir>` extends the report with per-declared-interface state,
+combining the interfaces declared in the config with their live up/down link state (read via `ip`):
+
+```
+$ shorewallnf status -i /etc/shorewallnf
+Firewall: loaded
+
+Interfaces
+
+  INTERFACE  STATE
+  eth0       up
+  eth1       down
+```
+
 ## The stopped safe state
 
 `stop` does **not** open the firewall wide, and it does **not** slam it fully shut. Both are

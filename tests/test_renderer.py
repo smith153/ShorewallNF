@@ -238,3 +238,41 @@ def test_render_log_uses_custom_logformat_prefix_head() -> None:
     assert "MyFW:net-fw:DROP:a" in text
     assert "MyFW:fw-net:REJECT:c" in text
     assert "Shorewall:net-fw:DROP:b" not in text  # a different prefix is not a firewall line here
+
+
+# --- short firewall status + per-interface state (task #414) --------------------------------
+
+
+def test_render_status_short_loaded() -> None:
+    text = renderer.render_status(True)
+    assert text == "Firewall: loaded\n"
+
+
+def test_render_status_short_not_loaded() -> None:
+    text = renderer.render_status(False)
+    assert text == "Firewall: stopped or cleared\n"
+
+
+def test_render_status_interfaces_combines_ir_and_live_links() -> None:
+    interfaces = (ir.Interface(name="eth0"), ir.Interface(name="eth1"))
+    text = renderer.render_status(True, interfaces, {"eth0": True, "eth1": False})
+    assert "Firewall: loaded" in text
+    assert "Interfaces" in text
+    assert "INTERFACE" in text and "STATE" in text
+    lines = text.splitlines()
+    assert any(row.split() == ["eth0", "up"] for row in lines)
+    assert any(row.split() == ["eth1", "down"] for row in lines)
+
+
+def test_render_status_interface_absent_from_links_is_down() -> None:
+    # A declared interface the kernel does not report is reported down, not a crash.
+    text = renderer.render_status(False, (ir.Interface(name="eth9"),), {})
+    assert "Firewall: stopped or cleared" in text
+    lines = text.splitlines()
+    assert any(row.split() == ["eth9", "down"] for row in lines)
+
+
+def test_render_status_no_declared_interfaces_is_valid_not_a_crash() -> None:
+    text = renderer.render_status(True, (), {})
+    assert "Firewall: loaded" in text
+    assert "(no interfaces declared)" in text
