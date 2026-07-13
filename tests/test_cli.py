@@ -900,3 +900,93 @@ def test_dump_is_read_only(
     monkeypatch.setattr(cli, "save_ruleset", forbidden)
     monkeypatch.setattr(cli, "clear_ruleset", forbidden)
     assert cli.main(["dump", _POLICY_DIR]) == 0
+
+
+# --- try DIR [timeout] verb: safe-apply with auto-revert (task #437, ADR-0067) ----------------
+
+
+def test_try_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "try" in capsys.readouterr().out
+
+
+def test_try_verb_compiles_and_safe_applies_without_timeout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "compile_config", lambda d: {"candidate": d})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {"stopped": d})
+
+    def fake_safe_apply(candidate: Any, stopped: Any, *, timeout: int | None) -> None:
+        seen.update(candidate=candidate, stopped=stopped, timeout=timeout)
+
+    monkeypatch.setattr(cli, "safe_apply", fake_safe_apply)
+    saved = False
+
+    def record_save(*_a: Any, **_k: Any) -> None:
+        nonlocal saved
+        saved = True
+
+    monkeypatch.setattr(cli, "save_ruleset", record_save)
+    assert cli.main(["try", _COMPILE_DIR]) == 0
+    assert seen["candidate"] == {"candidate": _COMPILE_DIR}
+    assert seen["stopped"] == {"stopped": _COMPILE_DIR}
+    assert seen["timeout"] is None
+    assert saved is False  # try never persists (non-persisting, like start/reload)
+    assert _COMPILE_DIR in capsys.readouterr().out
+
+
+def test_try_verb_parses_and_passes_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    monkeypatch.setattr(
+        cli, "safe_apply", lambda c, s, *, timeout: seen.update(timeout=timeout)
+    )
+    assert cli.main(["try", _COMPILE_DIR, "5m"]) == 0
+    assert seen["timeout"] == 300  # parse_timeout("5m") -> 300 seconds (#436)
+
+
+def test_try_verb_rejects_a_bad_timeout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    applied = False
+
+    def fake_safe_apply(*_a: Any, **_k: Any) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(cli, "safe_apply", fake_safe_apply)
+    assert cli.main(["try", _COMPILE_DIR, "nope"]) == 1
+    assert applied is False  # fail fast before touching the firewall
+    assert "error:" in capsys.readouterr().err
+
+
+def test_try_verb_does_not_apply_or_persist_after_compile_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(_d: object) -> dict[str, Any]:
+        raise ConfigError("compile boom")
+
+    monkeypatch.setattr(cli, "compile_config", boom)
+    applied = False
+
+    def fake_safe_apply(*_a: Any, **_k: Any) -> None:
+        nonlocal applied
+        applied = True
+
+    monkeypatch.setattr(cli, "safe_apply", fake_safe_apply)
+    saved = False
+
+    def record_save(*_a: Any, **_k: Any) -> None:
+        nonlocal saved
+        saved = True
+
+    monkeypatch.setattr(cli, "save_ruleset", record_save)
+    assert cli.main(["try", _COMPILE_DIR]) == 1
+    assert applied is False  # compile failure terminates before the safe-apply seam
+    assert saved is False
+    assert "error:" in capsys.readouterr().err

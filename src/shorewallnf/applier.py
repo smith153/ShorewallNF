@@ -17,6 +17,8 @@ import json
 import os
 import re
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -284,15 +286,49 @@ def list_log() -> str:
     return result.stdout
 
 
+#: nft JSON *command* verbs. A persisted object keyed by one of these is already command form
+#: (e.g. the generator's / ``restore`` verb's ``{"add": …}``); anything else is a bare *listing*
+#: object from :func:`list_ruleset` that must be wrapped before a load (#449).
+_NFT_COMMAND_VERBS = frozenset(
+    {"add", "delete", "insert", "replace", "create", "flush", "rename", "reset"}
+)
+
+
+def _to_command_form(ruleset: dict[str, Any]) -> dict[str, Any]:
+    """Normalise a persisted ruleset to nft *command* form so a load scopes a real flush (#449).
+
+    :func:`list_ruleset` output — what :func:`safe_apply` snapshots — is *listing form*: bare
+    ``{"table":…}``/``{"chain":…}``/``{"rule":…}`` objects plus a ``{"metainfo":…}`` header, with no
+    command verb. :func:`atomic_load_payload` keys its create-then-delete flush prelude off ``add``,
+    so replaying listing form produces an **empty** prelude and never replaces the live table.
+    Convert to command form: drop ``metainfo`` and wrap each verb-less listing object as
+    ``{"add": obj}``, stripping the kernel-assigned ``handle`` (an output-only identifier nft
+    rejects on ``add``). Objects that already carry a command verb — a persisted command-form
+    ruleset, e.g. the ``restore`` verb's saved file — pass through unchanged, so this is idempotent
+    on the generator's output.
+    """
+    commands: list[dict[str, Any]] = []
+    for obj in ruleset["nftables"]:
+        if "metainfo" in obj:
+            continue
+        if any(key in _NFT_COMMAND_VERBS for key in obj):
+            commands.append(obj)
+            continue
+        (kind, body), = obj.items()
+        commands.append({"add": {kind: {k: v for k, v in body.items() if k != "handle"}}})
+    return {"nftables": commands}
+
+
 def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
     """Load the persisted ruleset from ``path`` live, fail-closed (task #206, ADR-0030).
 
-    The read half of :func:`save_ruleset`: parse the persisted JSON and hand the exact object
-    to :func:`apply_ruleset` for one atomic load. A missing file, corrupt JSON, or a payload
-    that is not a ruleset is wrapped as :class:`~shorewallnf.errors.ShorewallNFError` *before*
-    any nft call, so a failed restore never flushes the live ruleset to an empty (wide-open)
-    state. An nft-rejected ruleset raises :class:`~shorewallnf.errors.ConfigError` from
-    :func:`apply_ruleset` and commits nothing.
+    The read half of :func:`save_ruleset`: parse the persisted JSON, normalise it to nft command
+    form (:func:`_to_command_form` — the snapshot :func:`safe_apply` writes is ``list_ruleset()``
+    *listing form*, #449), and hand it to :func:`apply_ruleset` for one atomic, scoped-flush load. A
+    missing file, corrupt JSON, or a payload that is not a ruleset is wrapped as
+    :class:`~shorewallnf.errors.ShorewallNFError` *before* any nft call, so a failed restore never
+    flushes the live ruleset to an empty (wide-open) state. An nft-rejected ruleset raises
+    :class:`~shorewallnf.errors.ConfigError` from :func:`apply_ruleset` and commits nothing.
     """
     try:
         text = path.read_text()
@@ -304,7 +340,7 @@ def restore_ruleset(path: Path = DEFAULT_RULESET_PATH) -> None:
         raise ShorewallNFError(f"persisted ruleset at {path} is not valid JSON: {err}") from err
     if not isinstance(ruleset, dict) or not isinstance(ruleset.get("nftables"), list):
         raise ShorewallNFError(f"persisted ruleset at {path} is not a valid nftables ruleset")
-    apply_ruleset(ruleset)
+    apply_ruleset(_to_command_form(ruleset))
 
 
 def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> None:
@@ -331,6 +367,55 @@ def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> 
             raise
     except OSError as err:
         raise ShorewallNFError(f"failed to save ruleset to {path}: {err}") from err
+
+
+# --- safe-apply: snapshot -> apply -> (timeout-)revert primitive (task #437, ADR-0067) -----
+
+#: Pre-``try`` snapshot path. Kept off :data:`DEFAULT_RULESET_PATH` so a ``try`` never mutates the
+#: persisted ruleset (ADR-0030/ADR-0067) — the running state is captured here, not to the saved one.
+SAFE_APPLY_SNAPSHOT_PATH = Path("/var/lib/shorewallnf/pre-try-snapshot.json")
+
+
+def safe_apply(
+    candidate: dict[str, Any],
+    stopped: dict[str, Any],
+    *,
+    timeout: int | None = None,
+    snapshot_path: Path = SAFE_APPLY_SNAPSHOT_PATH,
+    wait: Callable[[int], None] = time.sleep,
+) -> None:
+    """Apply ``candidate`` with auto-revert — the safe-apply primitive (task #437, ADR-0067).
+
+    One reusable helper wiring the shipped building blocks: capture the *running* ruleset
+    (:func:`list_ruleset`), dry-run check then atomically load ``candidate``
+    (:func:`check_ruleset`/:func:`apply_ruleset`), and — when ``timeout`` is given — wait the
+    window, then revert to the pre-``try`` state. A check/apply failure raises (fail-fast,
+    ADR-0004) before any revert is armed; the load is atomic, so a rejected ``candidate`` leaves the
+    running ruleset unchanged.
+
+    The revert target is the pre-``try`` state: the captured snapshot when a firewall was running
+    (:func:`firewall_loaded` true), or :func:`clear_ruleset` when nothing was. The snapshot is
+    written to its **own** ``snapshot_path`` — never :data:`DEFAULT_RULESET_PATH` — so a ``try``
+    does not touch the persisted ruleset. If the restore itself fails, the primitive falls closed to
+    the ``stopped`` safe-state ruleset (ADR-0021), never a wide-open firewall. ``wait`` is
+    injectable so the timeout window is unit-testable without sleeping.
+    """
+    running = list_ruleset()
+    was_running = firewall_loaded(running)
+    if timeout is not None and was_running:
+        save_ruleset(running, snapshot_path)
+    check_ruleset(candidate)
+    apply_ruleset(candidate)
+    if timeout is None:
+        return
+    wait(timeout)
+    if not was_running:
+        clear_ruleset()
+        return
+    try:
+        restore_ruleset(snapshot_path)
+    except ShorewallNFError:
+        apply_ruleset(stopped)  # fail-closed: stopped safe state, never wide open (ADR-0021/0004)
 
 
 # --- provider policy routing via iproute2 (task #235, ADR-0050) ----------------------------
