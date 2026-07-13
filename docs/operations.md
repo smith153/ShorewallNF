@@ -157,6 +157,28 @@ Interfaces
   eth1       down
 ```
 
+### `dump`
+
+`dump <config_dir>` emits **one consolidated read-only report** — the paste-into-a-bug-report view.
+It is a pure aggregator: it invents no new collection or renderer, just concatenates the existing
+`show`/`status` seams in a fixed order behind labelled section headers:
+
+1. **Ruleset** — the live packet-filter rules (same source as `show rules`).
+2. **Zones** — the declared zones and their members (same source as `show zones`).
+3. **Policies** — the inter-zone default-policy matrix (same source as `show policies`).
+4. **Connections** — the kernel-tracked connections (same source as `show connections`).
+5. **Firewall log** — a bounded tail of recent firewall log messages (same source as `show log`,
+   20 lines).
+
+It takes a config directory because the zones/policies sections render compile-time declarations
+and the log section reads `LOGFORMAT` from it. Like every visibility verb it is read-only and leaves
+the loaded and saved ruleset byte-for-byte unchanged.
+
+Each section **degrades independently**: if one source is unavailable (e.g. `conntrack` not
+installed, the firewall stopped, the journal unreadable), that section shows an actionable
+`(unavailable: …)` note in place while every other section still renders — one failing source never
+aborts the whole report.
+
 ## The stopped safe state
 
 `stop` does **not** open the firewall wide, and it does **not** slam it fully shut. Both are

@@ -799,3 +799,104 @@ def test_status_interfaces_degrades_when_stopped(
     out = capsys.readouterr().out
     assert "Firewall: stopped or cleared" in out
     assert "Interfaces" in out  # IR interfaces still render, with live link state
+
+
+# ---- dump: consolidated read-only diagnostic report (task #415, ADR-0065) ------------------
+
+
+def _dump_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject the read-only collection seams `dump` aggregates (no root needed)."""
+    monkeypatch.setattr(cli, "list_ruleset", _running_fixture)
+    monkeypatch.setattr(cli, "list_connections", lambda: _CONN_FIXTURE)
+    monkeypatch.setattr(cli, "list_log", lambda: _LOG_FIXTURE)
+
+
+def test_dump_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "dump" in capsys.readouterr().out
+
+
+def test_dump_requires_a_config_dir() -> None:
+    # dump needs the config dir for the IR sections (zones/policies) and LOGFORMAT.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["dump"])
+    assert exc.value.code == 2
+
+
+def test_dump_aggregates_all_five_sections(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _dump_boundaries(monkeypatch)
+    assert cli.main(["dump", _POLICY_DIR]) == 0
+    out = capsys.readouterr().out
+    # each section delegates to its already-merged renderer — content from every source is present
+    assert "Table: inet filter" in out  # ruleset (render_rules)
+    assert "Zone net" in out  # zones (render_zones)
+    assert "Policies" in out  # policies (render_policies)
+    assert "Connections" in out and "ESTABLISHED" in out  # connections (render_connections)
+    assert "Firewall log" in out and "Shorewall:net-fw:DROP" in out  # log (render_log)
+
+
+def test_dump_sections_appear_in_documented_order(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _dump_boundaries(monkeypatch)
+    assert cli.main(["dump", _POLICY_DIR]) == 0
+    out = capsys.readouterr().out
+    banners = ("Table: inet filter", "Zone net", "Policies", "Connections", "Firewall log")
+    order = [out.index(b) for b in banners]
+    assert order == sorted(order)  # ruleset -> zones -> policies -> connections -> log
+
+
+def test_dump_section_degrades_independently(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _dump_boundaries(monkeypatch)
+
+    def boom() -> str:
+        raise ShorewallNFError("conntrack utility not found; install conntrack-tools")
+
+    monkeypatch.setattr(cli, "list_connections", boom)
+    assert cli.main(["dump", _POLICY_DIR]) == 0  # one failing section never aborts the report
+    out = capsys.readouterr().out
+    assert "Connections" in out and "install conntrack-tools" in out  # actionable in-section note
+    assert "Table: inet filter" in out  # the other sections still render
+    assert "Zone net" in out
+    assert "Firewall log" in out
+
+
+def test_dump_all_sections_fail_still_produces_a_report(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom() -> str:
+        raise ShorewallNFError("boundary unavailable")
+
+    def boom_ir(*args: object, **kwargs: object) -> object:
+        raise ShorewallNFError("config unreadable")
+
+    monkeypatch.setattr(cli, "list_ruleset", boom)
+    monkeypatch.setattr(cli, "list_connections", boom)
+    monkeypatch.setattr(cli, "list_log", boom)
+    monkeypatch.setattr(cli, "parse_config", boom_ir)  # the IR (zones/policies) source fails too
+    assert cli.main(["dump", _POLICY_DIR]) == 0  # every section degrades, the report still prints
+    out = capsys.readouterr().out
+    for label in ("Ruleset", "Zones", "Policies", "Connections", "Firewall log"):
+        assert label in out
+    assert out.count("(unavailable") == 5  # each of the five sections degraded to a note
+    assert "Traceback" not in out
+
+
+def test_dump_is_read_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # dump invokes only list/render seams — never an applier mutation.
+    _dump_boundaries(monkeypatch)
+
+    def forbidden(*args: object) -> None:
+        pytest.fail("dump must not mutate the ruleset")
+
+    monkeypatch.setattr(cli, "apply_ruleset", forbidden)
+    monkeypatch.setattr(cli, "save_ruleset", forbidden)
+    monkeypatch.setattr(cli, "clear_ruleset", forbidden)
+    assert cli.main(["dump", _POLICY_DIR]) == 0
