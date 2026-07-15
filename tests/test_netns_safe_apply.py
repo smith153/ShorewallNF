@@ -21,6 +21,7 @@ privileged netns CI tier (epics #77/#78). RFC 5737 documentation ranges only.
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -71,9 +72,15 @@ _SAFE_APPLY_RUNNER = (
     "import sys, json\n"
     "from pathlib import Path\n"
     "from shorewallnf.applier import safe_apply\n"
+    "from shorewallnf.errors import ShorewallNFError\n"
     "candidate = json.loads(Path(sys.argv[1]).read_text())\n"
     "stopped = json.loads(Path(sys.argv[2]).read_text())\n"
-    "safe_apply(candidate, stopped, timeout=int(sys.argv[3]), snapshot_path=Path(sys.argv[4]))\n"
+    "window, snapshot = int(sys.argv[3]), Path(sys.argv[4])\n"
+    "try:\n"
+    "    safe_apply(candidate, stopped, timeout=window, snapshot_path=snapshot)\n"
+    "except ShorewallNFError as err:\n"  # mirrors cli.main's single catch: one clear error, rc 1
+    "    print(f'error: {err}', file=sys.stderr)\n"
+    "    sys.exit(1)\n"
 )
 
 _requires_netns = pytest.mark.skipif(
@@ -86,11 +93,17 @@ def _write_json(path: Path, payload: dict[str, object]) -> Path:
     return path
 
 
-def _safe_apply_argv(candidate: Path, stopped: Path, snapshot: Path) -> list[str]:
-    """The ``ip netns exec <router> python3 -c …`` argv that drives safe_apply in the router ns."""
+def _safe_apply_argv(
+    candidate: Path, stopped: Path, snapshot: Path, timeout: int = _TIMEOUT
+) -> list[str]:
+    """The ``ip netns exec <router> python3 -c …`` argv that drives safe_apply in the router ns.
+
+    ``ip netns exec`` ``execvp``\\ s the command rather than forking it, so the spawned pid *is* the
+    python process — which is what lets the signal tests below signal ``safe_apply`` directly.
+    """
     return [
         nh.IP, "netns", "exec", _TOPO.router, sys.executable, "-c", _SAFE_APPLY_RUNNER,
-        str(candidate), str(stopped), str(_TIMEOUT), str(snapshot),
+        str(candidate), str(stopped), str(timeout), str(snapshot),
     ]
 
 
@@ -181,3 +194,60 @@ def test_try_from_nothing_running_reverts_to_a_cleared_ruleset(tmp_path: Path) -
 
         # After the revert: the ruleset is cleared (empty), not left carrying the candidate.
         _poll_tables(sb, present=False)
+
+
+# --- #450: a signalled death mid-window still reverts, on a real packet path -------------------
+#
+# The lockout the safe-apply verbs exist for kills more than the session: sshd SIGHUPs the process
+# group as it tears the severed session down. The revert used to be plain foreground control flow
+# after the wait seam, so the signal killed it too and the candidate that caused the lockout stayed
+# loaded permanently. These prove the trapped signal now reverts on real traffic.
+#
+# The window is deliberately far longer than the test takes, so a passing run cannot be the timeout
+# quietly doing the work — only the signal can end this window.
+_SIGNAL_WINDOW = 600
+
+
+@pytest.mark.netns
+@_requires_netns
+@pytest.mark.parametrize("signum", [signal.SIGHUP, signal.SIGTERM, signal.SIGINT],
+                         ids=lambda s: s.name)
+def test_try_reverts_and_restores_control_path_when_signalled_mid_window(
+    tmp_path: Path, signum: signal.Signals
+) -> None:
+    """A candidate severs the client -> fw control path and the operator's process is then killed
+    by the session teardown mid-window: the pre-``try`` snapshot is still restored and connectivity
+    comes back with no operator action. Before #450 the process died with the candidate live."""
+    candidate = _write_json(tmp_path / "candidate.json", nh.render(_CANDIDATE))
+    stopped = _write_json(
+        tmp_path / "stopped.json", nh.render(_STOPPED, generator=generate_stopped)
+    )
+    snapshot = tmp_path / "pre-try-snapshot.json"
+
+    with nh.NetnsSandbox(_TOPO) as sb:
+        sb.load(_GOOD)  # the running ruleset safe_apply snapshots and must restore
+        with nh.listeners(sb, _TOPO.router, (_CONTROL_PORT,)):
+            assert sb.connect(_CLIENT.name, _ROUTER_IP, _CONTROL_PORT) == "open"
+
+            proc = subprocess.Popen(
+                _safe_apply_argv(candidate, stopped, snapshot, timeout=_SIGNAL_WINDOW),
+                stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                # The candidate is live: the lockout is real and we are inside the guarded window.
+                _poll_connect(sb, _CONTROL_PORT, "filtered")
+                proc.send_signal(signum)  # the session teardown that used to kill the revert
+                _, err = proc.communicate(timeout=60)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+            # Exits non-zero with one clear error: the revert is a completed action, not a success.
+            assert proc.returncode == 1, f"expected a clean signalled exit, got {proc.returncode}"
+            assert f"error: {signum.name} received: reverting" in err
+            assert "Traceback" not in err
+
+            # The proof: connectivity is back, restored from the pre-try snapshot by the signal
+            # path alone — the window never elapsed.
+            _poll_connect(sb, _CONTROL_PORT, "open")

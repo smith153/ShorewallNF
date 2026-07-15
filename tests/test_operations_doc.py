@@ -78,3 +78,19 @@ def test_operations_in_published_nav() -> None:
     """Nav is filesystem-derived (awesome-pages, #353); operations.md is pinned in docs/.pages."""
     pages = (ROOT / "docs" / ".pages").read_text()
     assert "operations.md" in pages, "operations.md must be pinned in the docs/.pages nav order"
+
+
+def test_operations_qualifies_the_self_heal_guarantee() -> None:
+    """The self-heal promise must match what the code keeps (#450).
+
+    The page used to promise, unqualified, that a rule cutting your own session self-heals. It only
+    does when the process is *signalled* (SIGHUP/SIGTERM/SIGINT are trapped and the revert runs on
+    the way out) — a process that *vanishes* (SIGKILL, panic, power loss) cannot revert, and only
+    self-heals on the next boot, when the restore unit reloads the pre-apply persisted ruleset a
+    safe-apply never overwrites. Guards against the qualification being dropped again.
+    """
+    text = OPERATIONS.read_text()
+    assert "SIGKILL" in text, "the un-revertable vanish case must be stated, not implied"
+    for signame in ("SIGHUP", "SIGTERM", "SIGINT"):
+        assert signame in text, f"the trapped signal {signame} must be documented"
+    assert "restore" in text, "the next-boot restore backstop must be documented"
