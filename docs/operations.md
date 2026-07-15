@@ -81,7 +81,13 @@ config exactly as `try` does — snapshot the running ruleset, compile → `nft 
 atomic load — but instead of reverting on a blind timer they **prompt the operator to confirm the
 box is still reachable**, and only then keep the change. This is the remote-lockout protection of
 the safe-apply model ([ADR-0067](adr/0067-safe-apply-auto-revert-model.md)): push a rule over SSH,
-and if it cuts your own session you simply never answer the prompt and the firewall self-heals.
+and if it cuts your own session you simply never answer the prompt and the firewall self-heals —
+whether the session merely freezes (the window elapses unanswered and the revert fires) or is torn
+down outright (the `SIGHUP`/`SIGTERM`/`SIGINT` that kills the process reverts on the way out and
+exits non-zero). If the process is instead **killed outright** — `SIGKILL`, a panic, power loss —
+nothing can run the revert, and the candidate stays live until the box next boots: a safe-apply
+never writes the persisted ruleset, so `shorewallnf restore` reloads the *pre-apply* one at
+startup. Getting back in to trigger that reboot is a console/IPMI job.
 
 - **Confirm keeps *and* persists.** On an affirmative answer (`y`/`yes`) within the window the
   candidate is left running **and** written to `/var/lib/shorewallnf/ruleset.json` via the same

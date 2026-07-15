@@ -17,12 +17,15 @@ import json
 import os
 import re
 import select
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from types import FrameType
+from typing import Any, NoReturn
 
 from .errors import ConfigError, ShorewallNFError
 from .ir import (
@@ -378,6 +381,42 @@ def save_ruleset(ruleset: dict[str, Any], path: Path = DEFAULT_RULESET_PATH) -> 
 SAFE_APPLY_SNAPSHOT_PATH = Path("/var/lib/shorewallnf/pre-try-snapshot.json")
 
 
+#: Signals a lockout tends to arrive as: sshd SIGHUPs the session when a bad rule severs it,
+#: systemd/init send SIGTERM, and Ctrl-C in the window is SIGINT. Trapped for the duration of a
+#: safe-apply window so the revert runs on the way out (#450). SIGKILL is deliberately absent —
+#: being signalled is ours to handle, vanishing is infrastructure's (see :func:`_revert_on_signal`).
+_TRAPPED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+
+
+@contextmanager
+def _revert_on_signal() -> Iterator[None]:
+    """Turn a lockout signal into a raise, so the caller's ``finally`` reverts (#450).
+
+    Python's default disposition for SIGHUP/SIGTERM terminates the process *without unwinding*, so
+    a rule that severs the operator's SSH session — the very case the safe-apply verbs exist for —
+    used to kill the pending revert along with the session and strand the candidate permanently.
+    The handler **raises** rather than reverting inline: the revert then stays in one place (no
+    applier re-entrancy from inside a handler), and a single mechanism interrupts both window seams
+    (``time.sleep`` for ``try``, ``select.select`` for the interactive verbs). It raises a
+    :class:`~shorewallnf.errors.ShorewallNFError` so the CLI's single catch reports one clear error
+    and exits non-zero — the revert is a completed action, not a success.
+
+    A process that *vanishes* (SIGKILL, power loss) is out of the threat model: a safe-apply never
+    writes the persisted ruleset, so the next boot's ``shorewallnf restore`` reloads the pre-apply
+    one. Dispositions are restored on the way out, leaving the window's trap scoped to the window.
+    """
+
+    def _raise(signum: int, _frame: FrameType | None) -> NoReturn:
+        raise ShorewallNFError(f"{signal.Signals(signum).name} received: reverting")
+
+    restore = [(sig, signal.signal(sig, _raise)) for sig in _TRAPPED_SIGNALS]
+    try:
+        yield
+    finally:
+        for sig, previous in restore:
+            signal.signal(sig, previous)
+
+
 def prompt_confirm(timeout: int) -> bool:
     """Prompt the operator to confirm the candidate ruleset within ``timeout`` seconds (#439).
 
@@ -387,7 +426,24 @@ def prompt_confirm(timeout: int) -> bool:
     affirmative (``y``/``yes``); a negative answer, blank line, EOF, or the window elapsing with no
     input returns ``False`` — fail-closed to revert. Split out behind :func:`safe_apply`'s
     injectable ``confirm`` parameter so tests never touch real stdin/TTY (ADR-0003 shell seam).
+
+    Requires an interactive stdin, and fails fast with one clear error otherwise (#450): a prompt
+    nobody can answer is not a confirmation. Unchecked, ``select`` raised a bare
+    ``io.UnsupportedOperation``/``ValueError`` on a fileno-less or closed stdin — past the CLI's
+    ``ShorewallNFError`` catch, so the operator got a traceback with the candidate still live — and
+    a detached (``nohup``) stdin of ``/dev/null`` reported readable at once, collapsing the window
+    to zero and silently reverting. Unattended callers want ``try DIR <timeout>``, which prompts
+    for nothing.
     """
+    try:
+        interactive = sys.stdin.isatty()
+    except ValueError:  # a closed stdin: "I/O operation on closed file"
+        interactive = False
+    if not interactive:
+        raise ShorewallNFError(
+            "cannot confirm: stdin is not a TTY. safe-reload/safe-start must prompt an operator; "
+            "for an unattended or detached run use `try DIR <timeout>` instead."
+        )
     print(
         f"Keep this ruleset? Reply within {timeout}s or it auto-reverts [y/N]: ",
         end="",
@@ -431,27 +487,57 @@ def safe_apply(
     does not touch the persisted ruleset. If the restore itself fails, the primitive falls closed to
     the ``stopped`` safe-state ruleset (ADR-0021), never a wide-open firewall. ``wait``/``confirm``
     are injectable so the window is unit-testable without sleeping or reading stdin.
+
+    Once the candidate is live the revert is **guaranteed on every way out** (#450) — the window is
+    guarded by a ``try``/``finally`` under :func:`_revert_on_signal`, so a signalled death (the
+    sshd teardown of the session a bad rule just severed) or an exception out of the ``wait``/
+    ``confirm`` seam reverts and re-raises rather than stranding the candidate. A process that
+    *vanishes* (SIGKILL) is out of the threat model: the persisted ruleset is untouched, so the next
+    boot's ``shorewallnf restore`` reloads the pre-apply one.
     """
     running = list_ruleset()
     was_running = firewall_loaded(running)
-    if timeout is not None and was_running:
+    if timeout is None:
+        check_ruleset(candidate)
+        apply_ruleset(candidate)
+        return True  # no window, nothing to revert -> nothing to guard
+    if was_running:
         save_ruleset(running, snapshot_path)
     check_ruleset(candidate)
-    apply_ruleset(candidate)
-    if timeout is None:
-        return True
-    if confirm is None:
-        wait(timeout)
-    elif confirm(timeout):
-        return True  # operator confirmed reachability -> keep the candidate (caller persists)
+    kept = False
+    # Guarded *before* the load is asked for, so from that moment every exit — returning, raising,
+    # or being signalled — unwinds through the revert below (#450). ``live`` is assumed true and
+    # only nft's own rejection clears it: a ConfigError means the atomic load committed nothing, so
+    # the candidate provably never ran and the running ruleset is untouched. Any other failure
+    # (notably a signal landing mid-load) leaves the outcome unknown -> revert, fail-closed.
+    live = True
+    try:
+        with _revert_on_signal():
+            try:
+                apply_ruleset(candidate)
+            except ConfigError:
+                live = False
+                raise
+            if confirm is None:
+                wait(timeout)
+            else:
+                # an affirmative answer keeps the candidate as the final state (caller persists)
+                kept = confirm(timeout)
+    finally:
+        if live and not kept:
+            _revert(was_running, snapshot_path, stopped)
+    return kept
+
+
+def _revert(was_running: bool, snapshot_path: Path, stopped: dict[str, Any]) -> None:
+    """Restore the pre-apply state: the captured snapshot, or ``clear`` when nothing was running."""
     if not was_running:
         clear_ruleset()
-        return False
+        return
     try:
         restore_ruleset(snapshot_path)
     except ShorewallNFError:
         apply_ruleset(stopped)  # fail-closed: stopped safe state, never wide open (ADR-0021/0004)
-    return False
 
 
 # --- provider policy routing via iproute2 (task #235, ADR-0050) ----------------------------

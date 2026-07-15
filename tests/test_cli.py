@@ -1,10 +1,14 @@
+import io as _io
+import os as _os
+import signal as _signal
+import threading as _threading
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from shorewallnf import cli
+from shorewallnf import applier, cli
 from shorewallnf.applier import DEFAULT_RULESET_PATH, prompt_confirm
 from shorewallnf.errors import ConfigError, ShorewallNFError
 
@@ -1115,3 +1119,60 @@ def test_safe_verb_requires_config_dir(verb: str) -> None:
     with pytest.raises(SystemExit) as exc:
         cli.main([verb])
     assert exc.value.code == 2  # argparse usage error: config_dir is required
+
+
+# --- #450: the signalled and unusable-stdin paths exit non-zero with one clear error -----------
+
+
+@pytest.mark.parametrize("verb", ["safe-reload", "safe-start"])
+def test_safe_verb_reports_an_unusable_stdin_without_a_traceback(
+    verb: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A detached/redirected stdin used to escape as a raw `io.UnsupportedOperation` past the CLI's
+    single ShorewallNFError catch, with the candidate left live. It is now one clear error."""
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    monkeypatch.setattr("sys.stdin", _io.StringIO("y\n"))  # no fileno: select used to blow up here
+    saved: list[Any] = []
+    monkeypatch.setattr(cli, "save_ruleset", lambda rs: saved.append(rs))
+    # real safe_apply, stubbed nft seams: the candidate goes live, then the confirm seam fails.
+    monkeypatch.setattr(applier, "list_ruleset", lambda: {"nftables": []})
+    monkeypatch.setattr(applier, "firewall_loaded", lambda r: False)
+    monkeypatch.setattr(applier, "check_ruleset", lambda rs: None)
+    monkeypatch.setattr(applier, "apply_ruleset", lambda rs: None)
+    cleared: list[bool] = []
+    monkeypatch.setattr(applier, "clear_ruleset", lambda: cleared.append(True))
+
+    assert cli.main([verb, _COMPILE_DIR]) == 1  # non-zero, not a traceback
+    err = capsys.readouterr().err
+    assert "error: cannot confirm: stdin is not a TTY" in err
+    assert "Traceback" not in err
+    assert cleared == [True]  # and the candidate was reverted, not left live
+    assert saved == []  # never persisted
+
+
+def test_try_reports_a_signalled_revert_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The lockout case end to end: a SIGHUP mid-window reverts, then exits non-zero with one clear
+    error — the revert is a completed action, not a success."""
+    monkeypatch.setattr(cli, "compile_config", lambda d: {})
+    monkeypatch.setattr(cli, "compile_stopped", lambda d: {})
+    monkeypatch.setattr(applier, "list_ruleset", lambda: {"nftables": []})
+    monkeypatch.setattr(applier, "firewall_loaded", lambda r: False)
+    monkeypatch.setattr(applier, "check_ruleset", lambda rs: None)
+    cleared: list[bool] = []
+    monkeypatch.setattr(applier, "clear_ruleset", lambda: cleared.append(True))
+
+    # A real SIGHUP delivered once the candidate is live, interrupting the real time.sleep window
+    # exactly as sshd's session teardown would.
+    def _apply_then_get_hupped(_rs: Any) -> None:
+        _threading.Timer(0.05, _os.kill, (_os.getpid(), _signal.SIGHUP)).start()
+
+    monkeypatch.setattr(applier, "apply_ruleset", _apply_then_get_hupped)
+
+    assert cli.main(["try", _COMPILE_DIR, "30"]) == 1  # window never elapses; the signal ends it
+    err = capsys.readouterr().err
+    assert "error: SIGHUP received: reverting" in err
+    assert "Traceback" not in err
+    assert cleared == [True]  # reverted on the way out despite the signal
